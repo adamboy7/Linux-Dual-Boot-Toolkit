@@ -54,10 +54,39 @@ class BtKeyRecord:
 
     @classmethod
     def from_dict(cls, data):
+        if not isinstance(data, dict):
+            raise ValueError("JSON must be an object with adapter_mac, device_mac, and key_hex.")
+
+        required_fields = ["adapter_mac", "device_mac", "key_hex"]
+        missing = [f for f in required_fields if f not in data]
+        if missing:
+            raise ValueError(f"Missing required field(s): {', '.join(missing)}")
+
+        adapter_mac = data["adapter_mac"]
+        device_mac = data["device_mac"]
+        key_hex = data["key_hex"]
+
+        for name, value in (
+            ("adapter_mac", adapter_mac),
+            ("device_mac", device_mac),
+            ("key_hex", key_hex),
+        ):
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"Field '{name}' must be a non-empty string.")
+
+        key_hex_clean = key_hex.strip()
+        expected_len = 32  # BlueZ link keys are 16 bytes (32 hex chars)
+        if len(key_hex_clean) != expected_len:
+            raise ValueError(
+                f"key_hex must be a {expected_len}-character hex string (got {len(key_hex_clean)} characters)."
+            )
+        if not re.fullmatch(r"[0-9A-Fa-f]+", key_hex_clean):
+            raise ValueError("key_hex must contain only hexadecimal characters (0-9, A-F).")
+
         return cls(
-            adapter_mac=data["adapter_mac"],
-            device_mac=data["device_mac"],
-            key_hex=data["key_hex"],
+            adapter_mac=adapter_mac,
+            device_mac=device_mac,
+            key_hex=key_hex_clean.upper(),
         )
 
 
@@ -640,6 +669,12 @@ class BtKeyGui(Gtk.Window):
                     f"  sudo systemctl restart bluetooth",
                     title="Import successful",
                 )
+            except json.JSONDecodeError as e:
+                self._show_error_dialog(
+                    f"Failed to parse JSON file: {e}", title="Import failed"
+                )
+            except ValueError as e:
+                self._show_error_dialog(str(e), title="Import failed")
             except Exception as e:
                 self._show_error_dialog(str(e), title="Import failed")
         else:
