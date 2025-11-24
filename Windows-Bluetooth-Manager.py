@@ -2,12 +2,13 @@
 """
 Windows-Bluetooth-Manager.py
 
-Command-line tool to export and import Bluetooth link keys on Windows.
+Windows GUI companion to the Linux Bluetooth GTK tool.
 
-Feature parity with the Linux GTK tool:
+Feature parity goals:
 - List adapters and paired devices
 - Export a device's link key to JSON
-- Import a link key from JSON (requires SYSTEM or PsExec -s)
+- Import a device's link key from JSON (requires SYSTEM or PsExec -s)
+- Keep a simple, single-window UI similar to the Linux side
 
 Notes on permissions:
 - Bluetooth link keys live under HKLM\\SYSTEM\\CurrentControlSet\\Services\\BTHPORT\\Parameters\\Keys
@@ -25,13 +26,16 @@ JSON format matches the Linux tool:
 }
 """
 
-import argparse
 import binascii
+import json
 import platform
 import sys
 import winreg
 from dataclasses import dataclass
 from typing import Dict, List, Optional
+from pathlib import Path
+from tkinter import BOTH, END, LEFT, RIGHT, TOP, Button, Frame, Label, Listbox, Scrollbar, StringVar, Tk
+from tkinter import filedialog, messagebox, ttk
 
 KEYS_BASE = r"SYSTEM\\CurrentControlSet\\Services\\BTHPORT\\Parameters\\Keys"
 DEVICES_BASE = r"SYSTEM\\CurrentControlSet\\Services\\BTHPORT\\Parameters\\Devices"
@@ -217,99 +221,206 @@ def require_windows():
         print("This tool only runs on Windows.")
         sys.exit(1)
 
+class BluetoothManagerGUI:
+    def __init__(self):
+        require_windows()
+        self.root = Tk()
+        self.root.title("Windows Bluetooth Key Manager")
+        self.adapters: List[AdapterInfo] = []
+        self.devices: List[DeviceInfo] = []
+        self.adapter_var = StringVar()
 
-def cmd_list_adapters(_: argparse.Namespace):
-    adapters = list_adapters()
-    if not adapters:
-        print("No adapters found. Ensure Bluetooth is enabled and you have Administrator rights.")
-        return
-    for adapter in adapters:
-        print(f"Adapter: {adapter.mac}\tRegistry: {adapter.registry_path}")
+        self._build_layout()
+        self.refresh_adapters()
+
+    def _build_layout(self):
+        top_frame = Frame(self.root)
+        top_frame.pack(side=TOP, fill=BOTH, padx=10, pady=10)
+
+        title = Label(
+            top_frame,
+            text="Export / Import Bluetooth Link Keys (Windows)",
+            font=("Segoe UI", 12, "bold"),
+        )
+        title.pack(side=TOP, anchor="w")
+
+        info = Label(
+            top_frame,
+            text=(
+                "Reading usually works as Administrator. Writing requires SYSTEM (e.g., PsExec -s)."
+            ),
+            wraplength=520,
+            justify="left",
+            fg="#444",
+        )
+        info.pack(side=TOP, anchor="w", pady=(2, 8))
+
+        adapter_row = Frame(top_frame)
+        adapter_row.pack(side=TOP, fill=BOTH, pady=(0, 8))
+
+        Label(adapter_row, text="Adapter:").pack(side=LEFT)
+        self.adapter_combo = ttk.Combobox(adapter_row, textvariable=self.adapter_var, state="readonly")
+        self.adapter_combo.pack(side=LEFT, padx=6, fill="x", expand=True)
+        self.adapter_combo.bind("<<ComboboxSelected>>", lambda _evt: self.load_devices())
+
+        Button(adapter_row, text="Refresh", command=self.refresh_adapters).pack(side=LEFT, padx=(6, 0))
+
+        devices_frame = Frame(self.root)
+        devices_frame.pack(side=TOP, fill=BOTH, expand=True, padx=10)
+
+        Label(devices_frame, text="Paired devices:").pack(side=TOP, anchor="w")
+        list_frame = Frame(devices_frame)
+        list_frame.pack(side=TOP, fill=BOTH, expand=True)
+
+        scrollbar = Scrollbar(list_frame)
+        scrollbar.pack(side=RIGHT, fill="y")
+
+        self.device_list = Listbox(list_frame, height=10, yscrollcommand=scrollbar.set)
+        self.device_list.pack(side=LEFT, fill=BOTH, expand=True)
+        scrollbar.config(command=self.device_list.yview)
+
+        button_row = Frame(self.root)
+        button_row.pack(side=TOP, fill=BOTH, padx=10, pady=8)
+        Button(button_row, text="Export to JSON", command=self.export_key).pack(side=LEFT)
+        Button(button_row, text="Import from JSON", command=self.import_key).pack(side=LEFT, padx=(8, 0))
+
+        self.status = Label(
+            self.root,
+            text="Select an adapter to begin.",
+            anchor="w",
+            justify="left",
+            fg="#555",
+        )
+        self.status.pack(side=TOP, fill=BOTH, padx=10, pady=(0, 10))
+
+    def refresh_adapters(self):
+        self.adapters = list_adapters()
+        if not self.adapters:
+            self.adapter_combo["values"] = []
+            self.adapter_var.set("")
+            self.set_status(
+                "No adapters found. Run as Administrator and ensure Bluetooth is enabled.", error=True
+            )
+            return
+
+        values = [f"{a.mac} ({a.registry_path})" for a in self.adapters]
+        self.adapter_combo["values"] = values
+        self.adapter_var.set(values[0])
+        self.set_status("Adapters loaded. Select a device to export/import.")
+        self.load_devices()
+
+    def current_adapter(self) -> Optional[AdapterInfo]:
+        selection = self.adapter_var.get()
+        if not selection or not self.adapters:
+            return None
+        mac = selection.split()[0]
+        for adapter in self.adapters:
+            if adapter.mac == mac:
+                return adapter
+        return None
+
+    def load_devices(self):
+        adapter = self.current_adapter()
+        self.device_list.delete(0, END)
+        if adapter is None:
+            self.devices = []
+            self.set_status("Select an adapter first.", error=True)
+            return
+
+        self.devices = list_devices(adapter)
+        if not self.devices:
+            self.set_status("No paired devices for this adapter.", error=True)
+            return
+
+        for dev in self.devices:
+            self.device_list.insert(END, f"{dev.name} ({dev.mac})")
+        self.set_status("Select a device to export or import a link key.")
+
+    def selected_device(self) -> Optional[DeviceInfo]:
+        if not self.devices:
+            return None
+        selection = self.device_list.curselection()
+        if not selection:
+            return None
+        return self.devices[selection[0]]
+
+    def export_key(self):
+        adapter = self.current_adapter()
+        device = self.selected_device()
+        if adapter is None:
+            self.set_status("Select an adapter before exporting.", error=True)
+            return
+        if device is None:
+            self.set_status("Select a device before exporting.", error=True)
+            return
+
+        try:
+            record = read_link_key(adapter.mac, device.mac)
+        except Exception as exc:  # noqa: BLE001
+            self.set_status(str(exc), error=True)
+            messagebox.showerror("Export failed", str(exc))
+            return
+
+        default_name = f"bt-key-{device.mac.replace(':', '-')}.json"
+        path = filedialog.asksaveasfilename(
+            defaultextension=".json",
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
+            initialfile=default_name,
+        )
+        if not path:
+            return
+
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(record.to_dict(), f, indent=2)
+        self.set_status(f"Exported link key for {device.mac} to {Path(path).name}.")
+        messagebox.showinfo("Export complete", f"Saved link key to {path}")
+
+    def import_key(self):
+        adapter = self.current_adapter()
+        device = self.selected_device()
+        if adapter is None:
+            self.set_status("Select an adapter before importing.", error=True)
+            return
+        if device is None:
+            self.set_status("Select a device before importing.", error=True)
+            return
+
+        path = filedialog.askopenfilename(
+            defaultextension=".json",
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
+        )
+        if not path:
+            return
+
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            loaded = BtKeyRecord.from_dict(data)
+            record = BtKeyRecord(adapter.mac, device.mac, loaded.key_hex)
+            write_link_key(record)
+        except Exception as exc:  # noqa: BLE001
+            self.set_status(str(exc), error=True)
+            messagebox.showerror("Import failed", str(exc))
+            return
+
+        self.set_status(
+            f"Imported link key for {device.mac}. Writing requires SYSTEM privileges.",
+        )
+        messagebox.showinfo(
+            "Import complete",
+            "Link key imported. If you saw a permission error, rerun as SYSTEM (PsExec -s).",
+        )
+
+    def set_status(self, message: str, error: bool = False):
+        self.status.config(text=message, fg="#b00020" if error else "#555")
+
+    def run(self):
+        self.root.mainloop()
 
 
-def cmd_list_devices(args: argparse.Namespace):
-    adapter_mac = args.adapter
-    adapter_reg = mac_colon_to_registry(adapter_mac)
-    target = None
-    for adapter in list_adapters():
-        if adapter.mac == normalize_mac(adapter_mac):
-            target = adapter
-            break
-        if adapter.registry_path.endswith(adapter_reg):
-            target = adapter
-            break
-    if target is None:
-        print(f"Adapter {adapter_mac} not found under {KEYS_BASE}")
-        return
-
-    devices = list_devices(target)
-    if not devices:
-        print("No paired devices found for this adapter.")
-        return
-    for dev in devices:
-        print(f"Device: {dev.name}\tMAC: {dev.mac}\tRegistry: {dev.registry_path}")
-
-
-def cmd_export(args: argparse.Namespace):
-    record = read_link_key(args.adapter, args.device)
-    output_path = args.output
-    with open(output_path, "w", encoding="utf-8") as f:
-        import json
-
-        json.dump(record.to_dict(), f, indent=2)
-    print(f"Exported link key for {record.device_mac} to {output_path}")
-
-
-def cmd_import(args: argparse.Namespace):
-    import json
-
-    with open(args.input, "r", encoding="utf-8") as f:
-        data = json.load(f)
-    record = BtKeyRecord.from_dict(data)
-    record.adapter_mac = normalize_mac(args.adapter)
-    record.device_mac = normalize_mac(args.device)
-    write_link_key(record)
-    print(f"Imported link key for {record.device_mac} into registry")
-
-
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Export/import Bluetooth link keys on Windows (requires admin/system privileges)."
-    )
-    sub = parser.add_subparsers(dest="command", required=True)
-
-    sub.add_parser("list-adapters", help="List Bluetooth adapters found in the registry").set_defaults(
-        func=cmd_list_adapters
-    )
-
-    parser_devices = sub.add_parser(
-        "list-devices", help="List paired devices for an adapter (provide MAC with colons)"
-    )
-    parser_devices.add_argument("adapter", help="Adapter MAC (AA:BB:CC:DD:EE:FF)")
-    parser_devices.set_defaults(func=cmd_list_devices)
-
-    parser_export = sub.add_parser("export", help="Export a device's link key to JSON")
-    parser_export.add_argument("adapter", help="Adapter MAC (AA:BB:CC:DD:EE:FF)")
-    parser_export.add_argument("device", help="Device MAC (11:22:33:44:55:66)")
-    parser_export.add_argument(
-        "-o", "--output", default="bt_key.json", help="Output JSON file (default: bt_key.json)"
-    )
-    parser_export.set_defaults(func=cmd_export)
-
-    parser_import = sub.add_parser("import", help="Import link key from JSON into registry")
-    parser_import.add_argument("adapter", help="Adapter MAC (AA:BB:CC:DD:EE:FF)")
-    parser_import.add_argument("device", help="Device MAC (11:22:33:44:55:66)")
-    parser_import.add_argument("-i", "--input", default="bt_key.json", help="Input JSON file")
-    parser_import.set_defaults(func=cmd_import)
-
-    return parser
-
-
-def main(argv: Optional[List[str]] = None):
-    require_windows()
-    parser = build_parser()
-    args = parser.parse_args(argv)
-    args.func(args)
+def main():
+    app = BluetoothManagerGUI()
+    app.run()
 
 
 if __name__ == "__main__":
