@@ -815,8 +815,10 @@ class BtKeyGui(Gtk.Window):
 
         if not os.path.isfile(info_path):
             self._show_error_dialog(
-                f"BlueZ info file not found at {info_path}.\n"
-                "Make sure the device has been paired once in Linux.",
+                (
+                    f"BlueZ info file not found at {info_path}.\n"
+                    "Make sure the device has been paired once in Linux."
+                ),
                 title="Restore failed",
             )
             return
