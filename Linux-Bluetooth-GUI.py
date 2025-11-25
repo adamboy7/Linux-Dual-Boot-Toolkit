@@ -476,10 +476,17 @@ class BtKeyGui(Gtk.Window):
         self.import_button.connect("clicked", self.on_import_clicked)
         button_box.pack_start(self.import_button, True, True, 0)
 
-        # Status label
+        # Status row with refresh button on the right
+        status_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        vbox.pack_start(status_box, False, False, 4)
+
         self.status_label = Gtk.Label(label="")
         self.status_label.set_xalign(0.0)
-        vbox.pack_start(self.status_label, False, False, 4)
+        status_box.pack_start(self.status_label, True, True, 0)
+
+        self.refresh_button = Gtk.Button(label="Refresh")
+        self.refresh_button.connect("clicked", self.on_refresh_clicked)
+        status_box.pack_start(self.refresh_button, False, False, 0)
 
         # Populate adapters and select default
         self._populate_adapters()
@@ -551,9 +558,14 @@ class BtKeyGui(Gtk.Window):
 
     # ----- Data population -----
 
-    def _populate_adapters(self):
+    def _populate_adapters(
+        self,
+        preferred_adapter_mac: str | None = None,
+        preferred_device_mac: str | None = None,
+    ):
         self.adapter_store.clear()
         default_iter = None
+        selected_iter = None
         for adapter in self.adapters:
             display = f"{adapter.name} ({adapter.mac})"
             if adapter.is_default:
@@ -561,14 +573,21 @@ class BtKeyGui(Gtk.Window):
             iter_ = self.adapter_store.append([display, adapter])
             if adapter.is_default:
                 default_iter = iter_
+            if preferred_adapter_mac and adapter.mac == preferred_adapter_mac:
+                selected_iter = iter_
 
-        if default_iter is not None:
+        if selected_iter is not None:
+            self.adapter_combo.set_active_iter(selected_iter)
+        elif default_iter is not None:
             self.adapter_combo.set_active_iter(default_iter)
         else:
             self.adapter_combo.set_active(0)
 
         # Trigger initial device list
-        self._reload_devices_for_selected_adapter()
+        if selected_iter is not None:
+            self._reload_devices_for_selected_adapter(preferred_device_mac)
+        else:
+            self._reload_devices_for_selected_adapter()
 
     def _get_selected_adapter(self) -> AdapterInfo | None:
         tree_iter = self.adapter_combo.get_active_iter()
@@ -584,7 +603,7 @@ class BtKeyGui(Gtk.Window):
         model = self.device_combo.get_model()
         return model[tree_iter][1]  # DeviceInfo
 
-    def _reload_devices_for_selected_adapter(self):
+    def _reload_devices_for_selected_adapter(self, preferred_device_mac: str | None = None):
         adapter = self._get_selected_adapter()
         self.device_store.clear()
         self.devices = []
@@ -601,13 +620,18 @@ class BtKeyGui(Gtk.Window):
             self.set_status(f"Found {len(self.devices)} device(s) for adapter {adapter.mac}.")
 
         first_iter = None
+        selected_iter = None
         for dev in self.devices:
             display = f"{dev.name} ({dev.mac})"
             iter_ = self.device_store.append([display, dev])
+            if preferred_device_mac and dev.mac == preferred_device_mac:
+                selected_iter = iter_
             if first_iter is None:
                 first_iter = iter_
 
-        if first_iter is not None:
+        if selected_iter is not None:
+            self.device_combo.set_active_iter(selected_iter)
+        elif first_iter is not None:
             self.device_combo.set_active_iter(first_iter)
         else:
             self.device_combo.set_active(-1)
@@ -616,6 +640,25 @@ class BtKeyGui(Gtk.Window):
 
     def on_adapter_changed(self, combo: Gtk.ComboBox):
         self._reload_devices_for_selected_adapter()
+
+    def on_refresh_clicked(self, button: Gtk.Button):
+        prev_adapter = self._get_selected_adapter()
+        prev_device = self._get_selected_device()
+        prev_adapter_mac = prev_adapter.mac if prev_adapter else None
+        prev_device_mac = prev_device.mac if prev_device else None
+
+        self.adapters = find_adapters()
+        if not self.adapters:
+            self.adapter_store.clear()
+            self.device_store.clear()
+            self.devices = []
+            self.adapter_combo.set_active(-1)
+            self.device_combo.set_active(-1)
+            self.set_status("No Bluetooth adapters found in /var/lib/bluetooth.")
+            self._show_error_dialog("No Bluetooth adapters found in /var/lib/bluetooth.")
+            return
+
+        self._populate_adapters(prev_adapter_mac, prev_device_mac)
 
     def on_export_clicked(self, button: Gtk.Button):
         adapter = self._get_selected_adapter()
