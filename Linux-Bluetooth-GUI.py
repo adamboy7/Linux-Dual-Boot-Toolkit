@@ -11,7 +11,7 @@ Features:
 - Import link key from JSON into selected device's BlueZ "info" file
 
 Usage:
-    sudo python3 bt_pair_gui.py
+    python3 bt_pair_gui.py
 
 This script is intended for the Linux side of a dual-boot setup.
 You can pair your headphones in Windows, export the key there to JSON,
@@ -27,8 +27,28 @@ import subprocess
 import platform
 from dataclasses import dataclass
 
+def ensure_root():
+    """Ensure the process is running as root, attempting to re-exec if needed."""
+
+    if not hasattr(os, "geteuid") or os.geteuid() == 0:
+        return
+
+    script_path = os.path.abspath(sys.argv[0])
+    args = [sys.executable, script_path, *sys.argv[1:]]
+
+    if shutil.which("pkexec"):
+        os.execvpe("pkexec", ["pkexec", *args], os.environ)
+
+    if shutil.which("sudo"):
+        os.execvpe("sudo", ["sudo", "-E", *args], os.environ)
+
+    sys.stderr.write("This tool must be run as root (pkexec/sudo not found).\n")
+    sys.exit(1)
+
+
 # Only import GTK if on Linux
 if platform.system() == "Linux":
+    ensure_root()
     import gi
     gi.require_version("Gtk", "3.0")
     from gi.repository import Gtk, Gio
@@ -378,14 +398,6 @@ class BtKeyGui(Gtk.Window):
         # Top-level layout
         vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         self.add(vbox)
-
-        # Warning if not root
-        if hasattr(os, "geteuid") and os.geteuid() != 0:
-            warn_label = Gtk.Label(
-                label="⚠ You are not running as root. Export/import may fail due to permissions."
-            )
-            warn_label.set_xalign(0.0)
-            vbox.pack_start(warn_label, False, False, 0)
 
         # Adapter row
         adapter_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
