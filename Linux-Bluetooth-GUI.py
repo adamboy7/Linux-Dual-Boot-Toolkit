@@ -468,6 +468,10 @@ class BtKeyGui(Gtk.Window):
         self.import_button.connect("clicked", self.on_import_clicked)
         button_box.pack_start(self.import_button, True, True, 0)
 
+        self.restore_button = Gtk.Button(label="Restore backup…")
+        self.restore_button.connect("clicked", self.on_restore_clicked)
+        button_box.pack_start(self.restore_button, True, True, 0)
+
         # Status row with refresh button on the right
         status_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         vbox.pack_start(status_box, False, False, 4)
@@ -794,6 +798,56 @@ class BtKeyGui(Gtk.Window):
                 self._show_error_dialog(str(e), title="Import failed")
         else:
             dialog.destroy()
+
+    def on_restore_clicked(self, button: Gtk.Button):
+        adapter = self._get_selected_adapter()
+        device = self._get_selected_device()
+
+        if adapter is None:
+            self._show_error_dialog("No adapter selected.")
+            return
+        if device is None:
+            self._show_error_dialog("No device selected.")
+            return
+
+        info_path = device.info_path
+        backup_path = info_path + ".bak"
+
+        if not os.path.isfile(info_path):
+            self._show_error_dialog(
+                f"BlueZ info file not found at {info_path}.\n"
+                "Make sure the device has been paired once in Linux.",
+                title="Restore failed",
+            )
+            return
+
+        if not os.path.isfile(backup_path):
+            self._show_error_dialog(
+                f"No backup file found for this device. Expected:\n{backup_path}",
+                title="Restore failed",
+            )
+            return
+
+        if not self._ask_yes_no(
+            f"Restore backup for {device.name}?\n\n"
+            f"This will overwrite the current info file with:\n{backup_path}",
+            title="Restore backup?",
+        ):
+            return
+
+        try:
+            shutil.copy2(backup_path, info_path)
+        except Exception as e:  # noqa: BLE001
+            self._show_error_dialog(str(e), title="Restore failed")
+            return
+
+        self.set_status(f"Restored backup for {device.name} to {info_path}")
+        self._show_info_dialog(
+            f"Successfully restored backup for {device.name}.\n\n"
+            f"Backup file: {backup_path}\n"
+            f"Restored to: {info_path}",
+            title="Restore successful",
+        )
 
 
 def main():
