@@ -36,8 +36,14 @@ def ensure_root():
     script_path = os.path.abspath(sys.argv[0])
     args = [sys.executable, script_path, *sys.argv[1:]]
 
+    display_env_vars = []
+    for key in ("DISPLAY", "XAUTHORITY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"):
+        value = os.environ.get(key)
+        if value:
+            display_env_vars.append(f"{key}={value}")
+
     if shutil.which("pkexec"):
-        os.execvpe("pkexec", ["pkexec", *args], os.environ)
+        os.execvpe("pkexec", ["pkexec", "env", *display_env_vars, *args], os.environ)
 
     if shutil.which("sudo"):
         os.execvpe("sudo", ["sudo", "-E", *args], os.environ)
