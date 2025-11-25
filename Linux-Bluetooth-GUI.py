@@ -304,6 +304,35 @@ def linux_import_key(record: BtKeyRecord):
     return backup_path
 
 
+def restart_bluetooth_service() -> tuple[bool, str]:
+    """Attempt to restart the Bluetooth service. Returns (success, detail)."""
+
+    commands = [
+        (["systemctl", "restart", "bluetooth"], "systemctl restart bluetooth"),
+        (["service", "bluetooth", "restart"], "service bluetooth restart"),
+    ]
+
+    errors: list[str] = []
+
+    for cmd, label in commands:
+        try:
+            subprocess.run(
+                cmd,
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            return True, label
+        except FileNotFoundError:
+            errors.append(f"{label}: command not found")
+        except subprocess.CalledProcessError as e:
+            stderr = (e.stderr or "").strip()
+            errors.append(f"{label}: {stderr or e}")
+
+    return False, "; ".join(errors)
+
+
 def find_adapters() -> list[AdapterInfo]:
     adapters: list[AdapterInfo] = []
     if not os.path.isdir(BASE_DIR):
@@ -488,6 +517,19 @@ class BtKeyGui(Gtk.Window):
         dialog.format_secondary_text(message)
         dialog.run()
         dialog.destroy()
+
+    def _ask_yes_no(self, message: str, title: str = "Confirm") -> bool:
+        dialog = Gtk.MessageDialog(
+            transient_for=self,
+            flags=0,
+            message_type=Gtk.MessageType.QUESTION,
+            buttons=Gtk.ButtonsType.YES_NO,
+            text=title,
+        )
+        dialog.format_secondary_text(message)
+        response = dialog.run()
+        dialog.destroy()
+        return response == Gtk.ResponseType.YES
 
     def _show_error_and_quit(self, message: str):
         # Simple stdout fallback in case GTK isn't fully up yet
@@ -687,6 +729,26 @@ class BtKeyGui(Gtk.Window):
                     f"  sudo systemctl restart bluetooth",
                     title="Import successful",
                 )
+
+                if self._ask_yes_no(
+                    "Reload the Bluetooth service now to use the new key?",
+                    title="Reload Bluetooth?",
+                ):
+                    success, detail = restart_bluetooth_service()
+                    if success:
+                        self.set_status(
+                            f"Bluetooth service reloaded via: {detail}"
+                        )
+                        self._show_info_dialog(
+                            "Bluetooth service was reloaded successfully.",
+                            title="Bluetooth reloaded",
+                        )
+                    else:
+                        self._show_error_dialog(
+                            "Failed to reload Bluetooth automatically.\n\n"
+                            f"Attempted: {detail}",
+                            title="Reload failed",
+                        )
             except json.JSONDecodeError as e:
                 self._show_error_dialog(
                     f"Failed to parse JSON file: {e}", title="Import failed"
