@@ -148,9 +148,17 @@ def within_root(path, root):
     Return True if `path` is inside `root` (after resolving symlinks).
     """
     try:
-        path = Path(path).resolve()
-        root = Path(root).resolve()
-        return str(path).startswith(str(root))
+        path_resolved = Path(path).resolve()
+        root_resolved = Path(root).resolve()
+
+        if hasattr(path_resolved, "is_relative_to"):
+            return path_resolved.is_relative_to(root_resolved)
+
+        try:
+            path_resolved.relative_to(root_resolved)
+            return True
+        except ValueError:
+            return False
     except Exception:
         return False
 
