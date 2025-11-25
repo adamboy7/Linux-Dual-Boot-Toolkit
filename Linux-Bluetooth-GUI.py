@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-bt_pair_gui.py
+Linux-Bluetooth-GUI.py
 
 GTK-based GUI to export/import Bluetooth pairing keys on Linux (BlueZ).
 
@@ -11,7 +11,7 @@ Features:
 - Import link key from JSON into selected device's BlueZ "info" file
 
 Usage:
-    python3 bt_pair_gui.py
+    python3 Linux-Bluetooth-GUI.py
 
 This script is intended for the Linux side of a dual-boot setup.
 You can pair your headphones in Windows, export the key there to JSON,
@@ -57,7 +57,7 @@ if platform.system() == "Linux":
     ensure_root()
     import gi
     gi.require_version("Gtk", "3.0")
-    from gi.repository import Gtk, Gio
+    from gi.repository import Gtk
 else:
     print("This GUI tool currently only supports Linux (BlueZ).")
     sys.exit(1)
@@ -194,34 +194,6 @@ def get_adapters_from_bluetoothctl() -> dict:
         }
 
     return mapping
-
-
-def get_default_adapter_mac_from_bluetoothctl() -> str | None:
-    """
-    Use `bluetoothctl list` to find the [default] adapter, if any.
-    Returns MAC or None.
-    """
-    try:
-        out = subprocess.check_output(
-            ["bluetoothctl", "list"], text=True, stderr=subprocess.DEVNULL
-        )
-    except (FileNotFoundError, subprocess.CalledProcessError):
-        return None
-
-    # Lines like: "Controller 8A:88:4B:E3:0B:FD Dark-Pit [default]"
-    for line in out.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        if "[default]" in line:
-            parts = line.split()
-            if len(parts) >= 2 and parts[0] == "Controller":
-                mac = parts[1]
-                try:
-                    return normalize_mac_colon(mac)
-                except ValueError:
-                    pass
-    return None
 
 
 def read_key_from_info(info_path: str) -> str:
