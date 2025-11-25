@@ -23,6 +23,7 @@ import sys
 import re
 import json
 import shutil
+import tempfile
 import subprocess
 import platform
 from dataclasses import dataclass
@@ -270,8 +271,27 @@ def linux_import_key(record: BtKeyRecord):
 
         new_lines = output_lines
 
-    with open(info_path, "w", encoding="utf-8") as f:
-        f.writelines(new_lines)
+    temp_path = None
+    try:
+        fd, temp_path = tempfile.mkstemp(
+            prefix="info.", suffix=".tmp", dir=os.path.dirname(info_path)
+        )
+        with os.fdopen(fd, "w", encoding="utf-8") as tmp_file:
+            tmp_file.writelines(new_lines)
+            tmp_file.flush()
+            os.fsync(tmp_file.fileno())
+
+        os.replace(temp_path, info_path)
+    except Exception as exc:  # noqa: BLE001
+        try:
+            if temp_path and os.path.exists(temp_path):
+                os.remove(temp_path)
+        finally:
+            try:
+                shutil.copy2(backup_path, info_path)
+            except Exception:  # noqa: BLE001
+                pass
+        raise RuntimeError(f"Failed to update BlueZ info file: {exc}") from exc
 
     return backup_path
 
