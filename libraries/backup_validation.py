@@ -221,7 +221,7 @@ def parse_backup_payload(filepath: str) -> BackupParseResult:
 
 def validate_backup_matches(
     expected_adapter: str,
-    expected_device: str,
+    expected_device: str | None,
     backup_path: str,
     error_callback: Callable[[str, str | None], None] | None = None,
     mismatch_title: str | None = "Restore blocked: adapter/device mismatch",

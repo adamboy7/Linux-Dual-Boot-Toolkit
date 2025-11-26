@@ -74,6 +74,23 @@ Adapter=11:22:33:44:55:66
         self.assertTrue(messages)
         self.assertIn("Restore blocked", messages[0])
 
+    def test_validate_backup_matches_allows_missing_expected_device(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            backup_path = Path(tmpdir) / "backup.json"
+            payload = {
+                "adapter_mac": "11:22:33:44:55:66",
+                "device_mac": "AA:BB:CC:DD:EE:FF",
+            }
+            backup_path.write_text(json.dumps(payload))
+
+            matches = validate_backup_matches(
+                "11:22:33:44:55:66",
+                None,
+                str(backup_path),
+            )
+
+        self.assertTrue(matches)
+
     def test_parse_backup_payload_valid_hex(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             backup_path = Path(tmpdir) / "bt_key_backup.json"

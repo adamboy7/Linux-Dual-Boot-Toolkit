@@ -721,9 +721,9 @@ class BluetoothKeyManagerApp(tk.Tk):
         if adapter is None:
             return
 
-        device = self._get_selected_device()
+        device = self.display_to_device.get(self.device_var.get())
         if device is None:
-            return
+            self.set_status("No device selected; will infer device from backup metadata.")
 
         backups = self._find_backup_files()
 
@@ -753,7 +753,7 @@ class BluetoothKeyManagerApp(tk.Tk):
 
         try:
             expected_adapter = normalize_mac(adapter["mac"])
-            expected_device = normalize_mac(device["mac"])
+            expected_device = normalize_mac(device["mac"]) if device else None
         except ValueError as e:
             messagebox.showerror("Restore failed", str(e))
             return
@@ -769,7 +769,7 @@ class BluetoothKeyManagerApp(tk.Tk):
 
         if not validate_backup_matches(
             expected_adapter,
-            expected_device,
+            expected_device or parsed_backup.payload.get("device_mac"),
             filepath,
             lambda msg, title=None: messagebox.showerror(title or "Restore blocked", msg),
         ):
