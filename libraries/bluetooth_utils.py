@@ -1,7 +1,9 @@
 """Shared Bluetooth utility helpers for Windows and Linux GUIs."""
 from __future__ import annotations
 
+import platform
 import re
+import subprocess
 
 
 def normalize_mac(mac: str, separator: str = ":") -> str:
@@ -41,3 +43,80 @@ def is_mac_dir_name(name: str) -> bool:
     """True if ``name`` looks like a MAC address directory (AA:BB:CC:DD:EE:FF)."""
 
     return re.fullmatch(r"[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}", name) is not None
+
+
+def reload_bluetooth() -> tuple[bool, str]:
+    """Attempt to reload Bluetooth services with platform-aware logic.
+
+    Returns:
+        Tuple of ``(success, detail_message)`` summarizing the attempt.
+    """
+
+    current_platform = platform.system()
+
+    if current_platform == "Linux":
+        commands = [
+            (["systemctl", "restart", "bluetooth"], "systemctl restart bluetooth"),
+            (["service", "bluetooth", "restart"], "service bluetooth restart"),
+        ]
+
+        errors: list[str] = []
+
+        for cmd, label in commands:
+            try:
+                subprocess.run(
+                    cmd,
+                    check=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+                return True, label
+            except FileNotFoundError:
+                errors.append(f"{label}: command not found")
+            except subprocess.CalledProcessError as e:
+                stderr = (e.stderr or "").strip()
+                errors.append(f"{label}: {stderr or e}")
+
+        return False, "; ".join(errors)
+
+    if current_platform == "Windows":
+        commands = [
+            (
+                ["powershell", "-Command", "Restart-Service -Name bthserv -Force"],
+                "Restart-Service bthserv",
+            ),
+            (["net", "stop", "bthserv"], "net stop bthserv && net start bthserv"),
+            (["net", "start", "bthserv"], "net start bthserv"),
+        ]
+
+        errors: list[str] = []
+
+        for cmd, label in commands:
+            try:
+                subprocess.run(
+                    cmd,
+                    check=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+                # If we explicitly stopped the service, start it again.
+                if label.startswith("net stop"):
+                    subprocess.run(
+                        ["net", "start", "bthserv"],
+                        check=True,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                    )
+                return True, label
+            except FileNotFoundError:
+                errors.append(f"{label}: command not found")
+            except subprocess.CalledProcessError as e:
+                stderr = (e.stderr or "").strip()
+                errors.append(f"{label}: {stderr or e}")
+
+        return False, "; ".join(errors)
+
+    return False, f"Bluetooth reload unsupported on platform: {current_platform}"
