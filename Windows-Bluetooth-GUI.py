@@ -168,8 +168,6 @@ class BluetoothKeyManagerApp(tk.Tk):
         display_values = []
         for adapter in adapters:
             display = f"{adapter.get('name', adapter['mac'])} ({adapter['mac']})"
-            if adapter.get("is_default"):
-                display += " [default]"
             self.display_to_adapter[display] = adapter
             display_values.append(display)
 
