@@ -884,46 +884,87 @@ class BtKeyGui(Gtk.Window):
             )
             return
 
+        selected_backup: str | None = None
+
         if not backup_files:
+            if not self._ask_yes_no(
+                "No backups found for this device.\n\n"
+                "Would you like to browse for an existing backup file to restore?",
+                title="No backups found",
+            ):
+                return
+
+            file_dialog = Gtk.FileChooserDialog(
+                title="Select backup file",
+                parent=self,
+                action=Gtk.FileChooserAction.OPEN,
+            )
+            file_dialog.add_buttons(
+                Gtk.STOCK_CANCEL,
+                Gtk.ResponseType.CANCEL,
+                Gtk.STOCK_OPEN,
+                Gtk.ResponseType.OK,
+            )
+
+            backup_filter = Gtk.FileFilter()
+            backup_filter.set_name("Backup files (*.bak, *.json)")
+            backup_filter.add_pattern("*.bak")
+            backup_filter.add_pattern("*.json")
+            file_dialog.add_filter(backup_filter)
+
+            all_filter = Gtk.FileFilter()
+            all_filter.set_name("All files")
+            all_filter.add_pattern("*")
+            file_dialog.add_filter(all_filter)
+
+            if file_dialog.run() == Gtk.ResponseType.OK:
+                selected_backup = file_dialog.get_filename()
+            file_dialog.destroy()
+
+            if not selected_backup:
+                return
+        else:
+            chooser = Gtk.Dialog(title="Select backup to restore", parent=self)
+            chooser.add_buttons(
+                Gtk.STOCK_CANCEL,
+                Gtk.ResponseType.CANCEL,
+                Gtk.STOCK_OK,
+                Gtk.ResponseType.OK,
+            )
+
+            combo = Gtk.ComboBoxText()
+            for path in backup_files:
+                try:
+                    modified = datetime.fromtimestamp(os.path.getmtime(path)).strftime(
+                        "%Y-%m-%d %H:%M:%S"
+                    )
+                    label = f"{os.path.basename(path)} (saved {modified})"
+                except OSError:
+                    label = os.path.basename(path)
+                combo.append(path, label)
+
+            combo.set_active(0)
+
+            box = chooser.get_content_area()
+            box.set_spacing(8)
+            box.add(Gtk.Label(label="Choose a backup to restore:"))
+            box.add(combo)
+            chooser.show_all()
+
+            response = chooser.run()
+            selected_backup = (
+                combo.get_active_id() if response == Gtk.ResponseType.OK else None
+            )
+            chooser.destroy()
+
+            if not selected_backup:
+                return
+
+        if not os.path.isfile(selected_backup):
             self._show_error_dialog(
-                "No backups found for this device.\n"
-                "Import a key at least once to create backups first.",
+                f"Selected backup file not found:\n{selected_backup}",
                 title="Restore failed",
             )
-            return
-
-        chooser = Gtk.Dialog(title="Select backup to restore", parent=self)
-        chooser.add_buttons(
-            Gtk.STOCK_CANCEL,
-            Gtk.ResponseType.CANCEL,
-            Gtk.STOCK_OK,
-            Gtk.ResponseType.OK,
-        )
-
-        combo = Gtk.ComboBoxText()
-        for path in backup_files:
-            try:
-                modified = datetime.fromtimestamp(os.path.getmtime(path)).strftime(
-                    "%Y-%m-%d %H:%M:%S"
-                )
-                label = f"{os.path.basename(path)} (saved {modified})"
-            except OSError:
-                label = os.path.basename(path)
-            combo.append(path, label)
-
-        combo.set_active(0)
-
-        box = chooser.get_content_area()
-        box.set_spacing(8)
-        box.add(Gtk.Label(label="Choose a backup to restore:"))
-        box.add(combo)
-        chooser.show_all()
-
-        response = chooser.run()
-        selected_backup = combo.get_active_id() if response == Gtk.ResponseType.OK else None
-        chooser.destroy()
-
-        if not selected_backup:
             return
 
         if not self._ask_yes_no(
