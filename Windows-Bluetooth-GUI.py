@@ -23,7 +23,7 @@ import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass
-from tkinter import N, S, Tk, filedialog, messagebox, ttk
+from tkinter import N, S, StringVar, Tk, filedialog, messagebox, ttk
 
 
 if platform.system() != "Windows":
@@ -290,8 +290,8 @@ class BtKeyGui(Tk):
         self.adapters: list[AdapterInfo] = []
         self.devices: list[DeviceInfo] = []
 
-        self.adapter_var = ttk.StringVar()
-        self.device_var = ttk.StringVar()
+        self.adapter_var = StringVar()
+        self.device_var = StringVar()
 
         self._build_ui()
         self.refresh_adapters()
@@ -324,7 +324,7 @@ class BtKeyGui(Tk):
         refresh_btn = ttk.Button(button_frame, text="Refresh", command=self.refresh_adapters)
         refresh_btn.grid(row=0, column=2, sticky="ew", padx=4)
 
-        self.status_var = ttk.StringVar()
+        self.status_var = StringVar()
         status = ttk.Label(main, textvariable=self.status_var, foreground="gray")
         status.grid(row=3, column=0, columnspan=2, sticky="w", **padding)
 
