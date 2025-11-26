@@ -616,11 +616,18 @@ class BluetoothKeyManagerApp(tk.Tk):
             return
 
         if (record.adapter_mac != selected_adapter_mac) or (record.device_mac != selected_device_mac):
-            messagebox.showerror(
-                "Import failed",
-                "The JSON key does not match the currently selected adapter/device.",
-            )
-            return
+            if not messagebox.askyesno(
+                "Confirm adapter/device mismatch",
+                (
+                    "The selected adapter/device differ from the JSON file.\n\n"
+                    f"Selected adapter: {selected_adapter_mac}\n"
+                    f"File adapter:     {record.adapter_mac}\n\n"
+                    f"Selected device:  {selected_device_mac}\n"
+                    f"File device:      {record.device_mac}\n\n"
+                    "Import using the adapter/device from the file?"
+                ),
+            ):
+                return
 
         try:
             key_bytes = bytes.fromhex(record.key_hex)
@@ -628,7 +635,10 @@ class BluetoothKeyManagerApp(tk.Tk):
             messagebox.showerror("Import failed", "key_hex is not valid hexadecimal data.")
             return
 
-        key_path = BT_KEYS_REG_PATH + "\\" + adapter["raw"]
+        record_adapter_raw = record.adapter_mac.replace(":", "").replace("-", "").lower()
+        record_device_raw = record.device_mac.replace(":", "").replace("-", "").lower()
+
+        key_path = BT_KEYS_REG_PATH + "\\" + record_adapter_raw
         try:
             with winreg.OpenKey(
                 winreg.HKEY_LOCAL_MACHINE,
@@ -636,7 +646,7 @@ class BluetoothKeyManagerApp(tk.Tk):
                 0,
                 winreg.KEY_SET_VALUE,
             ) as adap_key:
-                winreg.SetValueEx(adap_key, device["raw"], 0, winreg.REG_BINARY, key_bytes)
+                winreg.SetValueEx(adap_key, record_device_raw, 0, winreg.REG_BINARY, key_bytes)
         except PermissionError:
             messagebox.showerror(
                 "Permission error",
@@ -647,16 +657,18 @@ class BluetoothKeyManagerApp(tk.Tk):
         except FileNotFoundError:
             messagebox.showerror(
                 "Import failed",
-                "Registry path not found for the selected adapter. Ensure the device is paired first.",
+                "Registry path not found for the target adapter. Ensure the device is paired first.",
             )
             return
         except Exception as e:
             messagebox.showerror("Import failed", f"Unexpected error while writing key:\n\n{e}")
             return
 
+        display_device = device["name"] if record.device_mac == selected_device_mac else record.device_mac
+        display_adapter = adapter["mac"] if record.adapter_mac == selected_adapter_mac else record.adapter_mac
         messagebox.showinfo(
             "Import successful",
-            f"Imported key for {device['name']} ({device['mac']}) from:\n{filepath}",
+            f"Imported key for {display_device} on adapter {display_adapter} from:\n{filepath}",
         )
 
 
