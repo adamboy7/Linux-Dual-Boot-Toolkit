@@ -4,6 +4,7 @@ import ctypes
 import subprocess
 import shutil
 import json
+from datetime import datetime
 import tkinter as tk
 from tkinter import filedialog, ttk, messagebox
 from ctypes import wintypes
@@ -639,6 +640,102 @@ class BluetoothKeyManagerApp(tk.Tk):
         record_device_raw = record.device_mac.replace(":", "").replace("-", "").lower()
 
         key_path = BT_KEYS_REG_PATH + "\\" + record_adapter_raw
+        previous_value = None
+        previous_value_type = None
+        backup_path = None
+
+        # Read the existing registry value so it can be backed up and restored on failure
+        try:
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key_path, 0, winreg.KEY_READ) as adap_key:
+                try:
+                    prev_value, prev_type = winreg.QueryValueEx(adap_key, record_device_raw)
+                    previous_value = prev_value
+                    previous_value_type = prev_type
+                except FileNotFoundError:
+                    pass
+        except PermissionError:
+            messagebox.showerror(
+                "Permission error",
+                "Unable to read the existing Bluetooth key from the registry.\n\n"
+                "Make sure you are running this script as SYSTEM or with sufficient privileges.",
+            )
+            return
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            messagebox.showerror("Import failed", f"Unexpected error while reading existing key:\n\n{e}")
+            return
+
+        if previous_value is not None:
+            try:
+                backup_dir = os.path.dirname(filepath) or os.getcwd()
+                timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+                backup_filename = (
+                    f"bt_key_backup_{record_adapter_raw}_{record_device_raw}_{timestamp}.json"
+                )
+                backup_path = os.path.join(backup_dir, backup_filename)
+
+                if isinstance(previous_value, (bytes, bytearray)):
+                    backup_value = previous_value.hex()
+                    value_format = "hex"
+                else:
+                    backup_value = previous_value
+                    value_format = "literal"
+
+                backup_payload = {
+                    "key_path": key_path,
+                    "value_name": record_device_raw,
+                    "value_type": previous_value_type,
+                    "value_format": value_format,
+                    "value_data": backup_value,
+                    "created_at": timestamp,
+                }
+
+                with open(backup_path, "w", encoding="utf-8") as backup_file:
+                    json.dump(backup_payload, backup_file, indent=2)
+            except Exception as e:
+                messagebox.showerror(
+                    "Import failed",
+                    "Unable to create a backup of the existing registry value.\n\n"
+                    f"Error: {e}",
+                )
+                return
+
+        def restore_previous_value():
+            if previous_value is None:
+                return None
+            try:
+                with winreg.OpenKey(
+                    winreg.HKEY_LOCAL_MACHINE,
+                    key_path,
+                    0,
+                    winreg.KEY_SET_VALUE,
+                ) as adap_key:
+                    winreg.SetValueEx(
+                        adap_key,
+                        record_device_raw,
+                        0,
+                        previous_value_type if previous_value_type is not None else winreg.REG_BINARY,
+                        previous_value,
+                    )
+                return None
+            except Exception as restore_exc:
+                return restore_exc
+
+        def format_error_message(base_message: str, restore_error):
+            parts = [base_message]
+            if backup_path:
+                parts.append(f"Backup saved to: {backup_path}")
+            if previous_value is not None:
+                if restore_error is None:
+                    parts.append("Previous value was restored automatically.")
+                elif restore_error:
+                    parts.append(
+                        "Failed to restore the previous value automatically: "
+                        f"{restore_error}"
+                    )
+            return "\n\n".join(parts)
+
         try:
             with winreg.OpenKey(
                 winreg.HKEY_LOCAL_MACHINE,
@@ -648,27 +745,43 @@ class BluetoothKeyManagerApp(tk.Tk):
             ) as adap_key:
                 winreg.SetValueEx(adap_key, record_device_raw, 0, winreg.REG_BINARY, key_bytes)
         except PermissionError:
+            restore_error = restore_previous_value()
             messagebox.showerror(
                 "Permission error",
-                "Unable to write the Bluetooth key to the registry.\n\n"
-                "Make sure you are running this script as SYSTEM or with sufficient privileges.",
+                format_error_message(
+                    "Unable to write the Bluetooth key to the registry.\n\n"
+                    "Make sure you are running this script as SYSTEM or with sufficient privileges.",
+                    restore_error,
+                ),
             )
             return
         except FileNotFoundError:
+            restore_error = restore_previous_value()
             messagebox.showerror(
                 "Import failed",
-                "Registry path not found for the target adapter. Ensure the device is paired first.",
+                format_error_message(
+                    "Registry path not found for the target adapter. Ensure the device is paired first.",
+                    restore_error,
+                ),
             )
             return
         except Exception as e:
-            messagebox.showerror("Import failed", f"Unexpected error while writing key:\n\n{e}")
+            restore_error = restore_previous_value()
+            messagebox.showerror(
+                "Import failed",
+                format_error_message(
+                    f"Unexpected error while writing key:\n\n{e}",
+                    restore_error,
+                ),
+            )
             return
 
         display_device = device["name"] if record.device_mac == selected_device_mac else record.device_mac
         display_adapter = adapter["mac"] if record.adapter_mac == selected_adapter_mac else record.adapter_mac
+        backup_line = f"\nExisting registry value backed up to:\n{backup_path}" if backup_path else ""
         messagebox.showinfo(
             "Import successful",
-            f"Imported key for {display_device} on adapter {display_adapter} from:\n{filepath}",
+            f"Imported key for {display_device} on adapter {display_adapter} from:\n{filepath}{backup_line}",
         )
 
 
