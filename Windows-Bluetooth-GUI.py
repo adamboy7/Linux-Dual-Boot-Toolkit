@@ -14,6 +14,7 @@ import tkinter as tk
 from tkinter import filedialog, ttk, messagebox
 import winreg
 
+from libraries.backup_validation import parse_backup_payload, validate_backup_matches
 from libraries.bluetooth_utils import format_mac, normalize_mac, reload_bluetooth
 from libraries.bt_gui_logic import BtKeyRecord, bt_record_from_json_file, bt_record_to_json_file
 from libraries.permissions import ensure_platform_permissions
@@ -716,6 +717,14 @@ class BluetoothKeyManagerApp(tk.Tk):
                 )
 
     def restore_backup(self):
+        adapter = self._get_selected_adapter()
+        if adapter is None:
+            return
+
+        device = self.display_to_device.get(self.device_var.get())
+        if device is None:
+            self.set_status("No device selected; will infer device from backup metadata.")
+
         backups = self._find_backup_files()
 
         if backups:
@@ -743,64 +752,35 @@ class BluetoothKeyManagerApp(tk.Tk):
             return
 
         try:
-            with open(filepath, "r", encoding="utf-8") as f:
-                backup_payload = json.load(f)
+            expected_adapter = normalize_mac(adapter["mac"])
+            expected_device = normalize_mac(device["mac"]) if device else None
+        except ValueError as e:
+            messagebox.showerror("Restore failed", str(e))
+            return
+
+        try:
+            parsed_backup = parse_backup_payload(filepath)
+        except ValueError as e:
+            messagebox.showerror("Restore failed", str(e))
+            return
         except Exception as e:
             messagebox.showerror("Restore failed", f"Unable to read backup file:\n\n{e}")
             return
 
-        required_fields = ["key_path", "value_name", "value_type", "value_format", "value_data"]
-        missing = [f for f in required_fields if f not in backup_payload]
-        if missing:
-            messagebox.showerror(
-                "Restore failed",
-                f"Backup file is missing required field(s): {', '.join(missing)}",
-            )
+        if not validate_backup_matches(
+            expected_adapter,
+            expected_device or parsed_backup.payload.get("device_mac"),
+            filepath,
+            lambda msg, title=None: messagebox.showerror(title or "Restore blocked", msg),
+        ):
             return
 
-        key_path = backup_payload.get("key_path")
-        value_name = backup_payload.get("value_name")
-        value_type = backup_payload.get("value_type")
-        value_format = backup_payload.get("value_format")
-        value_data = backup_payload.get("value_data")
-        created_at = backup_payload.get("created_at")
-
-        if not isinstance(key_path, str) or not key_path.strip():
-            messagebox.showerror("Restore failed", "Backup key_path must be a non-empty string.")
-            return
-        if not isinstance(value_name, str) or not value_name.strip():
-            messagebox.showerror("Restore failed", "Backup value_name must be a non-empty string.")
-            return
-
-        try:
-            reg_type = int(value_type)
-        except Exception:
-            messagebox.showerror("Restore failed", "Backup value_type must be a valid integer.")
-            return
-
-        if value_format == "hex":
-            if not isinstance(value_data, str):
-                messagebox.showerror(
-                    "Restore failed",
-                    "Backup value_data must be a hexadecimal string when value_format is 'hex'.",
-                )
-                return
-            try:
-                reg_value = bytes.fromhex(value_data)
-            except ValueError:
-                messagebox.showerror(
-                    "Restore failed",
-                    "value_data is not valid hexadecimal data and cannot be restored.",
-                )
-                return
-        elif value_format == "literal":
-            reg_value = value_data
-        else:
-            messagebox.showerror(
-                "Restore failed",
-                "Unsupported value_format in backup file. Expected 'hex' or 'literal'.",
-                )
-            return
+        payload = parsed_backup.payload
+        key_path = payload["key_path"]
+        value_name = payload["value_name"]
+        reg_type = payload["reg_type"]
+        reg_value = payload["reg_value"]
+        created_at = payload["created_at"]
 
         try:
             with winreg.OpenKey(

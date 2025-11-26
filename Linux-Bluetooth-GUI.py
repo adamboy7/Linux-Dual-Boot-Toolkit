@@ -22,7 +22,6 @@ import glob
 import json
 import os
 import platform
-import re
 import shutil
 import subprocess
 import sys
@@ -30,6 +29,7 @@ import tempfile
 from datetime import datetime
 from dataclasses import dataclass
 
+from libraries.backup_validation import validate_backup_matches
 from libraries.bluetooth_utils import is_mac_dir_name, normalize_mac, reload_bluetooth
 from libraries.bt_gui_logic import BtKeyRecord
 from libraries.permissions import ensure_platform_permissions
@@ -847,6 +847,14 @@ class BtKeyGui(Gtk.Window):
                 f"Selected backup file not found:\n{selected_backup}",
                 title="Restore failed",
             )
+            return
+
+        if not validate_backup_matches(
+            adapter.mac,
+            device.mac,
+            selected_backup,
+            lambda msg, title=None: self._show_error_dialog(msg, title=title),
+        ):
             return
 
         if not self._ask_yes_no(
