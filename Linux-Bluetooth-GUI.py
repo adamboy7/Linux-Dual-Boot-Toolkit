@@ -24,8 +24,14 @@ import platform
 import sys
 from datetime import datetime
 
-from libraries.backup_validation import validate_backup_matches
+from libraries.backup_validation import (
+    extract_macs_from_info_content,
+    extract_macs_from_json_metadata,
+    extract_macs_from_path,
+    validate_backup_matches,
+)
 from libraries.bluetooth_utils import (
+    BASE_DIR,
     AdapterInfo,
     DeviceInfo,
     export_bt_key,
@@ -366,6 +372,20 @@ class BtKeyGui(Gtk.Window):
         chooser.destroy()
         return selected_backup
 
+    def _infer_macs_from_backup(self, backup_path: str) -> tuple[str | None, str | None]:
+        adapter_mac, device_mac = extract_macs_from_json_metadata(backup_path)
+
+        if adapter_mac is None or device_mac is None:
+            content_adapter, content_device = extract_macs_from_info_content(backup_path)
+            adapter_mac = adapter_mac or content_adapter
+            device_mac = device_mac or content_device
+
+        path_adapter, path_device = extract_macs_from_path(backup_path)
+        adapter_mac = adapter_mac or path_adapter
+        device_mac = device_mac or path_device
+
+        return adapter_mac, device_mac
+
     # ----- Callbacks -----
 
     def on_adapter_changed(self, combo: Gtk.ComboBox):
@@ -557,24 +577,15 @@ class BtKeyGui(Gtk.Window):
         if adapter is None:
             self._show_error_dialog("No adapter selected.")
             return
+
         if device is None:
-            self._show_error_dialog("No device selected.")
-            return
+            self.set_status("No device selected; will infer device from backup metadata.")
 
-        info_path = device.info_path
-
-        if not os.path.isfile(info_path):
-            self._show_error_dialog(
-                (
-                    f"BlueZ info file not found at {info_path}.\n"
-                    "Make sure the device has been paired once in Linux."
-                ),
-                title="Restore failed",
-            )
-            return
+        info_path = device.info_path if device else None
+        selected_device_mac = device.mac if device else None
 
         backup_files = self.backup_manager.find_backup_files()
-        if not backup_files:
+        if not backup_files and info_path:
             backup_files = list_backups(info_path)
 
         selected_backup: str | None = None
@@ -632,17 +643,45 @@ class BtKeyGui(Gtk.Window):
             return
 
         self.backup_manager.note_file_location(selected_backup)
+        _, inferred_device = self._infer_macs_from_backup(selected_backup)
+        target_device_mac = selected_device_mac or inferred_device
+
+        if target_device_mac is None:
+            self._show_error_dialog(
+                "Unable to determine the device MAC from the selection or backup metadata.",
+                title="Restore failed",
+            )
+            return
+
+        info_path = info_path or os.path.join(
+            BASE_DIR, adapter.mac, target_device_mac, "info"
+        )
 
         if not validate_backup_matches(
             adapter.mac,
-            device.mac,
+            target_device_mac,
             selected_backup,
             lambda msg, title=None: self._show_error_dialog(msg, title=title),
         ):
             return
 
+        os.makedirs(os.path.dirname(info_path), exist_ok=True)
+
+        if not os.path.exists(info_path):
+            try:
+                with open(info_path, "w", encoding="utf-8"):
+                    pass
+            except OSError as exc:
+                self._show_error_dialog(
+                    f"Failed to create BlueZ info file at {info_path}: {exc}",
+                    title="Restore failed",
+                )
+                return
+
+        target_label = device.name if device else target_device_mac
+
         if not self._ask_yes_no(
-            f"Restore backup for {device.name}?\n\n",
+            f"Restore backup for {target_label}?\n\n",
             f"This will overwrite the current info file with:\n{selected_backup}",
             title="Restore backup?",
         ):
@@ -655,10 +694,10 @@ class BtKeyGui(Gtk.Window):
             return
 
         self.set_status(
-            f"Restored backup for {device.name} from {selected_backup} to {info_path}"
+            f"Restored backup for {target_label} from {selected_backup} to {info_path}"
         )
         self._show_info_dialog(
-            f"Successfully restored backup for {device.name}.\n\n",
+            f"Successfully restored backup for {target_label}.\n\n",
             f"Backup file: {selected_backup}\n",
             f"Restored to: {info_path}",
             title="Restore successful",
