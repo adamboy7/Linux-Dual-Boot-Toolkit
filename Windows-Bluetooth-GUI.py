@@ -396,76 +396,100 @@ class BluetoothKeyManagerApp(tk.Tk):
     def __init__(self):
         super().__init__()
 
-        self.title("Bluetooth Key Manager")
-        self.geometry("580x220")
+        # Match Linux naming
+        self.title("Bluetooth Key Sync (Windows)")
         self.resizable(False, False)
 
         self.display_to_adapter = {}
         self.display_to_device = {}
 
+        self.status_var = tk.StringVar(value="")
+
         self._create_widgets()
         self._load_adapters()
 
     def _create_widgets(self):
-        padding = {"padx": 10, "pady": 5}
+        # Outer padding frame (similar feel to GTK border_width)
+        root = ttk.Frame(self, padding=(10, 10, 10, 10))
+        root.grid(row=0, column=0, sticky="nsew")
+
+        # Allow main column to stretch for combos/buttons
+        root.columnconfigure(1, weight=1)
 
         # Adapter row
-        lbl_adap = ttk.Label(self, text="Bluetooth adapter:")
-        lbl_adap.grid(row=0, column=0, sticky="w", **padding)
+        lbl_adap = ttk.Label(root, text="Adapter:")
+        lbl_adap.grid(row=0, column=0, sticky="w", padx=(0, 6), pady=(0, 5))
 
         self.adapter_var = tk.StringVar()
         self.adapter_combobox = ttk.Combobox(
-            self,
+            root,
             textvariable=self.adapter_var,
             state="readonly",
             width=45,
         )
-        self.adapter_combobox.grid(row=0, column=1, sticky="ew", **padding)
+        self.adapter_combobox.grid(row=0, column=1, sticky="ew", pady=(0, 5))
         self.adapter_combobox.bind("<<ComboboxSelected>>", self.on_adapter_selected)
 
         # Device row
-        lbl_dev = ttk.Label(self, text="Paired device:")
-        lbl_dev.grid(row=1, column=0, sticky="w", **padding)
+        lbl_dev = ttk.Label(root, text="Device:")
+        lbl_dev.grid(row=1, column=0, sticky="w", padx=(0, 6), pady=(0, 5))
 
         self.device_var = tk.StringVar()
         self.device_combobox = ttk.Combobox(
-            self,
+            root,
             textvariable=self.device_var,
             state="readonly",
             width=45,
         )
-        self.device_combobox.grid(row=1, column=1, sticky="ew", **padding)
+        self.device_combobox.grid(row=1, column=1, sticky="ew", pady=(0, 5))
         self.device_combobox.bind("<<ComboboxSelected>>", self.on_device_selected)
 
-        # Export/Import row
-        export_btn = ttk.Button(self, text="Export key to JSON…", command=self.export_key)
-        export_btn.grid(row=2, column=0, sticky="ew", padx=(10, 5), pady=(5, 0))
+        # Button row: export/import/restore (match Linux layout)
+        button_frame = ttk.Frame(root)
+        button_frame.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(5, 5))
+        button_frame.columnconfigure(0, weight=1)
+        button_frame.columnconfigure(1, weight=1)
+        button_frame.columnconfigure(2, weight=1)
 
-        import_btn = ttk.Button(self, text="Import key from JSON…", command=self.import_key)
-        import_btn.grid(row=2, column=1, sticky="ew", padx=(5, 10), pady=(5, 0))
+        export_btn = ttk.Button(button_frame, text="Export key to JSON…", command=self.export_key)
+        export_btn.grid(row=0, column=0, sticky="ew", padx=(0, 4))
 
-        restore_btn = ttk.Button(self, text="Restore backup…", command=self.restore_backup)
-        restore_btn.grid(row=3, column=0, sticky="ew", padx=(10, 5), pady=(5, 0))
+        import_btn = ttk.Button(button_frame, text="Import key from JSON…", command=self.import_key)
+        import_btn.grid(row=0, column=1, sticky="ew", padx=4)
 
-        # Buttons row: Refresh (left) and Exit (right)
-        refresh_btn = ttk.Button(self, text="Refresh", command=self.refresh_all)
-        refresh_btn.grid(row=4, column=0, sticky="e", padx=(10, 5), pady=(10, 10))
+        restore_btn = ttk.Button(button_frame, text="Restore backup…", command=self.restore_backup)
+        restore_btn.grid(row=0, column=2, sticky="ew", padx=(4, 0))
 
-        close_btn = ttk.Button(self, text="Exit", command=self.destroy)
-        close_btn.grid(row=4, column=1, sticky="w", padx=(5, 10), pady=(10, 10))
+        # Status row with Refresh + Exit on the right (Linux-style)
+        status_frame = ttk.Frame(root)
+        status_frame.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        status_frame.columnconfigure(0, weight=1)
 
-        # Allow combobox column to stretch
-        self.columnconfigure(1, weight=1)
+        status_label = ttk.Label(status_frame, textvariable=self.status_var)
+        status_label.grid(row=0, column=0, sticky="w")
+
+        refresh_btn = ttk.Button(status_frame, text="Refresh", command=self.refresh_all)
+        refresh_btn.grid(row=0, column=1, sticky="e", padx=(8, 4))
+
+        close_btn = ttk.Button(status_frame, text="Exit", command=self.destroy)
+        close_btn.grid(row=0, column=2, sticky="e")
+
+        # Make top-level frame expand if window is resized
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(0, weight=1)
+
+    def set_status(self, text: str):
+        self.status_var.set(text)
 
     def refresh_all(self):
         """Reload adapter and device lists from the registry."""
-        # Clear mappings and combo contents
         self.display_to_adapter.clear()
         self.display_to_device.clear()
         self.adapter_combobox["values"] = ()
         self.device_combobox["values"] = ()
         self.adapter_var.set("")
         self.device_var.set("")
+        self.set_status("")
         self._load_adapters()
 
     def _load_adapters(self):
@@ -482,6 +506,8 @@ class BluetoothKeyManagerApp(tk.Tk):
 
         display_values = []
         for adapter in adapters:
+            # Match Linux display: name first if we had one, but here we only
+            # know MAC + raw. Keep MAC prominent.
             display = f"{adapter['mac']} ({adapter['raw']})"
             self.display_to_adapter[display] = adapter
             display_values.append(display)
@@ -496,17 +522,18 @@ class BluetoothKeyManagerApp(tk.Tk):
         display = self.adapter_var.get()
         adapter = self.display_to_adapter.get(display)
 
-        # Load devices for this adapter
         self.display_to_device.clear()
         self.device_combobox["values"] = ()
         self.device_var.set("")
 
         if not adapter:
+            self.set_status("No adapter selected.")
             return
 
         devices = get_devices_for_adapter(adapter["raw"])
 
         if not devices:
+            self.set_status(f"No devices found for adapter {adapter['mac']}.")
             return
 
         dev_display_values = []
@@ -517,11 +544,11 @@ class BluetoothKeyManagerApp(tk.Tk):
 
         self.device_combobox["values"] = dev_display_values
         self.device_combobox.current(0)
+        self.set_status(f"Found {len(devices)} device(s) for adapter {adapter['mac']}.")
         self.on_device_selected()
 
     def on_device_selected(self, event=None):
-        # For now we don't need to display anything else when a device is selected,
-        # but we keep this hook so we can plug in export/import next.
+        # Hook left in case we want to show extra info later
         pass
 
     def _get_selected_adapter(self):
@@ -653,6 +680,7 @@ class BluetoothKeyManagerApp(tk.Tk):
             "Export successful",
             f"Exported key for {device['name']} ({device['mac']}) to:\n{filepath}",
         )
+        self.set_status(f"Exported key for {device['name']} to {filepath}")
 
     def import_key(self):
         adapter = self._get_selected_adapter()
@@ -847,6 +875,7 @@ class BluetoothKeyManagerApp(tk.Tk):
             "Import successful",
             f"Imported key for {display_device} on adapter {display_adapter} from:\n{filepath}{backup_line}",
         )
+        self.set_status(f"Imported key for {display_device} on {display_adapter}.")
 
     def restore_backup(self):
         backups = self._find_backup_files()
@@ -932,7 +961,7 @@ class BluetoothKeyManagerApp(tk.Tk):
             messagebox.showerror(
                 "Restore failed",
                 "Unsupported value_format in backup file. Expected 'hex' or 'literal'.",
-            )
+                )
             return
 
         try:
@@ -970,7 +999,7 @@ class BluetoothKeyManagerApp(tk.Tk):
             f"HKLM\\{key_path}\\{value_name}{created_line}\n\n"
             f"Source file:\n{filepath}",
         )
-
+        self.set_status("Restored registry value from backup.")
 
 def run_app():
     app = BluetoothKeyManagerApp()
