@@ -527,6 +527,10 @@ class BtKeyGui(Gtk.Window):
         self.refresh_button.connect("clicked", self.on_refresh_clicked)
         status_box.pack_start(self.refresh_button, False, False, 0)
 
+        self.exit_button = Gtk.Button(label="Exit")
+        self.exit_button.connect("clicked", Gtk.main_quit)
+        status_box.pack_start(self.exit_button, False, False, 0)
+
         # Populate adapters and select default
         self._populate_adapters()
 
