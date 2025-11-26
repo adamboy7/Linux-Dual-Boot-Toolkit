@@ -42,6 +42,10 @@ class BluetoothKeyManagerApp(tk.Tk):
         self.display_to_adapter = {}
         self.display_to_device = {}
 
+        # Track directories where the user is saving/loading files so we can
+        # discover backups created alongside them.
+        self.backup_search_dirs = [os.getcwd()]
+
         self.status_var = tk.StringVar(value="")
 
         self._create_widgets()
@@ -243,8 +247,22 @@ class BluetoothKeyManagerApp(tk.Tk):
         return device
 
     def _find_backup_files(self):
-        pattern = os.path.join(os.getcwd(), "bt_key_backup_*.json")
-        return sorted(glob.glob(pattern), key=os.path.getmtime, reverse=True)
+        found = []
+        seen_paths = set()
+
+        for directory in self.backup_search_dirs:
+            pattern = os.path.join(directory, "bt_key_backup_*.json")
+            for path in glob.glob(pattern):
+                if path not in seen_paths:
+                    seen_paths.add(path)
+                    found.append(path)
+
+        return sorted(found, key=os.path.getmtime, reverse=True)
+
+    def _note_file_location(self, filepath: str):
+        directory = os.path.dirname(filepath) or os.getcwd()
+        if directory not in self.backup_search_dirs:
+            self.backup_search_dirs.append(directory)
 
     def _prompt_for_backup_file(self, backups):
         selected = {"path": None}
@@ -333,6 +351,8 @@ class BluetoothKeyManagerApp(tk.Tk):
             messagebox.showerror("Export failed", f"Unable to write JSON file:\n\n{e}")
             return
 
+        self._note_file_location(filepath)
+
         messagebox.showinfo(
             "Export successful",
             f"Exported key for {device['name']} ({device['mac']}) to:\n{filepath}",
@@ -351,6 +371,8 @@ class BluetoothKeyManagerApp(tk.Tk):
         )
         if not filepath:
             return
+
+        self._note_file_location(filepath)
 
         try:
             record = bt_record_from_json_file(filepath)
@@ -442,6 +464,8 @@ class BluetoothKeyManagerApp(tk.Tk):
 
                 with open(backup_path, "w", encoding="utf-8") as backup_file:
                     json.dump(backup_payload, backup_file, indent=2)
+
+                self._note_file_location(backup_path)
             except Exception as e:
                 messagebox.showerror(
                     "Import failed",
