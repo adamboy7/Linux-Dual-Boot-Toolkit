@@ -1,11 +1,17 @@
-import sys
 import os
+import platform
+import sys
+
+if platform.system() != "Windows":
+    print("This helper currently only supports Windows.")
+    sys.exit(1)
+
 import ctypes
-import subprocess
 import shutil
+import subprocess
 import tkinter as tk
-from tkinter import messagebox
 from ctypes import wintypes
+from tkinter import messagebox
 
 SYSTEM_FLAG = "--launched-as-system"
 
