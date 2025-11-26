@@ -3,9 +3,11 @@ import os
 import ctypes
 import subprocess
 import shutil
+import json
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import filedialog, ttk, messagebox
 from ctypes import wintypes
+from dataclasses import dataclass
 import winreg
 import traceback
 
@@ -15,6 +17,54 @@ SYSTEM_FLAG = "--launched-as-system"
 
 BT_KEYS_REG_PATH = r"SYSTEM\CurrentControlSet\Services\BTHPORT\Parameters\Keys"
 BT_DEVICES_REG_PATH = r"SYSTEM\CurrentControlSet\Services\BTHPORT\Parameters\Devices"
+
+
+@dataclass
+class BtKeyRecord:
+    adapter_mac: str
+    device_mac: str
+    key_hex: str
+
+    def to_dict(self):
+        return {
+            "adapter_mac": self.adapter_mac,
+            "device_mac": self.device_mac,
+            "key_hex": self.key_hex,
+        }
+
+    @classmethod
+    def from_dict(cls, data):
+        if not isinstance(data, dict):
+            raise ValueError("JSON must be an object with adapter_mac, device_mac, and key_hex.")
+
+        required_fields = ["adapter_mac", "device_mac", "key_hex"]
+        missing = [f for f in required_fields if f not in data]
+        if missing:
+            raise ValueError(f"Missing required field(s): {', '.join(missing)}")
+
+        adapter_mac = data["adapter_mac"]
+        device_mac = data["device_mac"]
+        key_hex = data["key_hex"]
+
+        for name, value in (
+            ("adapter_mac", adapter_mac),
+            ("device_mac", device_mac),
+            ("key_hex", key_hex),
+        ):
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"Field '{name}' must be a non-empty string.")
+
+        key_hex_clean = key_hex.strip()
+        if len(key_hex_clean) % 2 != 0:
+            raise ValueError("key_hex must have an even number of hexadecimal characters.")
+        if not all(c in "0123456789abcdefABCDEF" for c in key_hex_clean):
+            raise ValueError("key_hex must contain only hexadecimal characters (0-9, A-F).")
+
+        return cls(
+            adapter_mac=normalize_mac(adapter_mac),
+            device_mac=normalize_mac(device_mac),
+            key_hex=key_hex_clean.upper(),
+        )
 
 
 def format_mac(raw_key_name: str) -> str:
@@ -28,6 +78,26 @@ def format_mac(raw_key_name: str) -> str:
     s = s.lower()
     parts = [s[i:i + 2] for i in range(0, 12, 2)]
     return ":".join(p.upper() for p in parts)
+
+
+def normalize_mac(mac: str) -> str:
+    """Normalize MAC to AA:BB:CC:DD:EE:FF."""
+    cleaned = mac.replace(":", "").replace("-", "").strip()
+    if len(cleaned) != 12:
+        raise ValueError(f"Invalid MAC address: {mac}")
+    parts = [cleaned[i:i + 2] for i in range(0, 12, 2)]
+    return ":".join(p.upper() for p in parts)
+
+
+def bt_record_to_json_file(record: BtKeyRecord, path: str):
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(record.to_dict(), f, indent=2)
+
+
+def bt_record_from_json_file(path: str) -> BtKeyRecord:
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    return BtKeyRecord.from_dict(data)
 
 
 def get_bluetooth_adapters():
@@ -286,11 +356,16 @@ def get_devices_for_adapter(adapter_raw: str):
 
                 device_mac_raw = value[0]  # value name
                 device_name = get_device_display_name(device_mac_raw)
+                key_hex = None
+                value_data = value[1]
+                if isinstance(value_data, bytes):
+                    key_hex = value_data.hex().upper()
 
                 devices.append({
                     "raw": device_mac_raw,
                     "mac": format_mac(device_mac_raw),
                     "name": device_name,
+                    "key_hex": key_hex,
                 })
 
                 index += 1
@@ -320,7 +395,7 @@ class BluetoothKeyManagerApp(tk.Tk):
         super().__init__()
 
         self.title("Bluetooth Key Manager")
-        self.geometry("550x170")
+        self.geometry("580x220")
         self.resizable(False, False)
 
         self.display_to_adapter = {}
@@ -360,12 +435,19 @@ class BluetoothKeyManagerApp(tk.Tk):
         self.device_combobox.grid(row=1, column=1, sticky="ew", **padding)
         self.device_combobox.bind("<<ComboboxSelected>>", self.on_device_selected)
 
+        # Export/Import row
+        export_btn = ttk.Button(self, text="Export key to JSON…", command=self.export_key)
+        export_btn.grid(row=2, column=0, sticky="ew", padx=(10, 5), pady=(5, 0))
+
+        import_btn = ttk.Button(self, text="Import key from JSON…", command=self.import_key)
+        import_btn.grid(row=2, column=1, sticky="ew", padx=(5, 10), pady=(5, 0))
+
         # Buttons row: Refresh (left) and Exit (right)
         refresh_btn = ttk.Button(self, text="Refresh", command=self.refresh_all)
-        refresh_btn.grid(row=2, column=0, sticky="e", padx=(10, 5), pady=(10, 10))
+        refresh_btn.grid(row=3, column=0, sticky="e", padx=(10, 5), pady=(10, 10))
 
         close_btn = ttk.Button(self, text="Exit", command=self.destroy)
-        close_btn.grid(row=2, column=1, sticky="w", padx=(5, 10), pady=(10, 10))
+        close_btn.grid(row=3, column=1, sticky="w", padx=(5, 10), pady=(10, 10))
 
         # Allow combobox column to stretch
         self.columnconfigure(1, weight=1)
@@ -436,6 +518,146 @@ class BluetoothKeyManagerApp(tk.Tk):
         # For now we don't need to display anything else when a device is selected,
         # but we keep this hook so we can plug in export/import next.
         pass
+
+    def _get_selected_adapter(self):
+        display = self.adapter_var.get()
+        adapter = self.display_to_adapter.get(display)
+        if not adapter:
+            messagebox.showerror("No adapter selected", "Please select a Bluetooth adapter.")
+            return None
+        return adapter
+
+    def _get_selected_device(self):
+        display = self.device_var.get()
+        device = self.display_to_device.get(display)
+        if not device:
+            messagebox.showerror("No device selected", "Please select a paired device.")
+            return None
+        return device
+
+    def _read_device_key_hex(self, adapter_raw: str, device_raw: str) -> str:
+        key_path = BT_KEYS_REG_PATH + "\\" + adapter_raw
+        try:
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key_path) as adap_key:
+                value_data, _ = winreg.QueryValueEx(adap_key, device_raw)
+        except FileNotFoundError:
+            raise RuntimeError("Bluetooth key not found in registry for the selected device.")
+        except PermissionError:
+            raise PermissionError(
+                "Unable to read the Bluetooth key from the registry.\n"
+                "Try running this script as SYSTEM or with elevated privileges."
+            )
+
+        if not isinstance(value_data, (bytes, bytearray)):
+            raise RuntimeError("Unexpected registry data type for the Bluetooth key.")
+
+        return bytes(value_data).hex().upper()
+
+    def export_key(self):
+        adapter = self._get_selected_adapter()
+        device = self._get_selected_device()
+        if not adapter or not device:
+            return
+
+        try:
+            key_hex = self._read_device_key_hex(adapter["raw"], device["raw"])
+            record = BtKeyRecord(
+                adapter_mac=format_mac(adapter["raw"]),
+                device_mac=format_mac(device["raw"]),
+                key_hex=key_hex,
+            )
+        except Exception as e:
+            messagebox.showerror("Export failed", str(e))
+            return
+
+        filepath = filedialog.asksaveasfilename(
+            title="Export key to JSON",
+            defaultextension=".json",
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
+        )
+        if not filepath:
+            return
+
+        try:
+            bt_record_to_json_file(record, filepath)
+        except Exception as e:
+            messagebox.showerror("Export failed", f"Unable to write JSON file:\n\n{e}")
+            return
+
+        messagebox.showinfo(
+            "Export successful",
+            f"Exported key for {device['name']} ({device['mac']}) to:\n{filepath}",
+        )
+
+    def import_key(self):
+        adapter = self._get_selected_adapter()
+        device = self._get_selected_device()
+        if not adapter or not device:
+            return
+
+        filepath = filedialog.askopenfilename(
+            title="Import key from JSON",
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
+        )
+        if not filepath:
+            return
+
+        try:
+            record = bt_record_from_json_file(filepath)
+        except Exception as e:
+            messagebox.showerror("Import failed", f"Invalid JSON file:\n\n{e}")
+            return
+
+        try:
+            selected_adapter_mac = normalize_mac(format_mac(adapter["raw"]))
+            selected_device_mac = normalize_mac(format_mac(device["raw"]))
+        except ValueError as e:
+            messagebox.showerror("Import failed", str(e))
+            return
+
+        if (record.adapter_mac != selected_adapter_mac) or (record.device_mac != selected_device_mac):
+            messagebox.showerror(
+                "Import failed",
+                "The JSON key does not match the currently selected adapter/device.",
+            )
+            return
+
+        try:
+            key_bytes = bytes.fromhex(record.key_hex)
+        except ValueError:
+            messagebox.showerror("Import failed", "key_hex is not valid hexadecimal data.")
+            return
+
+        key_path = BT_KEYS_REG_PATH + "\\" + adapter["raw"]
+        try:
+            with winreg.OpenKey(
+                winreg.HKEY_LOCAL_MACHINE,
+                key_path,
+                0,
+                winreg.KEY_SET_VALUE,
+            ) as adap_key:
+                winreg.SetValueEx(adap_key, device["raw"], 0, winreg.REG_BINARY, key_bytes)
+        except PermissionError:
+            messagebox.showerror(
+                "Permission error",
+                "Unable to write the Bluetooth key to the registry.\n\n"
+                "Make sure you are running this script as SYSTEM or with sufficient privileges.",
+            )
+            return
+        except FileNotFoundError:
+            messagebox.showerror(
+                "Import failed",
+                "Registry path not found for the selected adapter. Ensure the device is paired first.",
+            )
+            return
+        except Exception as e:
+            messagebox.showerror("Import failed", f"Unexpected error while writing key:\n\n{e}")
+            return
+
+        messagebox.showinfo(
+            "Import successful",
+            f"Imported key for {device['name']} ({device['mac']}) from:\n{filepath}",
+        )
 
 
 def run_app():
