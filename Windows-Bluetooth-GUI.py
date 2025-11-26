@@ -15,203 +15,20 @@ from tkinter import filedialog, ttk, messagebox
 import winreg
 
 from libraries.backup_validation import parse_backup_payload, validate_backup_matches
-from libraries.bluetooth_utils import format_mac, normalize_mac, reload_bluetooth
+from libraries.bluetooth_utils import (
+    WIN_BT_KEYS_REG_PATH,
+    format_mac,
+    get_bluetooth_adapters,
+    get_devices_for_adapter,
+    normalize_mac,
+    read_device_key_hex,
+    reload_bluetooth,
+)
 from libraries.bt_gui_logic import BtKeyRecord, bt_record_from_json_file, bt_record_to_json_file
 from libraries.permissions import ensure_platform_permissions
 
 
 SYSTEM_FLAG = "--launched-as-system"
-
-
-BT_KEYS_REG_PATH = r"SYSTEM\CurrentControlSet\Services\BTHPORT\Parameters\Keys"
-BT_DEVICES_REG_PATH = r"SYSTEM\CurrentControlSet\Services\BTHPORT\Parameters\Devices"
-
-
-def get_bluetooth_adapters():
-    """
-    Enumerate Bluetooth adapters from the registry.
-
-    Returns a list of dicts:
-    [
-        {"raw": "001a7dda710b", "mac": "00:1A:7D:DA:71:0B"},
-        ...
-    ]
-    """
-    adapters = []
-
-    try:
-        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, BT_KEYS_REG_PATH) as key:
-            index = 0
-            while True:
-                try:
-                    subkey_name = winreg.EnumKey(key, index)
-                except OSError:
-                    break
-
-                adapters.append({
-                    "raw": subkey_name,
-                    "mac": format_mac(subkey_name),
-                })
-                index += 1
-
-    except FileNotFoundError:
-        return adapters
-    except PermissionError:
-        messagebox.showerror(
-            "Permission error",
-            "Unable to read Bluetooth keys from the registry.\n\n"
-            "Make sure you are running this script as SYSTEM or with "
-            "sufficient privileges."
-        )
-    except Exception:
-        messagebox.showerror(
-            "Error",
-            "Unexpected error while reading Bluetooth adapters:\n\n"
-            + traceback.format_exc()
-        )
-
-    return adapters
-
-
-def _decode_bt_name(raw_value):
-    """
-    Decode Bluetooth name bytes to a Python string.
-
-    Some devices store UTF-16-LE, others store ASCII/UTF-8 bytes.
-    We heuristically detect UTF-16; otherwise we treat it as single-byte text.
-    """
-    if isinstance(raw_value, bytes):
-        if not raw_value or all(b == 0 for b in raw_value):
-            return ""
-
-        # Heuristic: UTF-16-LE typically has 0x00 in every second byte
-        is_even_len = (len(raw_value) % 2 == 0)
-        zero_on_odd = sum(
-            1 for i in range(1, len(raw_value), 2) if raw_value[i] == 0
-        )
-        looks_utf16 = is_even_len and zero_on_odd >= len(raw_value) // 4
-
-        if looks_utf16:
-            try:
-                s = raw_value.decode("utf-16-le", errors="ignore")
-            except Exception:
-                s = ""
-        else:
-            # Try UTF-8 first, then fall back to Windows ANSI (mbcs)
-            try:
-                s = raw_value.decode("utf-8", errors="ignore")
-            except Exception:
-                try:
-                    s = raw_value.decode("mbcs", errors="ignore")
-                except Exception:
-                    s = ""
-
-        return s.rstrip("\x00").strip()
-
-    elif isinstance(raw_value, str):
-        return raw_value.strip()
-
-    return ""
-
-
-def get_device_display_name(device_mac_raw: str) -> str:
-    """
-    For a given device MAC (raw, e.g. 'd08a553113c1'), look up its
-    FriendlyName or Name in the Devices tree.
-
-    Fallback order:
-      FriendlyName (if non-zero) -> Name (if non-zero) -> formatted MAC
-    """
-    key_path = BT_DEVICES_REG_PATH + "\\" + device_mac_raw
-    formatted_mac = format_mac(device_mac_raw)
-
-    try:
-        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key_path) as dev_key:
-            # Try FriendlyName first
-            for value_name in ("FriendlyName", "Name"):
-                try:
-                    raw_value, _ = winreg.QueryValueEx(dev_key, value_name)
-                except FileNotFoundError:
-                    continue
-
-                decoded = _decode_bt_name(raw_value)
-                if decoded:
-                    return decoded
-
-    except FileNotFoundError:
-        # No Devices entry; fall back to MAC
-        pass
-    except PermissionError:
-        # Silent; overall logic will still work with MAC as fallback
-        pass
-    except Exception:
-        # Don't hard-fail the whole UI; just log to a dialog once.
-        traceback.print_exc()
-
-    return formatted_mac
-
-
-def get_devices_for_adapter(adapter_raw: str):
-    """
-    Enumerate devices paired to a given adapter.
-
-    Returns a list of dicts:
-    [
-        {
-            "raw": "d08a553113c1",
-            "mac": "D0:8A:55:31:13:C1",
-            "name": "Hesh 2 Wireless"
-        },
-        ...
-    ]
-    """
-    devices = []
-
-    key_path = BT_KEYS_REG_PATH + "\\" + adapter_raw
-
-    try:
-        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key_path) as adap_key:
-            index = 0
-            while True:
-                try:
-                    value = winreg.EnumValue(adap_key, index)
-                except OSError:
-                    break
-
-                device_mac_raw = value[0]  # value name
-                device_name = get_device_display_name(device_mac_raw)
-                key_hex = None
-                value_data = value[1]
-                if isinstance(value_data, bytes):
-                    key_hex = value_data.hex().upper()
-
-                devices.append({
-                    "raw": device_mac_raw,
-                    "mac": format_mac(device_mac_raw),
-                    "name": device_name,
-                    "key_hex": key_hex,
-                })
-
-                index += 1
-
-    except FileNotFoundError:
-        # No devices for this adapter
-        pass
-    except PermissionError:
-        messagebox.showerror(
-            "Permission error",
-            "Unable to read Bluetooth device keys from the registry.\n\n"
-            "Make sure you are running this script as SYSTEM or with "
-            "sufficient privileges."
-        )
-    except Exception:
-        messagebox.showerror(
-            "Error",
-            "Unexpected error while reading Bluetooth devices:\n\n"
-            + traceback.format_exc()
-        )
-
-    return devices
 
 
 class BluetoothKeyManagerApp(tk.Tk):
@@ -315,13 +132,31 @@ class BluetoothKeyManagerApp(tk.Tk):
         self._load_adapters()
 
     def _load_adapters(self):
-        adapters = get_bluetooth_adapters()
+        try:
+            adapters = get_bluetooth_adapters()
+        except PermissionError:
+            messagebox.showerror(
+                "Permission error",
+                "Unable to read Bluetooth keys from the registry.\n\n"
+                "Make sure you are running this script as SYSTEM or with "
+                "sufficient privileges."
+            )
+            self.after(100, self.destroy)
+            return
+        except Exception:
+            messagebox.showerror(
+                "Error",
+                "Unexpected error while reading Bluetooth adapters:\n\n"
+                + traceback.format_exc(),
+            )
+            self.after(100, self.destroy)
+            return
 
         if not adapters:
             messagebox.showerror(
                 "No adapters found",
                 "No Bluetooth adapter keys were found under:\n\n"
-                f"HKLM\\{BT_KEYS_REG_PATH}"
+                f"HKLM\\{WIN_BT_KEYS_REG_PATH}"
             )
             self.after(100, self.destroy)
             return
@@ -352,7 +187,25 @@ class BluetoothKeyManagerApp(tk.Tk):
             self.set_status("No adapter selected.")
             return
 
-        devices = get_devices_for_adapter(adapter["raw"])
+        try:
+            devices = get_devices_for_adapter(adapter["raw"])
+        except FileNotFoundError:
+            devices = []
+        except PermissionError:
+            messagebox.showerror(
+                "Permission error",
+                "Unable to read Bluetooth device keys from the registry.\n\n"
+                "Make sure you are running this script as SYSTEM or with "
+                "sufficient privileges."
+            )
+            return
+        except Exception:
+            messagebox.showerror(
+                "Error",
+                "Unexpected error while reading Bluetooth devices:\n\n"
+                + traceback.format_exc(),
+            )
+            return
 
         if not devices:
             self.set_status(f"No devices found for adapter {adapter['mac']}.")
@@ -449,24 +302,6 @@ class BluetoothKeyManagerApp(tk.Tk):
         self.wait_window(dialog)
         return selected["path"]
 
-    def _read_device_key_hex(self, adapter_raw: str, device_raw: str) -> str:
-        key_path = BT_KEYS_REG_PATH + "\\" + adapter_raw
-        try:
-            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key_path) as adap_key:
-                value_data, _ = winreg.QueryValueEx(adap_key, device_raw)
-        except FileNotFoundError:
-            raise RuntimeError("Bluetooth key not found in registry for the selected device.")
-        except PermissionError:
-            raise PermissionError(
-                "Unable to read the Bluetooth key from the registry.\n"
-                "Try running this script as SYSTEM or with elevated privileges."
-            )
-
-        if not isinstance(value_data, (bytes, bytearray)):
-            raise RuntimeError("Unexpected registry data type for the Bluetooth key.")
-
-        return bytes(value_data).hex().upper()
-
     def export_key(self):
         adapter = self._get_selected_adapter()
         device = self._get_selected_device()
@@ -474,7 +309,7 @@ class BluetoothKeyManagerApp(tk.Tk):
             return
 
         try:
-            key_hex = self._read_device_key_hex(adapter["raw"], device["raw"])
+            key_hex = read_device_key_hex(adapter["raw"], device["raw"])
             record = BtKeyRecord(
                 adapter_mac=format_mac(adapter["raw"]),
                 device_mac=format_mac(device["raw"]),
@@ -553,7 +388,7 @@ class BluetoothKeyManagerApp(tk.Tk):
         record_adapter_raw = record.adapter_mac.replace(":", "").replace("-", "").lower()
         record_device_raw = record.device_mac.replace(":", "").replace("-", "").lower()
 
-        key_path = BT_KEYS_REG_PATH + "\\" + record_adapter_raw
+        key_path = WIN_BT_KEYS_REG_PATH + "\\" + record_adapter_raw
         previous_value = None
         previous_value_type = None
         backup_path = None

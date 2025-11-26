@@ -19,8 +19,6 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from .backup_validation import parse_backup_payload, validate_backup_matches
-
 if TYPE_CHECKING:  # Avoid runtime circular imports
     from .bt_gui_logic import BtKeyRecord
 
@@ -142,6 +140,175 @@ def reload_bluetooth() -> tuple[bool, str]:
         return False, "; ".join(errors)
 
     return False, f"Bluetooth reload unsupported on platform: {current_platform}"
+
+
+# --------------------------- Windows helpers ---------------------------
+
+
+WIN_BT_KEYS_REG_PATH = r"SYSTEM\CurrentControlSet\Services\BTHPORT\Parameters\Keys"
+WIN_BT_DEVICES_REG_PATH = r"SYSTEM\CurrentControlSet\Services\BTHPORT\Parameters\Devices"
+
+
+def _ensure_winreg():
+    try:
+        import winreg  # type: ignore
+    except ModuleNotFoundError as exc:  # pragma: no cover - only on non-Windows
+        raise OSError("winreg is only available on Windows.") from exc
+    return winreg
+
+
+def decode_bt_name(raw_value) -> str:
+    """Decode Bluetooth name bytes to a human-friendly string.
+
+    Some devices store UTF-16-LE, others store ASCII/UTF-8 bytes. We heuristically
+    detect UTF-16; otherwise we treat it as single-byte text.
+    """
+
+    if isinstance(raw_value, bytes):
+        if not raw_value or all(b == 0 for b in raw_value):
+            return ""
+
+        # Heuristic: UTF-16-LE typically has 0x00 in every second byte
+        is_even_len = (len(raw_value) % 2 == 0)
+        zero_on_odd = sum(
+            1 for i in range(1, len(raw_value), 2) if raw_value[i] == 0
+        )
+        looks_utf16 = is_even_len and zero_on_odd >= len(raw_value) // 4
+
+        if looks_utf16:
+            try:
+                s = raw_value.decode("utf-16-le", errors="ignore")
+            except Exception:
+                s = ""
+        else:
+            try:
+                s = raw_value.decode("utf-8", errors="ignore")
+            except Exception:
+                try:
+                    s = raw_value.decode("mbcs", errors="ignore")
+                except Exception:
+                    s = ""
+
+        return s.rstrip("\x00").strip()
+
+    if isinstance(raw_value, str):
+        return raw_value.strip()
+
+    return ""
+
+
+def get_device_display_name(device_mac_raw: str) -> str:
+    """
+    Look up a device name under the Bluetooth registry Devices tree.
+
+    Fallback order: ``FriendlyName`` (if non-zero) -> ``Name`` (if non-zero)
+    -> formatted MAC.
+    """
+
+    winreg = _ensure_winreg()
+
+    key_path = WIN_BT_DEVICES_REG_PATH + "\\" + device_mac_raw
+    formatted_mac = format_mac(device_mac_raw)
+
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key_path) as dev_key:
+            for value_name in ("FriendlyName", "Name"):
+                try:
+                    raw_value, _ = winreg.QueryValueEx(dev_key, value_name)
+                except FileNotFoundError:
+                    continue
+
+                decoded = decode_bt_name(raw_value)
+                if decoded:
+                    return decoded
+
+    except FileNotFoundError:
+        pass
+    except PermissionError:
+        pass
+
+    return formatted_mac
+
+
+def get_windows_bluetooth_adapters():
+    """Enumerate Bluetooth adapters from the registry (Windows only)."""
+
+    winreg = _ensure_winreg()
+    adapters = []
+
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, WIN_BT_KEYS_REG_PATH) as key:
+            index = 0
+            while True:
+                try:
+                    subkey_name = winreg.EnumKey(key, index)
+                except OSError:
+                    break
+
+                adapters.append(
+                    {
+                        "raw": subkey_name,
+                        "mac": format_mac(subkey_name),
+                    }
+                )
+                index += 1
+
+    except FileNotFoundError:
+        return adapters
+
+    return adapters
+
+
+def get_windows_devices_for_adapter(adapter_raw: str):
+    """Enumerate devices paired to a given adapter (Windows only)."""
+
+    winreg = _ensure_winreg()
+    devices = []
+
+    key_path = WIN_BT_KEYS_REG_PATH + "\\" + adapter_raw
+
+    with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key_path) as adap_key:
+        index = 0
+        while True:
+            try:
+                value = winreg.EnumValue(adap_key, index)
+            except OSError:
+                break
+
+            device_mac_raw = value[0]  # value name
+            device_name = get_device_display_name(device_mac_raw)
+            key_hex = None
+            value_data = value[1]
+            if isinstance(value_data, bytes):
+                key_hex = value_data.hex().upper()
+
+            devices.append(
+                {
+                    "raw": device_mac_raw,
+                    "mac": format_mac(device_mac_raw),
+                    "name": device_name,
+                    "key_hex": key_hex,
+                }
+            )
+
+            index += 1
+
+    return devices
+
+
+def read_device_key_hex(adapter_raw: str, device_raw: str) -> str:
+    """Read a device key from the registry and return it as uppercase hex."""
+
+    winreg = _ensure_winreg()
+    key_path = WIN_BT_KEYS_REG_PATH + "\\" + adapter_raw
+
+    with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key_path) as adap_key:
+        value_data, _ = winreg.QueryValueEx(adap_key, device_raw)
+
+    if not isinstance(value_data, (bytes, bytearray)):
+        raise RuntimeError("Unexpected registry data type for the Bluetooth key.")
+
+    return bytes(value_data).hex().upper()
 
 
 # --------------------------- Linux helpers ---------------------------
@@ -355,13 +522,19 @@ def list_backups(info_path: str) -> list[str]:
 
 
 def restore_backup(info_path: str, backup_path: str):
-    payload = parse_backup_payload(backup_path)
+    from . import backup_validation
+
+    payload = backup_validation.parse_backup_payload(backup_path)
     if payload:
-        validate_backup_matches(payload, expected_adapter=None, expected_device=None)
+        backup_validation.validate_backup_matches(
+            expected_adapter=None,
+            expected_device=None,
+            backup_path=backup_path,
+        )
     shutil.copy2(backup_path, info_path)
 
 
-def get_bluetooth_adapters(*, base_dir: str = BASE_DIR) -> list[AdapterInfo]:
+def get_linux_bluetooth_adapters(*, base_dir: str = BASE_DIR) -> list[AdapterInfo]:
     adapters: list[AdapterInfo] = []
     if not os.path.isdir(base_dir):
         return adapters
@@ -414,10 +587,10 @@ def get_bluetooth_adapters(*, base_dir: str = BASE_DIR) -> list[AdapterInfo]:
 
 # Backwards compatibility
 def find_adapters(*, base_dir: str = BASE_DIR) -> list[AdapterInfo]:
-    return get_bluetooth_adapters(base_dir=base_dir)
+    return get_linux_bluetooth_adapters(base_dir=base_dir)
 
 
-def get_devices_for_adapter(adapter: AdapterInfo) -> list[DeviceInfo]:
+def get_linux_devices_for_adapter(adapter: AdapterInfo) -> list[DeviceInfo]:
     devices: list[DeviceInfo] = []
     if not os.path.isdir(adapter.path):
         return devices
@@ -450,13 +623,46 @@ def get_devices_for_adapter(adapter: AdapterInfo) -> list[DeviceInfo]:
     return devices
 
 
+# --------------------------- Cross-platform dispatchers ---------------------------
+
+
+def get_bluetooth_adapters(*, base_dir: str = BASE_DIR):
+    """Return Bluetooth adapters using platform-specific discovery."""
+
+    if platform.system() == "Windows":
+        return get_windows_bluetooth_adapters()
+
+    return get_linux_bluetooth_adapters(base_dir=base_dir)
+
+
+def get_devices_for_adapter(adapter):
+    """Return devices paired to the given adapter using platform rules."""
+
+    if platform.system() == "Windows":
+        raw = adapter
+        if isinstance(adapter, dict):
+            raw = adapter.get("raw")
+        if not isinstance(raw, str):
+            raise TypeError("Expected adapter raw string or mapping with 'raw' key")
+        return get_windows_devices_for_adapter(raw)
+
+    if not isinstance(adapter, AdapterInfo):
+        raise TypeError("Expected AdapterInfo for Linux adapters")
+
+    return get_linux_devices_for_adapter(adapter)
+
+
 __all__ = [
     "AdapterInfo",
     "DeviceInfo",
     "find_adapters",
     "format_mac",
     "get_bluetooth_adapters",
+    "get_linux_bluetooth_adapters",
+    "get_linux_devices_for_adapter",
     "get_devices_for_adapter",
+    "get_windows_bluetooth_adapters",
+    "get_windows_devices_for_adapter",
     "export_bt_key",
     "import_bt_key",
     "is_mac_dir_name",
