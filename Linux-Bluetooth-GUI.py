@@ -438,7 +438,8 @@ class BtKeyGui(Gtk.Window):
         dialog.run()
         dialog.destroy()
 
-    def _show_info_dialog(self, message: str, title: str = "Info"):
+    def _show_info_dialog(self, *messages: str, title: str = "Info"):
+        message = "".join(messages) if len(messages) > 1 else (messages[0] if messages else "")
         dialog = Gtk.MessageDialog(
             transient_for=self,
             flags=0,
