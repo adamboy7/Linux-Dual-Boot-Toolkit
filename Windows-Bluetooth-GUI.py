@@ -1,11 +1,186 @@
+import os
+import platform
+import subprocess
+import sys
 import tkinter as tk
 from tkinter import ttk, messagebox
-import winreg
 import traceback
+import ctypes
+from ctypes import wintypes
+import shutil
+
+
+if platform.system() != "Windows":
+    print("This tool can only be run on Windows.")
+    sys.exit(1)
+
+import winreg
 
 
 BT_KEYS_REG_PATH = r"SYSTEM\CurrentControlSet\Services\BTHPORT\Parameters\Keys"
 BT_DEVICES_REG_PATH = r"SYSTEM\CurrentControlSet\Services\BTHPORT\Parameters\Devices"
+
+# Constants for privilege detection
+TOKEN_QUERY = 0x0008
+TokenUser = 1
+LOCAL_SYSTEM_SID = "S-1-5-18"
+
+
+class SID_AND_ATTRIBUTES(ctypes.Structure):
+    _fields_ = [
+        ("Sid", wintypes.LPVOID),
+        ("Attributes", wintypes.DWORD),
+    ]
+
+
+class TOKEN_USER(ctypes.Structure):
+    _fields_ = [("User", SID_AND_ATTRIBUTES)]
+
+
+def _get_current_user_sid():
+    """Return the SID of the current process token as a string, or None on error."""
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+    token = wintypes.HANDLE()
+    if not advapi32.OpenProcessToken(kernel32.GetCurrentProcess(), TOKEN_QUERY, ctypes.byref(token)):
+        return None
+
+    try:
+        needed = wintypes.DWORD()
+        advapi32.GetTokenInformation(token, TokenUser, None, 0, ctypes.byref(needed))
+        buf = ctypes.create_string_buffer(needed.value)
+        if not advapi32.GetTokenInformation(token, TokenUser, buf, needed, ctypes.byref(needed)):
+            return None
+
+        token_user = ctypes.cast(buf, ctypes.POINTER(TOKEN_USER)).contents
+        sid_ptr = token_user.User.Sid
+
+        string_sid = ctypes.c_wchar_p()
+        if not advapi32.ConvertSidToStringSidW(sid_ptr, ctypes.byref(string_sid)):
+            return None
+
+        try:
+            return string_sid.value
+        finally:
+            kernel32.LocalFree(string_sid)
+
+    finally:
+        kernel32.CloseHandle(token)
+
+
+def is_system_user() -> bool:
+    """Determine whether the current process is running as LocalSystem."""
+    sid = _get_current_user_sid()
+    if sid:
+        return sid == LOCAL_SYSTEM_SID
+    return os.environ.get("USERNAME", "").upper() == "SYSTEM"
+
+
+def is_user_admin() -> bool:
+    """Return True if the current process token is elevated (Administrator)."""
+    try:
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
+
+def relaunch_with_admin():
+    """Trigger a UAC prompt and re-run this script as Administrator."""
+    params = " ".join([f'"{arg}"' if " " in arg else arg for arg in [__file__, *sys.argv[1:]]])
+    try:
+        ret = ctypes.windll.shell32.ShellExecuteW(None, "runas", sys.executable, params, None, 1)
+    except Exception:
+        ret = 0
+
+    if ret <= 32:
+        messagebox.showerror(
+            "Elevation failed",
+            "Could not prompt for Administrator privileges.\n\n"
+            "Please re-run this script as Administrator manually.",
+        )
+    sys.exit(0)
+
+
+def _find_psexec():
+    """Attempt to locate psexec.exe either in PATH or alongside this script."""
+    from_path = shutil.which("psexec")
+    if from_path:
+        return from_path
+
+    local_copy = os.path.join(os.path.dirname(os.path.abspath(__file__)), "psexec.exe")
+    if os.path.exists(local_copy):
+        return local_copy
+    return None
+
+
+def relaunch_as_system():
+    """Use psexec to relaunch the script in an interactive LocalSystem session."""
+    psexec_path = _find_psexec()
+    if not psexec_path:
+        messagebox.showerror(
+            "psexec not found",
+            "psexec.exe was not found in PATH or next to the script.\n\n"
+            "Place psexec.exe beside this file or add it to PATH, then try again.",
+        )
+        sys.exit(1)
+
+    cmd = [
+        psexec_path,
+        "-i",
+        "-s",
+        sys.executable,
+        os.path.abspath(__file__),
+        *sys.argv[1:],
+    ]
+
+    try:
+        completed = subprocess.run(cmd)
+        if completed.returncode != 0:
+            messagebox.showerror(
+                "SYSTEM relaunch failed",
+                "psexec did not complete successfully.\n\n"
+                "Ensure PsExec is installed and you approved the license dialog.",
+            )
+    except FileNotFoundError:
+        messagebox.showerror(
+            "psexec not found",
+            "psexec.exe could not be executed.\n\n"
+            "Place psexec.exe beside this file or add it to PATH, then try again.",
+        )
+    except Exception:
+        messagebox.showerror(
+            "SYSTEM relaunch failed",
+            "Unexpected error while invoking psexec:\n\n" + traceback.format_exc(),
+        )
+    finally:
+        sys.exit(0)
+
+
+def ensure_required_privileges():
+    """Ensure we are running as LocalSystem; otherwise try to elevate automatically."""
+    if is_system_user():
+        return
+
+    if not is_user_admin():
+        answer = messagebox.askyesno(
+            "Administrator privileges required",
+            "Bluetooth keys are only accessible with elevated rights.\n\n"
+            "Click Yes to relaunch with Administrator privileges.",
+        )
+        if answer:
+            relaunch_with_admin()
+        sys.exit(0)
+
+    # We are Administrator but not LocalSystem
+    proceed = messagebox.askyesno(
+        "LocalSystem privileges required",
+        "Bluetooth link keys require SYSTEM privileges.\n\n"
+        "Click Yes to relaunch using psexec as LocalSystem.",
+    )
+    if proceed:
+        relaunch_as_system()
+    sys.exit(0)
 
 
 def format_mac(raw_key_name: str) -> str:
@@ -327,5 +502,6 @@ class BluetoothKeyManagerApp(tk.Tk):
 
 
 if __name__ == "__main__":
+    ensure_required_privileges()
     app = BluetoothKeyManagerApp()
     app.mainloop()
