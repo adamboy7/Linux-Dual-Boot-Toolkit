@@ -230,7 +230,7 @@ def get_device_display_name(device_mac_raw: str) -> str:
     return formatted_mac
 
 
-def get_bluetooth_adapters():
+def get_windows_bluetooth_adapters():
     """Enumerate Bluetooth adapters from the registry (Windows only)."""
 
     winreg = _ensure_winreg()
@@ -245,10 +245,12 @@ def get_bluetooth_adapters():
                 except OSError:
                     break
 
-                adapters.append({
-                    "raw": subkey_name,
-                    "mac": format_mac(subkey_name),
-                })
+                adapters.append(
+                    {
+                        "raw": subkey_name,
+                        "mac": format_mac(subkey_name),
+                    }
+                )
                 index += 1
 
     except FileNotFoundError:
@@ -257,7 +259,7 @@ def get_bluetooth_adapters():
     return adapters
 
 
-def get_devices_for_adapter(adapter_raw: str):
+def get_windows_devices_for_adapter(adapter_raw: str):
     """Enumerate devices paired to a given adapter (Windows only)."""
 
     winreg = _ensure_winreg()
@@ -280,12 +282,14 @@ def get_devices_for_adapter(adapter_raw: str):
             if isinstance(value_data, bytes):
                 key_hex = value_data.hex().upper()
 
-            devices.append({
-                "raw": device_mac_raw,
-                "mac": format_mac(device_mac_raw),
-                "name": device_name,
-                "key_hex": key_hex,
-            })
+            devices.append(
+                {
+                    "raw": device_mac_raw,
+                    "mac": format_mac(device_mac_raw),
+                    "name": device_name,
+                    "key_hex": key_hex,
+                }
+            )
 
             index += 1
 
@@ -530,7 +534,7 @@ def restore_backup(info_path: str, backup_path: str):
     shutil.copy2(backup_path, info_path)
 
 
-def get_bluetooth_adapters(*, base_dir: str = BASE_DIR) -> list[AdapterInfo]:
+def get_linux_bluetooth_adapters(*, base_dir: str = BASE_DIR) -> list[AdapterInfo]:
     adapters: list[AdapterInfo] = []
     if not os.path.isdir(base_dir):
         return adapters
@@ -583,10 +587,10 @@ def get_bluetooth_adapters(*, base_dir: str = BASE_DIR) -> list[AdapterInfo]:
 
 # Backwards compatibility
 def find_adapters(*, base_dir: str = BASE_DIR) -> list[AdapterInfo]:
-    return get_bluetooth_adapters(base_dir=base_dir)
+    return get_linux_bluetooth_adapters(base_dir=base_dir)
 
 
-def get_devices_for_adapter(adapter: AdapterInfo) -> list[DeviceInfo]:
+def get_linux_devices_for_adapter(adapter: AdapterInfo) -> list[DeviceInfo]:
     devices: list[DeviceInfo] = []
     if not os.path.isdir(adapter.path):
         return devices
@@ -619,13 +623,46 @@ def get_devices_for_adapter(adapter: AdapterInfo) -> list[DeviceInfo]:
     return devices
 
 
+# --------------------------- Cross-platform dispatchers ---------------------------
+
+
+def get_bluetooth_adapters(*, base_dir: str = BASE_DIR):
+    """Return Bluetooth adapters using platform-specific discovery."""
+
+    if platform.system() == "Windows":
+        return get_windows_bluetooth_adapters()
+
+    return get_linux_bluetooth_adapters(base_dir=base_dir)
+
+
+def get_devices_for_adapter(adapter):
+    """Return devices paired to the given adapter using platform rules."""
+
+    if platform.system() == "Windows":
+        raw = adapter
+        if isinstance(adapter, dict):
+            raw = adapter.get("raw")
+        if not isinstance(raw, str):
+            raise TypeError("Expected adapter raw string or mapping with 'raw' key")
+        return get_windows_devices_for_adapter(raw)
+
+    if not isinstance(adapter, AdapterInfo):
+        raise TypeError("Expected AdapterInfo for Linux adapters")
+
+    return get_linux_devices_for_adapter(adapter)
+
+
 __all__ = [
     "AdapterInfo",
     "DeviceInfo",
     "find_adapters",
     "format_mac",
     "get_bluetooth_adapters",
+    "get_linux_bluetooth_adapters",
+    "get_linux_devices_for_adapter",
     "get_devices_for_adapter",
+    "get_windows_bluetooth_adapters",
+    "get_windows_devices_for_adapter",
     "export_bt_key",
     "import_bt_key",
     "is_mac_dir_name",
