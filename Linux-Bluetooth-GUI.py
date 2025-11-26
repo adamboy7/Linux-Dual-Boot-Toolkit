@@ -19,45 +19,25 @@ and then import that JSON here into the selected device.
 """
 
 import glob
-import os
-import sys
-import re
 import json
-import shutil
-import tempfile
-import subprocess
+import os
 import platform
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
 from datetime import datetime
 from dataclasses import dataclass
 
-def ensure_root():
-    """Ensure the process is running as root, attempting to re-exec if needed."""
-
-    if not hasattr(os, "geteuid") or os.geteuid() == 0:
-        return
-
-    script_path = os.path.abspath(sys.argv[0])
-    args = [sys.executable, script_path, *sys.argv[1:]]
-
-    display_env_vars = []
-    for key in ("DISPLAY", "XAUTHORITY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"):
-        value = os.environ.get(key)
-        if value:
-            display_env_vars.append(f"{key}={value}")
-
-    if shutil.which("pkexec"):
-        os.execvpe("pkexec", ["pkexec", "env", *display_env_vars, *args], os.environ)
-
-    if shutil.which("sudo"):
-        os.execvpe("sudo", ["sudo", "-E", *args], os.environ)
-
-    sys.stderr.write("This tool must be run as root (pkexec/sudo not found).\n")
-    sys.exit(1)
+from libraries.bluetooth_utils import is_mac_dir_name, normalize_mac
+from libraries.bt_gui_logic import BtKeyRecord
+from libraries.permissions import ensure_root_linux
 
 
 # Only import GTK if on Linux
 if platform.system() == "Linux":
-    ensure_root()
+    ensure_root_linux()
     import gi
     gi.require_version("Gtk", "3.0")
     from gi.repository import Gtk
@@ -66,67 +46,6 @@ else:
     sys.exit(1)
 
 BASE_DIR = "/var/lib/bluetooth"
-
-
-@dataclass
-class BtKeyRecord:
-    adapter_mac: str   # AA:BB:CC:DD:EE:FF
-    device_mac: str    # 11:22:33:44:55:66
-    key_hex: str       # e.g., 32 hex chars
-
-    def to_dict(self):
-        return {
-            "adapter_mac": self.adapter_mac,
-            "device_mac": self.device_mac,
-            "key_hex": self.key_hex,
-        }
-
-    @classmethod
-    def from_dict(cls, data):
-        if not isinstance(data, dict):
-            raise ValueError("JSON must be an object with adapter_mac, device_mac, and key_hex.")
-
-        required_fields = ["adapter_mac", "device_mac", "key_hex"]
-        missing = [f for f in required_fields if f not in data]
-        if missing:
-            raise ValueError(f"Missing required field(s): {', '.join(missing)}")
-
-        adapter_mac_raw = data["adapter_mac"]
-        device_mac_raw = data["device_mac"]
-        key_hex = data["key_hex"]
-
-        for name, value in (
-            ("adapter_mac", adapter_mac_raw),
-            ("device_mac", device_mac_raw),
-            ("key_hex", key_hex),
-        ):
-            if not isinstance(value, str) or not value.strip():
-                raise ValueError(f"Field '{name}' must be a non-empty string.")
-
-        try:
-            adapter_mac = normalize_mac_colon(adapter_mac_raw)
-        except ValueError as e:
-            raise ValueError(f"Invalid adapter_mac: {e}") from e
-
-        try:
-            device_mac = normalize_mac_colon(device_mac_raw)
-        except ValueError as e:
-            raise ValueError(f"Invalid device_mac: {e}") from e
-
-        key_hex_clean = key_hex.strip()
-        expected_len = 32  # BlueZ link keys are 16 bytes (32 hex chars)
-        if len(key_hex_clean) != expected_len:
-            raise ValueError(
-                f"key_hex must be a {expected_len}-character hex string (got {len(key_hex_clean)} characters)."
-            )
-        if not re.fullmatch(r"[0-9A-Fa-f]+", key_hex_clean):
-            raise ValueError("key_hex must contain only hexadecimal characters (0-9, A-F).")
-
-        return cls(
-            adapter_mac=adapter_mac,
-            device_mac=device_mac,
-            key_hex=key_hex_clean.upper(),
-        )
 
 
 @dataclass
@@ -145,17 +64,9 @@ class DeviceInfo:
 
 
 def normalize_mac_colon(mac: str) -> str:
-    """Normalize MAC to AA:BB:CC:DD:EE:FF."""
-    mac = mac.strip().replace("-", ":").upper()
-    parts = mac.split(":")
-    if len(parts) != 6:
-        raise ValueError(f"Invalid MAC address: {mac}")
-    return ":".join(f"{int(p, 16):02X}" for p in parts)
+    """Normalize MAC to AA:BB:CC:DD:EE:FF using the shared helper."""
 
-
-def is_mac_dir_name(name: str) -> bool:
-    """True if name looks like a MAC address dir (AA:BB:CC:DD:EE:FF)."""
-    return re.fullmatch(r"[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}", name) is not None
+    return normalize_mac(mac, separator=":")
 
 def get_adapters_from_bluetoothctl() -> dict:
     """
