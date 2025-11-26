@@ -236,6 +236,41 @@ def get_windows_bluetooth_adapters():
     winreg = _ensure_winreg()
     adapters = []
 
+    def _decode_adapter_name(raw_value) -> str:
+        name = decode_bt_name(raw_value)
+        return name if name else ""
+
+    def _read_global_adapter_name() -> str:
+        """Best-effort lookup for a human-friendly adapter name."""
+
+        candidate_paths = [
+            r"SYSTEM\CurrentControlSet\Services\BTHPORT\Parameters\General",
+            r"SYSTEM\CurrentControlSet\Services\BTHPORT\Parameters\LocalInfo",
+        ]
+        candidate_values = ["LocalName", "Name", "ComputerName"]
+
+        for path in candidate_paths:
+            try:
+                with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, path) as key:
+                    for value_name in candidate_values:
+                        try:
+                            raw_val, _ = winreg.QueryValueEx(key, value_name)
+                        except FileNotFoundError:
+                            continue
+                        decoded = _decode_adapter_name(raw_val)
+                        if decoded:
+                            return decoded
+            except FileNotFoundError:
+                continue
+            except PermissionError:
+                continue
+
+        # Fall back to the computer/host name, which mirrors BlueZ's default
+        # controller naming on Linux if registry lookups fail.
+        return platform.node()
+
+    global_name = _read_global_adapter_name()
+
     try:
         with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, WIN_BT_KEYS_REG_PATH) as key:
             index = 0
@@ -245,16 +280,43 @@ def get_windows_bluetooth_adapters():
                 except OSError:
                     break
 
+                # Adapter-specific friendly name if available
+                adapter_name = ""
+                adapter_key_path = WIN_BT_KEYS_REG_PATH + "\\" + subkey_name
+                try:
+                    with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, adapter_key_path) as adapter_key:
+                        for value_name in ("LocalName", "Name", "FriendlyName"):
+                            try:
+                                raw_val, _ = winreg.QueryValueEx(adapter_key, value_name)
+                            except FileNotFoundError:
+                                continue
+                            adapter_name = _decode_adapter_name(raw_val)
+                            if adapter_name:
+                                break
+                except FileNotFoundError:
+                    pass
+                except PermissionError:
+                    pass
+
+                if not adapter_name:
+                    adapter_name = global_name or ""
+
+                formatted_mac = format_mac(subkey_name)
                 adapters.append(
                     {
                         "raw": subkey_name,
-                        "mac": format_mac(subkey_name),
+                        "mac": formatted_mac,
+                        "name": adapter_name or formatted_mac,
+                        "is_default": False,
                     }
                 )
                 index += 1
 
     except FileNotFoundError:
         return adapters
+
+    if adapters and not any(adapter.get("is_default") for adapter in adapters):
+        adapters[0]["is_default"] = True
 
     return adapters
 
