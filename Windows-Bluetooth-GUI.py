@@ -1,17 +1,23 @@
-import sys
 import os
+import platform
+import sys
+
+if platform.system() != "Windows":
+    print("This GUI tool currently only supports Windows.")
+    sys.exit(1)
+
 import ctypes
-import subprocess
-import shutil
-import json
 import glob
+import json
+import shutil
+import subprocess
+import traceback
 from datetime import datetime
-import tkinter as tk
-from tkinter import filedialog, ttk, messagebox
 from ctypes import wintypes
 from dataclasses import dataclass
+import tkinter as tk
+from tkinter import filedialog, ttk, messagebox
 import winreg
-import traceback
 
 
 SYSTEM_FLAG = "--launched-as-system"
