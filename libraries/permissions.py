@@ -45,6 +45,25 @@ def ensure_root_linux() -> None:
     sys.exit(1)
 
 
+def ensure_platform_permissions(system_flag: Optional[str] = None) -> None:
+    """Ensure the process has the right privileges for the current platform.
+
+    * On Linux, this enforces root via :func:`ensure_root_linux`.
+    * On Windows, this enforces a SYSTEM token via :func:`ensure_windows_system`.
+
+    Args:
+        system_flag: Optional flag passed through to ``ensure_windows_system``
+            to detect a re-launched SYSTEM instance.
+    """
+
+    current_platform = platform.system()
+
+    if current_platform == "Linux":
+        ensure_root_linux()
+    elif current_platform == "Windows":
+        ensure_windows_system(system_flag or "")
+
+
 # ----- Windows helpers -----
 
 def get_windows_username() -> str:

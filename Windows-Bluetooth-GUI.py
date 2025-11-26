@@ -14,9 +14,9 @@ import tkinter as tk
 from tkinter import filedialog, ttk, messagebox
 import winreg
 
-from libraries.bluetooth_utils import format_mac, normalize_mac
+from libraries.bluetooth_utils import format_mac, normalize_mac, reload_bluetooth
 from libraries.bt_gui_logic import BtKeyRecord, bt_record_from_json_file, bt_record_to_json_file
-from libraries.permissions import ensure_windows_system
+from libraries.permissions import ensure_platform_permissions
 
 
 SYSTEM_FLAG = "--launched-as-system"
@@ -698,6 +698,23 @@ class BluetoothKeyManagerApp(tk.Tk):
         )
         self.set_status(f"Imported key for {display_device} on {display_adapter}.")
 
+        if messagebox.askyesno(
+            "Reload Bluetooth?",
+            "Reload the Windows Bluetooth service now to use the new key?",
+        ):
+            success, detail = reload_bluetooth()
+            if success:
+                self.set_status(f"Bluetooth service reloaded via: {detail}")
+                messagebox.showinfo(
+                    "Bluetooth reloaded", "Bluetooth service was reloaded successfully.",
+                )
+            else:
+                messagebox.showerror(
+                    "Reload failed",
+                    "Failed to reload Bluetooth automatically.\n\n"
+                    f"Attempted: {detail}",
+                )
+
     def restore_backup(self):
         backups = self._find_backup_files()
 
@@ -828,7 +845,7 @@ def run_app():
 
 
 def main():
-    ensure_windows_system(SYSTEM_FLAG)
+    ensure_platform_permissions(SYSTEM_FLAG)
     run_app()
 
 

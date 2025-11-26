@@ -30,14 +30,14 @@ import tempfile
 from datetime import datetime
 from dataclasses import dataclass
 
-from libraries.bluetooth_utils import is_mac_dir_name, normalize_mac
+from libraries.bluetooth_utils import is_mac_dir_name, normalize_mac, reload_bluetooth
 from libraries.bt_gui_logic import BtKeyRecord
-from libraries.permissions import ensure_root_linux
+from libraries.permissions import ensure_platform_permissions
 
 
 # Only import GTK if on Linux
 if platform.system() == "Linux":
-    ensure_root_linux()
+    ensure_platform_permissions()
     import gi
     gi.require_version("Gtk", "3.0")
     from gi.repository import Gtk
@@ -248,35 +248,6 @@ def list_linux_backups(info_path: str) -> list[str]:
         backup_files.add(legacy)
 
     return sorted(backup_files, key=lambda p: os.path.getmtime(p), reverse=True)
-
-
-def restart_bluetooth_service() -> tuple[bool, str]:
-    """Attempt to restart the Bluetooth service. Returns (success, detail)."""
-
-    commands = [
-        (["systemctl", "restart", "bluetooth"], "systemctl restart bluetooth"),
-        (["service", "bluetooth", "restart"], "service bluetooth restart"),
-    ]
-
-    errors: list[str] = []
-
-    for cmd, label in commands:
-        try:
-            subprocess.run(
-                cmd,
-                check=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
-            return True, label
-        except FileNotFoundError:
-            errors.append(f"{label}: command not found")
-        except subprocess.CalledProcessError as e:
-            stderr = (e.stderr or "").strip()
-            errors.append(f"{label}: {stderr or e}")
-
-    return False, "; ".join(errors)
 
 
 def find_adapters() -> list[AdapterInfo]:
@@ -745,7 +716,7 @@ class BtKeyGui(Gtk.Window):
                     "Reload the Bluetooth service now to use the new key?",
                     title="Reload Bluetooth?",
                 ):
-                    success, detail = restart_bluetooth_service()
+                    success, detail = reload_bluetooth()
                     if success:
                         self.set_status(
                             f"Bluetooth service reloaded via: {detail}"
