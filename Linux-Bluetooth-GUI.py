@@ -763,18 +763,32 @@ class BtKeyGui(Gtk.Window):
                     data = json.load(f)
 
                 record = BtKeyRecord.from_dict(data)
-                # Use the key from file, but force current adapter + device
-                record.adapter_mac = adapter.mac
-                record.device_mac = device.mac
+                if record.adapter_mac != adapter.mac or record.device_mac != device.mac:
+                    if not self._ask_yes_no(
+                        (
+                            "The selected adapter/device differ from the JSON file.\n\n"
+                            f"Selected adapter: {adapter.mac}\n"
+                            f"File adapter:     {record.adapter_mac}\n\n"
+                            f"Selected device:  {device.mac}\n"
+                            f"File device:      {record.device_mac}\n\n"
+                            "Import using the adapter/device from the file?"
+                        ),
+                        title="Confirm adapter/device mismatch",
+                    ):
+                        return
+
+                display_device = (
+                    device.name if record.device_mac == device.mac else record.device_mac
+                )
 
                 backup_path = linux_import_key(record)
                 self.set_status(
-                    f"Imported key for {device.name}. Backup created: {backup_path}"
+                    f"Imported key for {display_device}. Backup created: {backup_path}"
                 )
                 self._show_info_dialog(
-                    f"Successfully imported key for {device.name}.\n\n"
-                    f"Original info file was backed up as:\n{backup_path}\n\n"
-                    f"You may need to restart Bluetooth:\n"
+                    f"Successfully imported key for {display_device}.\n\n",
+                    f"Original info file was backed up as:\n{backup_path}\n\n",
+                    f"You may need to restart Bluetooth:\n",
                     f"  sudo systemctl restart bluetooth",
                     title="Import successful",
                 )
