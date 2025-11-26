@@ -36,7 +36,7 @@ from libraries.bluetooth_utils import (
     reload_bluetooth,
     restore_backup,
 )
-from libraries.bt_gui_logic import BtKeyRecord
+from libraries.bt_gui_logic import BackupSearchManager, BtKeyRecord
 from libraries.permissions import ensure_platform_permissions
 
 
@@ -59,6 +59,7 @@ class BtKeyGui(Gtk.Window):
         # Data
         self.adapters: list[AdapterInfo] = get_bluetooth_adapters()
         self.devices: list[DeviceInfo] = []
+        self.backup_manager = BackupSearchManager([os.getcwd()])
 
         if not self.adapters:
             self._show_error_and_quit("No Bluetooth adapters found in /var/lib/bluetooth.")
@@ -279,6 +280,92 @@ class BtKeyGui(Gtk.Window):
         else:
             self.device_combo.set_active(-1)
 
+    def _prompt_for_backup_file(self, backups: list[str]) -> str | None:
+        chooser = Gtk.Dialog(title="Select backup to restore", parent=self)
+        chooser.add_buttons(
+            Gtk.STOCK_CANCEL,
+            Gtk.ResponseType.CANCEL,
+            Gtk.STOCK_OPEN,
+            Gtk.ResponseType.OK,
+        )
+
+        list_store = Gtk.ListStore(str, str)  # display text, path
+        for path in backups:
+            try:
+                modified = datetime.fromtimestamp(os.path.getmtime(path)).strftime(
+                    "%Y-%m-%d %H:%M:%S"
+                )
+                label = f"{os.path.basename(path)} (saved {modified})"
+            except OSError:
+                label = os.path.basename(path)
+            list_store.append([label, path])
+
+        combo = Gtk.ComboBox.new_with_model(list_store)
+        renderer = Gtk.CellRendererText()
+        combo.pack_start(renderer, True)
+        combo.add_attribute(renderer, "text", 0)
+        combo.set_id_column(1)
+        combo.set_active(0 if backups else -1)
+
+        def on_browse_clicked(_button: Gtk.Button):
+            file_dialog = Gtk.FileChooserDialog(
+                title="Restore Bluetooth key backup",
+                parent=self,
+                action=Gtk.FileChooserAction.OPEN,
+            )
+            file_dialog.add_buttons(
+                Gtk.STOCK_CANCEL,
+                Gtk.ResponseType.CANCEL,
+                Gtk.STOCK_OPEN,
+                Gtk.ResponseType.OK,
+            )
+
+            if backups:
+                file_dialog.set_current_folder(os.path.dirname(backups[0]))
+
+            backup_filter = Gtk.FileFilter()
+            backup_filter.set_name("Backup files (*.bak, *.json)")
+            backup_filter.add_pattern("bt_key_backup_*.json")
+            backup_filter.add_pattern("bt_key_backup_*.bak")
+            backup_filter.add_pattern("*.bak")
+            backup_filter.add_pattern("*.json")
+            file_dialog.add_filter(backup_filter)
+
+            any_filter = Gtk.FileFilter()
+            any_filter.set_name("All files")
+            any_filter.add_pattern("*")
+            file_dialog.add_filter(any_filter)
+
+            if file_dialog.run() == Gtk.ResponseType.OK:
+                filename = file_dialog.get_filename()
+                file_dialog.destroy()
+                chooser.response(Gtk.ResponseType.APPLY)
+                chooser.selected_backup = filename
+            else:
+                file_dialog.destroy()
+
+        browse_button = Gtk.Button(label="Browse…")
+        browse_button.connect("clicked", on_browse_clicked)
+
+        box = chooser.get_content_area()
+        box.set_spacing(8)
+        box.add(Gtk.Label(label="Choose a backup to restore:"))
+        box.add(combo)
+        box.add(browse_button)
+
+        chooser.selected_backup: str | None = None
+        chooser.show_all()
+
+        response = chooser.run()
+        selected_backup = chooser.selected_backup
+        if response == Gtk.ResponseType.OK and selected_backup is None:
+            selected_backup = combo.get_active_id()
+        elif response != Gtk.ResponseType.OK and response != Gtk.ResponseType.APPLY:
+            selected_backup = None
+
+        chooser.destroy()
+        return selected_backup
+
     # ----- Callbacks -----
 
     def on_adapter_changed(self, combo: Gtk.ComboBox):
@@ -348,6 +435,7 @@ class BtKeyGui(Gtk.Window):
                 record = export_bt_key(adapter.mac, device.mac)
                 with open(filename, "w", encoding="utf-8") as f:
                     json.dump(record.to_dict(), f, indent=2)
+                self.backup_manager.note_file_location(filename)
                 self.set_status(f"Exported key for {device.name} to {filename}")
                 self._show_info_dialog(
                     f"Successfully exported key for {device.name}.\n\n"
@@ -396,6 +484,7 @@ class BtKeyGui(Gtk.Window):
             filename = dialog.get_filename()
             dialog.destroy()
             try:
+                self.backup_manager.note_file_location(filename)
                 with open(filename, "r", encoding="utf-8") as f:
                     data = json.load(f)
 
@@ -419,6 +508,7 @@ class BtKeyGui(Gtk.Window):
                 )
 
                 backup_path = import_bt_key(record)
+                self.backup_manager.note_file_location(backup_path)
                 self.set_status(
                     f"Imported key for {display_device}. Backup created: {backup_path}"
                 )
@@ -472,7 +562,6 @@ class BtKeyGui(Gtk.Window):
             return
 
         info_path = device.info_path
-        backup_files = list_backups(info_path)
 
         if not os.path.isfile(info_path):
             self._show_error_dialog(
@@ -484,11 +573,17 @@ class BtKeyGui(Gtk.Window):
             )
             return
 
+        backup_files = self.backup_manager.find_backup_files()
+        if not backup_files:
+            backup_files = list_backups(info_path)
+
         selected_backup: str | None = None
 
-        if not backup_files:
+        if backup_files:
+            selected_backup = self._prompt_for_backup_file(backup_files)
+        else:
             if not self._ask_yes_no(
-                "No backups found for this device.\n\n"
+                "No Bluetooth key backups were found in recent directories.\n\n"
                 "Would you like to browse for an existing backup file to restore?",
                 title="No backups found",
             ):
@@ -508,6 +603,8 @@ class BtKeyGui(Gtk.Window):
 
             backup_filter = Gtk.FileFilter()
             backup_filter.set_name("Backup files (*.bak, *.json)")
+            backup_filter.add_pattern("bt_key_backup_*.json")
+            backup_filter.add_pattern("bt_key_backup_*.bak")
             backup_filter.add_pattern("*.bak")
             backup_filter.add_pattern("*.json")
             file_dialog.add_filter(backup_filter)
@@ -523,42 +620,9 @@ class BtKeyGui(Gtk.Window):
 
             if not selected_backup:
                 return
-        else:
-            chooser = Gtk.Dialog(title="Select backup to restore", parent=self)
-            chooser.add_buttons(
-                Gtk.STOCK_CANCEL,
-                Gtk.ResponseType.CANCEL,
-                Gtk.STOCK_OK,
-                Gtk.ResponseType.OK,
-            )
 
-            combo = Gtk.ComboBoxText()
-            for path in backup_files:
-                try:
-                    modified = datetime.fromtimestamp(os.path.getmtime(path)).strftime(
-                        "%Y-%m-%d %H:%M:%S"
-                    )
-                    label = f"{os.path.basename(path)} (saved {modified})"
-                except OSError:
-                    label = os.path.basename(path)
-                combo.append(path, label)
-
-            combo.set_active(0)
-
-            box = chooser.get_content_area()
-            box.set_spacing(8)
-            box.add(Gtk.Label(label="Choose a backup to restore:"))
-            box.add(combo)
-            chooser.show_all()
-
-            response = chooser.run()
-            selected_backup = (
-                combo.get_active_id() if response == Gtk.ResponseType.OK else None
-            )
-            chooser.destroy()
-
-            if not selected_backup:
-                return
+        if not selected_backup:
+            return
 
         if not os.path.isfile(selected_backup):
             self._show_error_dialog(
@@ -566,6 +630,8 @@ class BtKeyGui(Gtk.Window):
                 title="Restore failed",
             )
             return
+
+        self.backup_manager.note_file_location(selected_backup)
 
         if not validate_backup_matches(
             adapter.mac,
