@@ -854,11 +854,12 @@ class BluetoothKeyManagerApp(tk.Tk):
         if backups:
             filepath = self._prompt_for_backup_file(backups)
         else:
-            if not messagebox.askyesno(
-                "No backups found",
+            browse_prompt = (
                 "No bt_key_backup_*.json files were found in the current directory.\n\n"
-                "Would you like to browse for a backup file?",
-            ):
+                "Would you like to browse for a backup file?"
+            )
+
+            if not messagebox.askyesno("No backups found", browse_prompt):
                 return
 
             filepath = filedialog.askopenfilename(
