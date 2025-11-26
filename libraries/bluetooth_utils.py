@@ -16,7 +16,7 @@ import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:  # Avoid runtime circular imports
@@ -236,9 +236,30 @@ def get_windows_bluetooth_adapters():
     winreg = _ensure_winreg()
     adapters = []
 
+    filetime_epoch = datetime(1601, 1, 1)
+
     def _decode_adapter_name(raw_value) -> str:
         name = decode_bt_name(raw_value)
         return name if name else ""
+
+    def _decode_last_seen(raw_value) -> tuple[int | None, datetime | None]:
+        """Return a numeric FILETIME and decoded datetime for last seen."""
+
+        timestamp_int: int | None = None
+        if isinstance(raw_value, int):
+            timestamp_int = raw_value
+        elif isinstance(raw_value, (bytes, bytearray)) and len(raw_value) >= 8:
+            timestamp_int = int.from_bytes(raw_value[:8], byteorder="little", signed=False)
+
+        if timestamp_int is None:
+            return None, None
+
+        try:
+            decoded_dt = filetime_epoch + timedelta(microseconds=timestamp_int / 10)
+        except OverflowError:
+            decoded_dt = None
+
+        return timestamp_int, decoded_dt
 
     def _read_global_adapter_name() -> str:
         """Best-effort lookup for a human-friendly adapter name."""
@@ -282,6 +303,8 @@ def get_windows_bluetooth_adapters():
 
                 # Adapter-specific friendly name if available
                 adapter_name = ""
+                last_seen_raw = None
+                last_seen_dt = None
                 adapter_key_path = WIN_BT_KEYS_REG_PATH + "\\" + subkey_name
                 try:
                     with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, adapter_key_path) as adapter_key:
@@ -292,6 +315,16 @@ def get_windows_bluetooth_adapters():
                                 continue
                             adapter_name = _decode_adapter_name(raw_val)
                             if adapter_name:
+                                break
+
+                        for last_seen_name in ("LastSeen", "LastSeenTime", "LastSeenTimestamp"):
+                            try:
+                                raw_val, _ = winreg.QueryValueEx(adapter_key, last_seen_name)
+                            except FileNotFoundError:
+                                continue
+
+                            last_seen_raw, last_seen_dt = _decode_last_seen(raw_val)
+                            if last_seen_raw is not None:
                                 break
                 except FileNotFoundError:
                     pass
@@ -308,6 +341,8 @@ def get_windows_bluetooth_adapters():
                         "mac": formatted_mac,
                         "name": adapter_name or formatted_mac,
                         "is_default": False,
+                        "last_seen_raw": last_seen_raw,
+                        "last_seen": last_seen_dt,
                     }
                 )
                 index += 1
@@ -316,7 +351,11 @@ def get_windows_bluetooth_adapters():
         return adapters
 
     if adapters and not any(adapter.get("is_default") for adapter in adapters):
-        adapters[0]["is_default"] = True
+        most_recent = max(
+            adapters,
+            key=lambda a: (-1 if a.get("last_seen_raw") is None else a["last_seen_raw"]),
+        )
+        most_recent["is_default"] = True
 
     return adapters
 
