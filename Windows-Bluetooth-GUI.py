@@ -57,8 +57,11 @@ class BtKeyRecord:
                 raise ValueError(f"Field '{name}' must be a non-empty string.")
 
         key_hex_clean = key_hex.strip()
-        if len(key_hex_clean) % 2 != 0:
-            raise ValueError("key_hex must have an even number of hexadecimal characters.")
+        expected_len = 32  # Link keys are 16 bytes (32 hex chars)
+        if len(key_hex_clean) != expected_len:
+            raise ValueError(
+                f"key_hex must be a {expected_len}-character hex string (got {len(key_hex_clean)} characters)."
+            )
         if not all(c in "0123456789abcdefABCDEF" for c in key_hex_clean):
             raise ValueError("key_hex must contain only hexadecimal characters (0-9, A-F).")
 
