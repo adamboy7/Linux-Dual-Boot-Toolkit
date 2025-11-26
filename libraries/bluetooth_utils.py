@@ -19,8 +19,6 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from .backup_validation import parse_backup_payload, validate_backup_matches
-
 if TYPE_CHECKING:  # Avoid runtime circular imports
     from .bt_gui_logic import BtKeyRecord
 
@@ -520,9 +518,15 @@ def list_backups(info_path: str) -> list[str]:
 
 
 def restore_backup(info_path: str, backup_path: str):
-    payload = parse_backup_payload(backup_path)
+    from . import backup_validation
+
+    payload = backup_validation.parse_backup_payload(backup_path)
     if payload:
-        validate_backup_matches(payload, expected_adapter=None, expected_device=None)
+        backup_validation.validate_backup_matches(
+            expected_adapter=None,
+            expected_device=None,
+            backup_path=backup_path,
+        )
     shutil.copy2(backup_path, info_path)
 
 
