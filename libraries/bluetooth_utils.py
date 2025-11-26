@@ -307,16 +307,12 @@ def get_windows_bluetooth_adapters():
                         "raw": subkey_name,
                         "mac": formatted_mac,
                         "name": adapter_name or formatted_mac,
-                        "is_default": False,
                     }
                 )
                 index += 1
 
     except FileNotFoundError:
         return adapters
-
-    if adapters and not any(adapter.get("is_default") for adapter in adapters):
-        adapters[0]["is_default"] = True
 
     return adapters
 
