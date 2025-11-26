@@ -159,15 +159,27 @@ def relaunch_as_system():
 
 def ensure_required_privileges():
     """Ensure we are running as LocalSystem; otherwise try to elevate automatically."""
+    root = tk._default_root
+    created_root = False
+
+    if root is None:
+        root = tk.Tk()
+        root.withdraw()
+        created_root = True
+
     if is_system_user():
+        if created_root:
+            root.destroy()
         return
 
     if not is_user_admin():
         answer = messagebox.askyesno(
             "Administrator privileges required",
-            "Bluetooth keys are only accessible with elevated rights.\n\n"
+            "Bluetooth keys are only accessible with elevated rights.\n\n",
             "Click Yes to relaunch with Administrator privileges.",
         )
+        if created_root:
+            root.destroy()
         if answer:
             relaunch_with_admin()
         sys.exit(0)
@@ -175,9 +187,11 @@ def ensure_required_privileges():
     # We are Administrator but not LocalSystem
     proceed = messagebox.askyesno(
         "LocalSystem privileges required",
-        "Bluetooth link keys require SYSTEM privileges.\n\n"
+        "Bluetooth link keys require SYSTEM privileges.\n\n",
         "Click Yes to relaunch using psexec as LocalSystem.",
     )
+    if created_root:
+        root.destroy()
     if proceed:
         relaunch_as_system()
     sys.exit(0)
