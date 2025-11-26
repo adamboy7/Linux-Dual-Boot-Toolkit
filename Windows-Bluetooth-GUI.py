@@ -116,6 +116,9 @@ def _find_psexec():
     return None
 
 
+SYSTEM_RELAUNCH_FLAG = "--relaunch-as-system"
+
+
 def relaunch_as_system():
     """Use psexec to relaunch the script in an interactive LocalSystem session."""
     psexec_path = _find_psexec()
@@ -136,6 +139,7 @@ def relaunch_as_system():
         sys.executable,
         os.path.abspath(__file__),
         *sys.argv[1:],
+        SYSTEM_RELAUNCH_FLAG,
     ]
 
     try:
@@ -194,6 +198,8 @@ def ensure_required_privileges():
             relaunch_with_admin()
         sys.exit(0)
 
+    already_relaunched = SYSTEM_RELAUNCH_FLAG in sys.argv
+
     # We are Administrator but not LocalSystem
     proceed = messagebox.askyesno(
         "LocalSystem privileges required",
@@ -206,6 +212,18 @@ def ensure_required_privileges():
         root.destroy()
     if proceed:
         relaunch_as_system()
+
+    if already_relaunched:
+        messagebox.showerror(
+            "SYSTEM relaunch failed",
+            (
+                "The application could not acquire LocalSystem privileges even after "
+                "relaunching via psexec.\n\n"
+                "Verify PsExec is installed and that you accepted its license prompt, "
+                "then try again."
+            ),
+        )
+
     sys.exit(0)
 
 
