@@ -96,8 +96,10 @@ def relaunch_with_admin():
     if ret <= 32:
         messagebox.showerror(
             "Elevation failed",
-            "Could not prompt for Administrator privileges.\n\n"
-            "Please re-run this script as Administrator manually.",
+            (
+                "Could not prompt for Administrator privileges.\n\n"
+                "Please re-run this script as Administrator manually."
+            ),
         )
     sys.exit(0)
 
@@ -120,8 +122,10 @@ def relaunch_as_system():
     if not psexec_path:
         messagebox.showerror(
             "psexec not found",
-            "psexec.exe was not found in PATH or next to the script.\n\n"
-            "Place psexec.exe beside this file or add it to PATH, then try again.",
+            (
+                "psexec.exe was not found in PATH or next to the script.\n\n"
+                "Place psexec.exe beside this file or add it to PATH, then try again."
+            ),
         )
         sys.exit(1)
 
@@ -139,14 +143,18 @@ def relaunch_as_system():
         if completed.returncode != 0:
             messagebox.showerror(
                 "SYSTEM relaunch failed",
-                "psexec did not complete successfully.\n\n"
-                "Ensure PsExec is installed and you approved the license dialog.",
+                (
+                    "psexec did not complete successfully.\n\n"
+                    "Ensure PsExec is installed and you approved the license dialog."
+                ),
             )
     except FileNotFoundError:
         messagebox.showerror(
             "psexec not found",
-            "psexec.exe could not be executed.\n\n"
-            "Place psexec.exe beside this file or add it to PATH, then try again.",
+            (
+                "psexec.exe could not be executed.\n\n"
+                "Place psexec.exe beside this file or add it to PATH, then try again."
+            ),
         )
     except Exception:
         messagebox.showerror(
@@ -175,8 +183,10 @@ def ensure_required_privileges():
     if not is_user_admin():
         answer = messagebox.askyesno(
             "Administrator privileges required",
-            "Bluetooth keys are only accessible with elevated rights.\n\n",
-            "Click Yes to relaunch with Administrator privileges.",
+            (
+                "Bluetooth keys are only accessible with elevated rights.\n\n"
+                "Click Yes to relaunch with Administrator privileges."
+            ),
         )
         if created_root:
             root.destroy()
@@ -187,8 +197,10 @@ def ensure_required_privileges():
     # We are Administrator but not LocalSystem
     proceed = messagebox.askyesno(
         "LocalSystem privileges required",
-        "Bluetooth link keys require SYSTEM privileges.\n\n",
-        "Click Yes to relaunch using psexec as LocalSystem.",
+        (
+            "Bluetooth link keys require SYSTEM privileges.\n\n"
+            "Click Yes to relaunch using psexec as LocalSystem."
+        ),
     )
     if created_root:
         root.destroy()
@@ -242,9 +254,11 @@ def get_bluetooth_adapters():
     except PermissionError:
         messagebox.showerror(
             "Permission error",
-            "Unable to read Bluetooth keys from the registry.\n\n"
-            "Make sure you are running this script as SYSTEM or with "
-            "sufficient privileges."
+            (
+                "Unable to read Bluetooth keys from the registry.\n\n"
+                "Make sure you are running this script as SYSTEM or with "
+                "sufficient privileges."
+            ),
         )
     except Exception:
         messagebox.showerror(
@@ -378,9 +392,11 @@ def get_devices_for_adapter(adapter_raw: str):
     except PermissionError:
         messagebox.showerror(
             "Permission error",
-            "Unable to read Bluetooth device keys from the registry.\n\n"
-            "Make sure you are running this script as SYSTEM or with "
-            "sufficient privileges."
+            (
+                "Unable to read Bluetooth device keys from the registry.\n\n"
+                "Make sure you are running this script as SYSTEM or with "
+                "sufficient privileges."
+            ),
         )
     except Exception:
         messagebox.showerror(
@@ -464,8 +480,10 @@ class BluetoothKeyManagerApp(tk.Tk):
         if not adapters:
             messagebox.showerror(
                 "No adapters found",
-                "No Bluetooth adapter keys were found under:\n\n"
-                f"HKLM\\{BT_KEYS_REG_PATH}"
+                (
+                    "No Bluetooth adapter keys were found under:\n\n"
+                    f"HKLM\\{BT_KEYS_REG_PATH}"
+                ),
             )
             self.after(100, self.destroy)
             return
