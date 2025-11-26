@@ -89,17 +89,27 @@ class BtKeyRecord:
         if missing:
             raise ValueError(f"Missing required field(s): {', '.join(missing)}")
 
-        adapter_mac = data["adapter_mac"]
-        device_mac = data["device_mac"]
+        adapter_mac_raw = data["adapter_mac"]
+        device_mac_raw = data["device_mac"]
         key_hex = data["key_hex"]
 
         for name, value in (
-            ("adapter_mac", adapter_mac),
-            ("device_mac", device_mac),
+            ("adapter_mac", adapter_mac_raw),
+            ("device_mac", device_mac_raw),
             ("key_hex", key_hex),
         ):
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"Field '{name}' must be a non-empty string.")
+
+        try:
+            adapter_mac = normalize_mac_colon(adapter_mac_raw)
+        except ValueError as e:
+            raise ValueError(f"Invalid adapter_mac: {e}") from e
+
+        try:
+            device_mac = normalize_mac_colon(device_mac_raw)
+        except ValueError as e:
+            raise ValueError(f"Invalid device_mac: {e}") from e
 
         key_hex_clean = key_hex.strip()
         expected_len = 32  # BlueZ link keys are 16 bytes (32 hex chars)
