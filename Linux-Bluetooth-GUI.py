@@ -18,19 +18,23 @@ You can pair your headphones in Windows, export the key there to JSON,
 and then import that JSON here into the selected device.
 """
 
-import glob
 import json
 import os
 import platform
-import shutil
-import subprocess
 import sys
-import tempfile
-from datetime import datetime
-from dataclasses import dataclass
 
 from libraries.backup_validation import validate_backup_matches
-from libraries.bluetooth_utils import is_mac_dir_name, normalize_mac, reload_bluetooth
+from libraries.bluetooth_utils import (
+    AdapterInfo,
+    DeviceInfo,
+    export_bt_key,
+    get_bluetooth_adapters,
+    get_devices_for_adapter,
+    import_bt_key,
+    list_backups,
+    reload_bluetooth,
+    restore_backup,
+)
 from libraries.bt_gui_logic import BtKeyRecord
 from libraries.permissions import ensure_platform_permissions
 
@@ -45,294 +49,6 @@ else:
     print("This GUI tool currently only supports Linux (BlueZ).")
     sys.exit(1)
 
-BASE_DIR = "/var/lib/bluetooth"
-
-
-@dataclass
-class AdapterInfo:
-    mac: str
-    name: str
-    is_default: bool
-    path: str
-
-
-@dataclass
-class DeviceInfo:
-    mac: str
-    name: str
-    info_path: str
-
-
-def normalize_mac_colon(mac: str) -> str:
-    """Normalize MAC to AA:BB:CC:DD:EE:FF using the shared helper."""
-
-    return normalize_mac(mac, separator=":")
-
-def get_adapters_from_bluetoothctl() -> dict:
-    """
-    Parse `bluetoothctl list` to get names and default flag for controllers.
-
-    Returns:
-        {
-          "AA:BB:CC:DD:EE:FF": {"name": "MyHost", "is_default": True/False},
-          ...
-        }
-    """
-    mapping = {}
-    try:
-        out = subprocess.check_output(
-            ["bluetoothctl", "list"], text=True, stderr=subprocess.DEVNULL
-        )
-    except (FileNotFoundError, subprocess.CalledProcessError):
-        return mapping
-
-    for line in out.splitlines():
-        line = line.strip()
-        if not line or not line.startswith("Controller "):
-            continue
-
-        parts = line.split()
-        if len(parts) < 3:
-            continue
-
-        # Controller MAC Name [default]
-        mac_raw = parts[1]
-        try:
-            mac_norm = normalize_mac_colon(mac_raw)
-        except ValueError:
-            continue
-
-        # Name is everything after the MAC up to any [bracketed] token
-        name_tokens = []
-        for token in parts[2:]:
-            if token.startswith("[") and token.endswith("]"):
-                break
-            name_tokens.append(token)
-        name = " ".join(name_tokens) if name_tokens else mac_norm
-
-        is_default = "[default]" in line
-
-        mapping[mac_norm] = {
-            "name": name,
-            "is_default": is_default,
-        }
-
-    return mapping
-
-
-def read_key_from_info(info_path: str) -> str:
-    """Read Key=... from a BlueZ info file."""
-    with open(info_path, "r", encoding="utf-8") as f:
-        for line in f:
-            if line.strip().startswith("Key="):
-                return line.strip().split("=", 1)[1].strip()
-    raise RuntimeError(f"No 'Key=' entry found in {info_path}")
-
-
-def linux_export_key(adapter_mac: str, device_mac: str) -> BtKeyRecord:
-    adapter_mac = normalize_mac_colon(adapter_mac)
-    device_mac = normalize_mac_colon(device_mac)
-    info_path = os.path.join(BASE_DIR, adapter_mac, device_mac, "info")
-
-    if not os.path.isfile(info_path):
-        raise FileNotFoundError(
-            f"BlueZ info file not found at {info_path}. "
-            "Is the device paired on this Linux install?"
-        )
-
-    key_hex = read_key_from_info(info_path).upper()
-    return BtKeyRecord(adapter_mac=adapter_mac, device_mac=device_mac, key_hex=key_hex)
-
-
-def linux_import_key(record: BtKeyRecord):
-    adapter_mac = normalize_mac_colon(record.adapter_mac)
-    device_mac = normalize_mac_colon(record.device_mac)
-    info_path = os.path.join(BASE_DIR, adapter_mac, device_mac, "info")
-
-    if not os.path.isfile(info_path):
-        raise FileNotFoundError(
-            f"BlueZ info file not found at {info_path}. "
-            "Make sure the device is paired once in Linux so this file exists."
-        )
-
-    # Backup first
-    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    backup_path = f"{info_path}.{timestamp}.bak"
-    shutil.copy2(info_path, backup_path)
-
-    metadata = {
-        "adapter_mac": adapter_mac,
-        "device_mac": device_mac,
-        "source_info_path": info_path,
-        "backup_path": backup_path,
-        "created_at": timestamp,
-    }
-
-    try:
-        with open(f"{info_path}.{timestamp}.json", "w", encoding="utf-8") as meta_file:
-            json.dump(metadata, meta_file, indent=2)
-    except Exception:  # noqa: BLE001
-        pass
-
-    # Read all lines and replace/insert Key=...
-    with open(info_path, "r", encoding="utf-8") as f:
-        lines = f.readlines()
-
-    new_lines = []
-    replaced = False
-    for line in lines:
-        if line.strip().startswith("Key=") and not replaced:
-            new_lines.append(f"Key={record.key_hex}\n")
-            replaced = True
-        else:
-            new_lines.append(line)
-
-    if not replaced:
-        # Insert into [LinkKey] section if present; else append
-        output_lines = []
-        inserted = False
-        in_linkkey = False
-        for line in new_lines:
-            stripped = line.strip()
-            output_lines.append(line)
-            if stripped == "[LinkKey]":
-                in_linkkey = True
-            elif stripped.startswith("[") and stripped.endswith("]") and in_linkkey:
-                # Leaving [LinkKey]; insert before this section
-                output_lines.insert(len(output_lines) - 1, f"Key={record.key_hex}\n")
-                inserted = True
-                in_linkkey = False
-
-        if not inserted:
-            output_lines.append("\n[LinkKey]\n")
-            output_lines.append(f"Key={record.key_hex}\n")
-
-        new_lines = output_lines
-
-    temp_path = None
-    try:
-        fd, temp_path = tempfile.mkstemp(
-            prefix="info.", suffix=".tmp", dir=os.path.dirname(info_path)
-        )
-        with os.fdopen(fd, "w", encoding="utf-8") as tmp_file:
-            tmp_file.writelines(new_lines)
-            tmp_file.flush()
-            os.fsync(tmp_file.fileno())
-
-        os.replace(temp_path, info_path)
-    except Exception as exc:  # noqa: BLE001
-        try:
-            if temp_path and os.path.exists(temp_path):
-                os.remove(temp_path)
-        finally:
-            try:
-                shutil.copy2(backup_path, info_path)
-            except Exception:  # noqa: BLE001
-                pass
-        raise RuntimeError(f"Failed to update BlueZ info file: {exc}") from exc
-
-    return backup_path
-
-
-def list_linux_backups(info_path: str) -> list[str]:
-    """Return available backup files for a BlueZ info file, newest first."""
-
-    directory = os.path.dirname(info_path) or "."
-    basename = os.path.basename(info_path)
-
-    timestamped = glob.glob(os.path.join(directory, f"{basename}.*.bak"))
-    legacy = os.path.join(directory, f"{basename}.bak")
-
-    backup_files: set[str] = set(timestamped)
-    if os.path.isfile(legacy):
-        backup_files.add(legacy)
-
-    return sorted(backup_files, key=lambda p: os.path.getmtime(p), reverse=True)
-
-
-def find_adapters() -> list[AdapterInfo]:
-    adapters: list[AdapterInfo] = []
-    if not os.path.isdir(BASE_DIR):
-        return adapters
-
-    btctl_map = get_adapters_from_bluetoothctl()
-
-    for entry in os.listdir(BASE_DIR):
-        full_path = os.path.join(BASE_DIR, entry)
-        if not os.path.isdir(full_path):
-            continue
-        if not is_mac_dir_name(entry):
-            continue
-
-        mac = normalize_mac_colon(entry)
-
-        # Start with MAC as fallback name
-        name = mac
-        is_default = False
-
-        # Prefer data from bluetoothctl list (name + [default])
-        if mac in btctl_map:
-            name = btctl_map[mac]["name"] or mac
-            is_default = btctl_map[mac]["is_default"]
-
-        # If bluetoothctl didn't give us a name, try settings file
-        if name == mac:
-            settings_path = os.path.join(full_path, "settings")
-            if os.path.isfile(settings_path):
-                try:
-                    with open(settings_path, "r", encoding="utf-8") as f:
-                        for line in f:
-                            if line.startswith("Name="):
-                                name_val = line.split("=", 1)[1].strip()
-                                if name_val:
-                                    name = name_val
-                                break
-                except Exception:
-                    pass
-
-        adapters.append(AdapterInfo(mac=mac, name=name, is_default=is_default, path=full_path))
-
-    # If none marked default (e.g. bluetoothctl missing), mark the first one as default
-    if adapters and not any(a.is_default for a in adapters):
-        adapters[0].is_default = True
-
-    return adapters
-
-
-
-def find_devices(adapter: AdapterInfo) -> list[DeviceInfo]:
-    devices: list[DeviceInfo] = []
-    if not os.path.isdir(adapter.path):
-        return devices
-
-    for entry in os.listdir(adapter.path):
-        full_path = os.path.join(adapter.path, entry)
-        if not os.path.isdir(full_path):
-            continue
-        if not is_mac_dir_name(entry):
-            continue
-        info_path = os.path.join(full_path, "info")
-        if not os.path.isfile(info_path):
-            continue
-
-        mac = normalize_mac_colon(entry)
-        name = mac
-        try:
-            with open(info_path, "r", encoding="utf-8") as f:
-                for line in f:
-                    if line.startswith("Name="):
-                        n = line.split("=", 1)[1].strip()
-                        if n:
-                            name = n
-                        break
-        except Exception:
-            pass
-
-        devices.append(DeviceInfo(mac=mac, name=name, info_path=info_path))
-
-    return devices
-
-
 class BtKeyGui(Gtk.Window):
     def __init__(self):
         super().__init__(title="Bluetooth Key Sync (Linux)")
@@ -340,7 +56,7 @@ class BtKeyGui(Gtk.Window):
         self.set_default_size(480, 200)
 
         # Data
-        self.adapters: list[AdapterInfo] = find_adapters()
+        self.adapters: list[AdapterInfo] = get_bluetooth_adapters()
         self.devices: list[DeviceInfo] = []
 
         if not self.adapters:
@@ -538,7 +254,7 @@ class BtKeyGui(Gtk.Window):
             self.set_status("No adapter selected.")
             return
 
-        self.devices = find_devices(adapter)
+        self.devices = get_devices_for_adapter(adapter)
 
         if not self.devices:
             self.set_status(f"No devices found for adapter {adapter.mac}.")
@@ -573,7 +289,7 @@ class BtKeyGui(Gtk.Window):
         prev_adapter_mac = prev_adapter.mac if prev_adapter else None
         prev_device_mac = prev_device.mac if prev_device else None
 
-        self.adapters = find_adapters()
+        self.adapters = get_bluetooth_adapters()
         if not self.adapters:
             self.adapter_store.clear()
             self.device_store.clear()
@@ -628,7 +344,7 @@ class BtKeyGui(Gtk.Window):
             filename = dialog.get_filename()
             dialog.destroy()
             try:
-                record = linux_export_key(adapter.mac, device.mac)
+                record = export_bt_key(adapter.mac, device.mac)
                 with open(filename, "w", encoding="utf-8") as f:
                     json.dump(record.to_dict(), f, indent=2)
                 self.set_status(f"Exported key for {device.name} to {filename}")
@@ -701,7 +417,7 @@ class BtKeyGui(Gtk.Window):
                     device.name if record.device_mac == device.mac else record.device_mac
                 )
 
-                backup_path = linux_import_key(record)
+                backup_path = import_bt_key(record)
                 self.set_status(
                     f"Imported key for {display_device}. Backup created: {backup_path}"
                 )
@@ -755,7 +471,7 @@ class BtKeyGui(Gtk.Window):
             return
 
         info_path = device.info_path
-        backup_files = list_linux_backups(info_path)
+        backup_files = list_backups(info_path)
 
         if not os.path.isfile(info_path):
             self._show_error_dialog(
@@ -866,7 +582,7 @@ class BtKeyGui(Gtk.Window):
             return
 
         try:
-            shutil.copy2(selected_backup, info_path)
+            restore_backup(info_path, selected_backup)
         except Exception as e:  # noqa: BLE001
             self._show_error_dialog(str(e), title="Restore failed")
             return
