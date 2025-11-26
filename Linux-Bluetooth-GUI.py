@@ -18,6 +18,7 @@ You can pair your headphones in Windows, export the key there to JSON,
 and then import that JSON here into the selected device.
 """
 
+import glob
 import os
 import sys
 import re
@@ -26,6 +27,7 @@ import shutil
 import tempfile
 import subprocess
 import platform
+from datetime import datetime
 from dataclasses import dataclass
 
 def ensure_root():
@@ -243,8 +245,23 @@ def linux_import_key(record: BtKeyRecord):
         )
 
     # Backup first
-    backup_path = info_path + ".bak"
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    backup_path = f"{info_path}.{timestamp}.bak"
     shutil.copy2(info_path, backup_path)
+
+    metadata = {
+        "adapter_mac": adapter_mac,
+        "device_mac": device_mac,
+        "source_info_path": info_path,
+        "backup_path": backup_path,
+        "created_at": timestamp,
+    }
+
+    try:
+        with open(f"{info_path}.{timestamp}.json", "w", encoding="utf-8") as meta_file:
+            json.dump(metadata, meta_file, indent=2)
+    except Exception:  # noqa: BLE001
+        pass
 
     # Read all lines and replace/insert Key=...
     with open(info_path, "r", encoding="utf-8") as f:
@@ -304,6 +321,22 @@ def linux_import_key(record: BtKeyRecord):
         raise RuntimeError(f"Failed to update BlueZ info file: {exc}") from exc
 
     return backup_path
+
+
+def list_linux_backups(info_path: str) -> list[str]:
+    """Return available backup files for a BlueZ info file, newest first."""
+
+    directory = os.path.dirname(info_path) or "."
+    basename = os.path.basename(info_path)
+
+    timestamped = glob.glob(os.path.join(directory, f"{basename}.*.bak"))
+    legacy = os.path.join(directory, f"{basename}.bak")
+
+    backup_files: set[str] = set(timestamped)
+    if os.path.isfile(legacy):
+        backup_files.add(legacy)
+
+    return sorted(backup_files, key=lambda p: os.path.getmtime(p), reverse=True)
 
 
 def restart_bluetooth_service() -> tuple[bool, str]:
@@ -835,7 +868,7 @@ class BtKeyGui(Gtk.Window):
             return
 
         info_path = device.info_path
-        backup_path = info_path + ".bak"
+        backup_files = list_linux_backups(info_path)
 
         if not os.path.isfile(info_path):
             self._show_error_dialog(
@@ -847,30 +880,67 @@ class BtKeyGui(Gtk.Window):
             )
             return
 
-        if not os.path.isfile(backup_path):
+        if not backup_files:
             self._show_error_dialog(
-                f"No backup file found for this device. Expected:\n{backup_path}",
+                "No backups found for this device.\n"
+                "Import a key at least once to create backups first.",
                 title="Restore failed",
             )
             return
 
+        chooser = Gtk.Dialog(title="Select backup to restore", parent=self)
+        chooser.add_buttons(
+            Gtk.STOCK_CANCEL,
+            Gtk.ResponseType.CANCEL,
+            Gtk.STOCK_OK,
+            Gtk.ResponseType.OK,
+        )
+
+        combo = Gtk.ComboBoxText()
+        for path in backup_files:
+            try:
+                modified = datetime.fromtimestamp(os.path.getmtime(path)).strftime(
+                    "%Y-%m-%d %H:%M:%S"
+                )
+                label = f"{os.path.basename(path)} (saved {modified})"
+            except OSError:
+                label = os.path.basename(path)
+            combo.append(path, label)
+
+        combo.set_active(0)
+
+        box = chooser.get_content_area()
+        box.set_spacing(8)
+        box.add(Gtk.Label(label="Choose a backup to restore:"))
+        box.add(combo)
+        chooser.show_all()
+
+        response = chooser.run()
+        selected_backup = combo.get_active_id() if response == Gtk.ResponseType.OK else None
+        chooser.destroy()
+
+        if not selected_backup:
+            return
+
         if not self._ask_yes_no(
-            f"Restore backup for {device.name}?\n\n"
-            f"This will overwrite the current info file with:\n{backup_path}",
+            f"Restore backup for {device.name}?\n\n",
+            f"This will overwrite the current info file with:\n{selected_backup}",
             title="Restore backup?",
         ):
             return
 
         try:
-            shutil.copy2(backup_path, info_path)
+            shutil.copy2(selected_backup, info_path)
         except Exception as e:  # noqa: BLE001
             self._show_error_dialog(str(e), title="Restore failed")
             return
 
-        self.set_status(f"Restored backup for {device.name} to {info_path}")
+        self.set_status(
+            f"Restored backup for {device.name} from {selected_backup} to {info_path}"
+        )
         self._show_info_dialog(
-            f"Successfully restored backup for {device.name}.\n\n"
-            f"Backup file: {backup_path}\n"
+            f"Successfully restored backup for {device.name}.\n\n",
+            f"Backup file: {selected_backup}\n",
             f"Restored to: {info_path}",
             title="Restore successful",
         )
