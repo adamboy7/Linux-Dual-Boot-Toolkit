@@ -6,7 +6,7 @@ This toolkit helps dual-boot users share Bluetooth pairings and Steam libraries 
 Windows and Linux store Bluetooth link keys separately. Without transferring the keys, every reboot into the other OS requires re-pairing headphones, controllers, and other devices. The Linux (`Linux-Bluetooth-GUI.py`) and Windows (`Windows-Bluetooth-GUI.py`) managers export a paired device's link key to JSON on one platform and import it on the other, letting both systems recognize the device immediately.
 
 ### Permission model on Windows
-Bluetooth link keys live under the system-wide registry path `HKLM\\SYSTEM\\CurrentControlSet\\Services\\BTHPORT\\Parameters` and are only writable by the LocalSystem account. The Windows GUI enforces SYSTEM-level execution and, when launched from an administrator session, re-invokes itself via PsExec so it can access and modify the required registry values (`Keys` and `Devices`). Keep a copy of `PsExec.exe`/`PsExec64.exe` in `PATH` or alongside the script to allow this elevation flow.
+Bluetooth link keys live under the system-wide registry path `HKLM\\SYSTEM\\CurrentControlSet\\Services\\BTHPORT\\Parameters` and are only visible and writable to the LocalSystem account. A standard Administrator account cannot even enumerate those keys, so the Windows GUI enforces SYSTEM-level execution and, when launched from an administrator session, re-invokes itself via PsExec to gain visibility into the `Keys` and `Devices` subkeys before editing. Keep a copy of `PsExec.exe`/`PsExec64.exe` in `PATH` or alongside the script to allow this elevation flow.
 
 ### Double-layered backups for Bluetooth keys
 The toolkit takes two safety nets before modifying stored keys:
