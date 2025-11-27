@@ -1,70 +1,12 @@
-"""Shared privilege helpers for Bluetooth GUI tools."""
+"""Windows-specific permission helpers."""
 from __future__ import annotations
 
 import os
-import platform
 import shutil
 import subprocess
 import sys
 from typing import Optional
 
-
-# ----- Linux helpers -----
-
-def ensure_root_linux() -> None:
-    """Ensure the current process is running as root on Linux."""
-
-    if platform.system() != "Linux":
-        return
-
-    if not hasattr(os, "geteuid") or os.geteuid() == 0:
-        return
-
-    script_path = os.path.abspath(sys.argv[0])
-    args = [sys.executable, script_path, *sys.argv[1:]]
-
-    display_env_vars = []
-    for key in (
-        "DISPLAY",
-        "XAUTHORITY",
-        "WAYLAND_DISPLAY",
-        "XDG_RUNTIME_DIR",
-        "DBUS_SESSION_BUS_ADDRESS",
-    ):
-        value = os.environ.get(key)
-        if value:
-            display_env_vars.append(f"{key}={value}")
-
-    if shutil.which("pkexec"):
-        os.execvpe("pkexec", ["pkexec", "env", *display_env_vars, *args], os.environ)
-
-    if shutil.which("sudo"):
-        os.execvpe("sudo", ["sudo", "-E", *args], os.environ)
-
-    sys.stderr.write("This tool must be run as root (pkexec/sudo not found).\n")
-    sys.exit(1)
-
-
-def ensure_platform_permissions(system_flag: Optional[str] = None) -> None:
-    """Ensure the process has the right privileges for the current platform.
-
-    * On Linux, this enforces root via :func:`ensure_root_linux`.
-    * On Windows, this enforces a SYSTEM token via :func:`ensure_windows_system`.
-
-    Args:
-        system_flag: Optional flag passed through to ``ensure_windows_system``
-            to detect a re-launched SYSTEM instance.
-    """
-
-    current_platform = platform.system()
-
-    if current_platform == "Linux":
-        ensure_root_linux()
-    elif current_platform == "Windows":
-        ensure_windows_system(system_flag or "")
-
-
-# ----- Windows helpers -----
 
 def get_windows_username() -> str:
     """Get the Windows account name from the current token using GetUserNameW."""
@@ -127,7 +69,9 @@ def relaunch_as_admin() -> None:
     sys.exit(0)
 
 
-def relaunch_as_system_via_psexec(system_flag: str, additional_args: Optional[list[str]] = None) -> None:
+def relaunch_as_system_via_psexec(
+    system_flag: str, additional_args: Optional[list[str]] = None
+) -> None:
     """From an elevated admin process, relaunch this script as SYSTEM using PsExec."""
 
     import tkinter.messagebox as messagebox
