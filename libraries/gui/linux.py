@@ -20,10 +20,32 @@ if platform.system() != "Linux":
 
 ensure_platform_permissions()
 
-import gi
+def _notify_missing_gtk(message: str) -> None:
+    print(message, file=sys.stderr)
+    try:
+        import tkinter
+        from tkinter import messagebox
 
-gi.require_version("Gtk", "3.0")
-from gi.repository import Gtk
+        root = tkinter.Tk()
+        root.withdraw()
+        messagebox.showerror("Missing GTK dependencies", message)
+        root.destroy()
+    except Exception:
+        # Best-effort fallback; console message already emitted.
+        pass
+
+
+try:
+    import gi
+
+    gi.require_version("Gtk", "3.0")
+    from gi.repository import Gtk
+except ImportError:
+    _notify_missing_gtk(
+        "GTK 3 and PyGObject (gi) are required to run the Linux GUI.\n"
+        "Install the GTK 3 runtime and the python3-gi package, then try again."
+    )
+    sys.exit(1)
 
 
 class BtKeyGui(Gtk.Window):
@@ -39,7 +61,7 @@ class BtKeyGui(Gtk.Window):
 
         if not self.adapters:
             self._show_error_and_quit("No Bluetooth adapters found in /var/lib/bluetooth.")
-            return
+            raise RuntimeError("No Bluetooth adapters found in /var/lib/bluetooth.")
 
         # Top-level layout
         vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
@@ -495,7 +517,12 @@ def run_linux_gui() -> None:
         print("This tool is intended for Linux (BlueZ).", file=sys.stderr)
         sys.exit(1)
 
-    win = BtKeyGui()
+    try:
+        win = BtKeyGui()
+    except RuntimeError:
+        # Initialization failed; message already shown.
+        return
+
     Gtk.main()
 
 
