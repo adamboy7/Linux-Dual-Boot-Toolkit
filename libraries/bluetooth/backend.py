@@ -19,6 +19,7 @@ from .windows import (
     get_windows_bluetooth_adapters,
     get_windows_devices_for_adapter,
     read_device_key_hex,
+    WIN_BT_KEYS_REG_PATH,
 )
 from .windows_registry import (
     backup_windows_bluetooth_registry,
