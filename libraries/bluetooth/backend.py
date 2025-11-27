@@ -21,7 +21,10 @@ from .windows import (
     get_windows_devices_for_adapter,
     read_device_key_hex,
 )
-from .windows_registry import backup_windows_bluetooth_registry
+from .windows_registry import (
+    backup_windows_bluetooth_registry,
+    restore_windows_bluetooth_registry,
+)
 
 
 @dataclass
@@ -182,12 +185,50 @@ class WindowsBluetoothBackend:
         backup_path = save_timestamped_backup(backup_record, directory=os.getcwd())
         registry_backups = backup_windows_bluetooth_registry(directory=os.getcwd())
 
-        with winreg.OpenKey(
-            winreg.HKEY_LOCAL_MACHINE, key_path, 0, winreg.KEY_SET_VALUE
-        ) as adap_key:
-            winreg.SetValueEx(
-                adap_key, device_raw, 0, winreg.REG_BINARY, key_bytes
-            )
+        rollback_errors: list[str] = []
+        rollback_notes: list[str] = []
+        has_previous_key = isinstance(previous_value, (bytes, bytearray))
+
+        try:
+            with winreg.OpenKey(
+                winreg.HKEY_LOCAL_MACHINE, key_path, 0, winreg.KEY_SET_VALUE
+            ) as adap_key:
+                winreg.SetValueEx(
+                    adap_key, device_raw, 0, winreg.REG_BINARY, key_bytes
+                )
+        except Exception as exc:  # noqa: BLE001
+            try:
+                restore_windows_bluetooth_registry(registry_backups)
+                rollback_notes.append("registry backups restored")
+            except Exception as restore_exc:  # noqa: BLE001
+                rollback_errors.append(f"registry restore failed: {restore_exc}")
+
+            if has_previous_key:
+                try:
+                    with winreg.OpenKey(
+                        winreg.HKEY_LOCAL_MACHINE, key_path, 0, winreg.KEY_SET_VALUE
+                    ) as adap_key:
+                        winreg.SetValueEx(
+                            adap_key,
+                            device_raw,
+                            0,
+                            previous_value_type or winreg.REG_BINARY,
+                            bytes.fromhex(backup_record.key_hex),
+                        )
+                    rollback_notes.append("previous key restored")
+                except Exception as restore_prev_exc:  # noqa: BLE001
+                    rollback_errors.append(
+                        f"previous key restore failed: {restore_prev_exc}"
+                    )
+
+            rollback_detail = "; ".join(rollback_errors or rollback_notes)
+            raise RuntimeError(
+                "Failed to import Bluetooth key: "
+                f"{exc}. Rollback attempted: {rollback_detail or 'see logs for details.'}"
+            ) from exc
+        finally:
+            # Context manager closes registry handle even on failure.
+            pass
 
         return ImportResult(
             backup_path=backup_path,
