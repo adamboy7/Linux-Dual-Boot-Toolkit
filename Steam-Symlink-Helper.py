@@ -511,20 +511,27 @@ def main():
         action="store_true",
         help="After syncing, also remove stale symlinks in the Linux library.",
     )
+    parser.add_argument(
+        "--headless",
+        action="store_true",
+        help="Run without GUI using saved defaults when paths are omitted.",
+    )
 
     args = parser.parse_args()
 
-    # Headless mode: any of these flags mean "do not show GUI, just run"
-    headless = bool(args.linux_steam or args.win_steam or args.cleanup)
+    # Headless mode: command-line paths, cleanup flag, or explicit --headless
+    headless = bool(args.headless or args.linux_steam or args.win_steam or args.cleanup)
 
     if not headless:
         # No useful flags -> launch GUI
         run_gui()
         return
 
+    cfg = load_config()
+
     # Headless mode logic
-    # Linux steamapps: use flag if provided, else auto-detect
-    linux_steamapps = args.linux_steam
+    # Linux steamapps: prefer flag, then saved config, then auto-detect
+    linux_steamapps = args.linux_steam or cfg.get("linux_steamapps")
     if not linux_steamapps:
         candidates = guess_steamapps_candidates()
         if candidates:
@@ -533,13 +540,22 @@ def main():
         else:
             print("[ERROR] --linux-steam not provided and no steamapps candidates detected.")
             sys.exit(1)
+    elif args.linux_steam:
+        # explicit CLI flag overrides saved defaults
+        pass
+    else:
+        print(f"[INFO] Using saved Linux steamapps: {linux_steamapps}")
 
-    # Windows steamapps must be explicitly provided
-    if not args.win_steam:
-        print("[ERROR] --win-steam is required in headless mode.")
+    # Windows steamapps: prefer flag, then saved config
+    windows_steamapps = args.win_steam or cfg.get("windows_steamapps")
+    if not windows_steamapps:
+        print("[ERROR] --win-steam not provided and no saved default available.")
         sys.exit(1)
-
-    windows_steamapps = args.win_steam
+    elif args.win_steam:
+        # explicit CLI flag overrides saved defaults
+        pass
+    else:
+        print(f"[INFO] Using saved Windows steamapps: {windows_steamapps}")
 
     print("[INFO] Headless mode:")
     print(f"  Linux steamapps : {linux_steamapps}")
