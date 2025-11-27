@@ -19,7 +19,7 @@ The toolkit takes two safety nets before modifying stored keys:
 If an import fails, the tooling attempts to restore from these backups automatically, reducing the risk of losing pairing data.
 
 ## Steam Symlink Helper
-`Steam-Symlink-Helper.py` links your Windows Steam library (typically on an NTFS partition) into Linux. It scans Windows `steamapps` manifests, then creates symlinks in your Linux `steamapps` folder pointing to the Windows game directories and manifest files. This approach avoids duplicating installs while letting the Linux Steam client see and launch the existing games. A managed-links file tracks what the tool created so you can clean up stale links later. The script offers both a Tkinter GUI and headless flags for automation.
+`Steam-Symlink-Helper.py` links your Windows Steam library (typically on an NTFS partition) into Linux. It scans Windows `steamapps` manifests, then creates symlinks in your Linux `steamapps` folder pointing to the Windows game directories and manifest files. Steam on Linux can see an NTFS library with the default driver but often cannot launch games because of permission, metadata, and compatibility differences between Windows and Linux; symlinking allows Steam to read the files natively and rebuild metadata so Proton/Steam Runtime can execute them properly. A managed-links file tracks what the tool created so you can clean up stale links later. The script offers both a Tkinter GUI and headless flags for automation. For reliability, mount your NTFS partition to a consistent location by adding an entry to `/etc/fstab` and point the helper at that stable mount point.
 
 ## Repository layout
 - `Linux-Bluetooth-GUI.py`: GTK tool for exporting/importing BlueZ link keys on Linux.
