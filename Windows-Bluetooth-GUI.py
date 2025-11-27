@@ -469,3 +469,14 @@ class BluetoothKeyManagerApp(tk.Tk):
                     f"Attempted: {detail}",
                 )
 
+
+def main():
+    ensure_platform_permissions(SYSTEM_FLAG)
+
+    app = BluetoothKeyManagerApp()
+    app.mainloop()
+
+
+if __name__ == "__main__":
+    main()
+
