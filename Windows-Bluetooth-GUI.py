@@ -5,7 +5,6 @@ if platform.system() != "Windows":
     print("This GUI tool currently only supports Windows.")
     sys.exit(1)
 
-import json
 import traceback
 import tkinter as tk
 from tkinter import filedialog, ttk, messagebox
@@ -20,10 +19,8 @@ from libraries.bluetooth import (
     reload_bluetooth,
 )
 from libraries.bt_gui_logic import (
-    BtKeyRecord,
     bt_record_from_json_file,
     bt_record_to_json_file,
-    save_timestamped_backup,
 )
 from libraries.permissions import ensure_platform_permissions
 
