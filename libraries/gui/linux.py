@@ -61,7 +61,7 @@ class BtKeyGui(Gtk.Window):
 
         if not self.adapters:
             self._show_error_and_quit("No Bluetooth adapters found in /var/lib/bluetooth.")
-            return
+            raise RuntimeError("No Bluetooth adapters found in /var/lib/bluetooth.")
 
         # Top-level layout
         vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
@@ -517,7 +517,12 @@ def run_linux_gui() -> None:
         print("This tool is intended for Linux (BlueZ).", file=sys.stderr)
         sys.exit(1)
 
-    win = BtKeyGui()
+    try:
+        win = BtKeyGui()
+    except RuntimeError:
+        # Initialization failed; message already shown.
+        return
+
     Gtk.main()
 
 
