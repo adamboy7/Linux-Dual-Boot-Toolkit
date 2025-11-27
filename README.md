@@ -30,7 +30,7 @@ Bluetooth link keys live under the system-wide registry path `HKLM\\SYSTEM\\Curr
 ### Launch options
 Headless mode is useful for automation and repeat runs after adding games. The CLI accepts:
 - `--linux-steam`: Linux `steamapps` path where symlinks should live (optional; auto-detected if omitted).
-- `--win-steam`: Windows NTFS `steamapps` path mounted on Linux (required in headless mode if a path is not saved or detected).
+- `--win-steam`: Windows NTFS `steamapps` path mounted on Linux (required in headless mode if a path is not already saved).
 - `--cleanup`: After syncing, remove stale symlinks in the Linux library.
 - `--headless`: Force headless execution even when no other flags are provided; combines with saved defaults.
 
