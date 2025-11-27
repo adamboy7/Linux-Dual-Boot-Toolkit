@@ -23,7 +23,7 @@ import os
 import platform
 import sys
 
-from libraries.bluetooth_utils import (
+from libraries.bluetooth import (
     BASE_DIR,
     AdapterInfo,
     DeviceInfo,
