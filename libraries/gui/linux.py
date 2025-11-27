@@ -20,10 +20,32 @@ if platform.system() != "Linux":
 
 ensure_platform_permissions()
 
-import gi
+def _notify_missing_gtk(message: str) -> None:
+    print(message, file=sys.stderr)
+    try:
+        import tkinter
+        from tkinter import messagebox
 
-gi.require_version("Gtk", "3.0")
-from gi.repository import Gtk
+        root = tkinter.Tk()
+        root.withdraw()
+        messagebox.showerror("Missing GTK dependencies", message)
+        root.destroy()
+    except Exception:
+        # Best-effort fallback; console message already emitted.
+        pass
+
+
+try:
+    import gi
+
+    gi.require_version("Gtk", "3.0")
+    from gi.repository import Gtk
+except ImportError:
+    _notify_missing_gtk(
+        "GTK 3 and PyGObject (gi) are required to run the Linux GUI.\n"
+        "Install the GTK 3 runtime and the python3-gi package, then try again."
+    )
+    sys.exit(1)
 
 
 class BtKeyGui(Gtk.Window):
