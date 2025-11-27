@@ -360,7 +360,7 @@ class SteamSymlinkGTK(Gtk.Window):
         toolbar.set_child_packing(save_btn, False, False, 0, Gtk.PackType.START)
 
         quit_btn = Gtk.Button(label="Quit")
-        quit_btn.connect("clicked", self.destroy)
+        quit_btn.connect("clicked", self.on_quit)
         toolbar.pack_end(quit_btn, False, False, 0)
 
     def _build_log_area(self, outer: Gtk.Box):
@@ -483,6 +483,11 @@ class SteamSymlinkGTK(Gtk.Window):
             self._info_dialog(f"Paths saved to {CONFIG_PATH}", title="Saved")
         else:
             self._error_dialog("Failed to save configuration.")
+
+    def on_quit(self, _button=None):
+        # Explicit handler to ensure the application closes cleanly
+        self.destroy()
+        Gtk.main_quit()
 
 
 def run_gui():
