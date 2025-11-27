@@ -146,7 +146,49 @@ def get_windows_bluetooth_adapters():
                 mapping[_normalize_mac(mac)] = desc
         return mapping
 
-    def _read_pnp_friendly_names() -> dict[str, str]:
+    def _read_pnp_mac_addresses_by_instance() -> dict[str, str]:
+        """Map PnP/Instance IDs to MAC addresses via CIM network adapters."""
+
+        command = [
+            "powershell",
+            "-NoLogo",
+            "-NoProfile",
+            "-Command",
+            (
+                "Get-CimInstance Win32_NetworkAdapter -ErrorAction SilentlyContinue | "
+                "Where-Object { $_.PNPDeviceID -like '*BLUETOOTH*' -or "
+                "$_.Name -like '*Bluetooth*' } | "
+                "Select-Object PNPDeviceID, MACAddress | "
+                "ConvertTo-Csv -NoTypeInformation"
+            ),
+        ]
+
+        try:
+            result = subprocess.run(
+                command,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+        except FileNotFoundError:
+            return {}
+
+        if result.returncode != 0 or not result.stdout:
+            return {}
+
+        mapping: dict[str, str] = {}
+        reader = csv.DictReader(io.StringIO(result.stdout))
+        for row in reader:
+            mac = (row.get("MACAddress") or "").strip()
+            pnp_id = (row.get("PNPDeviceID") or "").strip()
+            if mac and pnp_id:
+                mapping[pnp_id.upper()] = _normalize_mac(mac)
+        return mapping
+
+    def _read_pnp_friendly_names(
+        pnp_mac_by_instance: dict[str, str],
+    ) -> dict[str, str]:
         """
         Try to map adapter MAC addresses to Device Manager friendly names.
 
@@ -210,11 +252,28 @@ def get_windows_bluetooth_adapters():
             normalized_mac = _mac_from_values(id_candidates)
             if normalized_mac:
                 mapping[normalized_mac] = candidate_name
+                continue
+
+            for key in ("InstanceId", "HardwareId"):
+                raw_val = row.get(key)
+                if not raw_val:
+                    continue
+                for candidate in str(raw_val).split(";"):
+                    lookup_key = candidate.strip().upper()
+                    if not lookup_key:
+                        continue
+                    mapped_mac = pnp_mac_by_instance.get(lookup_key)
+                    if mapped_mac:
+                        mapping[mapped_mac] = candidate_name
+                        break
+                else:
+                    continue
+                break
 
         return mapping
 
     adapter_descriptions = _read_adapter_descriptions()
-    adapter_friendly_names = _read_pnp_friendly_names()
+    adapter_friendly_names = _read_pnp_friendly_names(_read_pnp_mac_addresses_by_instance())
 
     def _decode_adapter_name(raw_value) -> str:
         name = decode_bt_name(raw_value)
