@@ -23,13 +23,9 @@ import platform
 import sys
 
 from libraries.bluetooth import (
-    BASE_DIR,
-    AdapterInfo,
-    DeviceInfo,
-    export_bt_key,
-    get_bluetooth_adapters,
-    get_devices_for_adapter,
-    import_bt_key,
+    BluetoothAdapter,
+    BluetoothDevice,
+    get_bluetooth_backend,
     reload_bluetooth,
 )
 from libraries.bt_gui_logic import BtKeyRecord
@@ -53,8 +49,9 @@ class BtKeyGui(Gtk.Window):
         self.set_default_size(480, 200)
 
         # Data
-        self.adapters: list[AdapterInfo] = get_bluetooth_adapters()
-        self.devices: list[DeviceInfo] = []
+        self.backend = get_bluetooth_backend()
+        self.adapters: list[BluetoothAdapter] = self.backend.list_adapters()
+        self.devices: list[BluetoothDevice] = []
 
         if not self.adapters:
             self._show_error_and_quit("No Bluetooth adapters found in /var/lib/bluetooth.")
@@ -72,7 +69,7 @@ class BtKeyGui(Gtk.Window):
         adapter_label.set_xalign(0.0)
         adapter_box.pack_start(adapter_label, False, False, 0)
 
-        self.adapter_store = Gtk.ListStore(str, object)  # display_text, AdapterInfo
+        self.adapter_store = Gtk.ListStore(str, object)  # display_text, BluetoothAdapter
         self.adapter_combo = Gtk.ComboBox.new_with_model(self.adapter_store)
         renderer_text = Gtk.CellRendererText()
         self.adapter_combo.pack_start(renderer_text, True)
@@ -87,7 +84,7 @@ class BtKeyGui(Gtk.Window):
         device_label.set_xalign(0.0)
         device_box.pack_start(device_label, False, False, 0)
 
-        self.device_store = Gtk.ListStore(str, object)  # display_text, DeviceInfo
+        self.device_store = Gtk.ListStore(str, object)  # display_text, BluetoothDevice
         self.device_combo = Gtk.ComboBox.new_with_model(self.device_store)
         renderer_text2 = Gtk.CellRendererText()
         self.device_combo.pack_start(renderer_text2, True)
@@ -223,19 +220,19 @@ class BtKeyGui(Gtk.Window):
         else:
             self._reload_devices_for_selected_adapter()
 
-    def _get_selected_adapter(self) -> AdapterInfo | None:
+    def _get_selected_adapter(self) -> BluetoothAdapter | None:
         tree_iter = self.adapter_combo.get_active_iter()
         if tree_iter is None:
             return None
         model = self.adapter_combo.get_model()
-        return model[tree_iter][1]  # AdapterInfo
+        return model[tree_iter][1]  # BluetoothAdapter
 
-    def _get_selected_device(self) -> DeviceInfo | None:
+    def _get_selected_device(self) -> BluetoothDevice | None:
         tree_iter = self.device_combo.get_active_iter()
         if tree_iter is None:
             return None
         model = self.device_combo.get_model()
-        return model[tree_iter][1]  # DeviceInfo
+        return model[tree_iter][1]  # BluetoothDevice
 
     def _reload_devices_for_selected_adapter(self, preferred_device_mac: str | None = None):
         adapter = self._get_selected_adapter()
@@ -246,7 +243,7 @@ class BtKeyGui(Gtk.Window):
             self.set_status("No adapter selected.")
             return
 
-        self.devices = get_devices_for_adapter(adapter)
+        self.devices = self.backend.list_devices(adapter)
 
         if not self.devices:
             self.set_status(f"No devices found for adapter {adapter.mac}.")
@@ -281,7 +278,7 @@ class BtKeyGui(Gtk.Window):
         prev_adapter_mac = prev_adapter.mac if prev_adapter else None
         prev_device_mac = prev_device.mac if prev_device else None
 
-        self.adapters = get_bluetooth_adapters()
+        self.adapters = self.backend.list_adapters()
         if not self.adapters:
             self.adapter_store.clear()
             self.device_store.clear()
@@ -336,7 +333,7 @@ class BtKeyGui(Gtk.Window):
             filename = dialog.get_filename()
             dialog.destroy()
             try:
-                record = export_bt_key(adapter.mac, device.mac)
+                record = self.backend.export_key(adapter, device)
                 with open(filename, "w", encoding="utf-8") as f:
                     json.dump(record.to_dict(), f, indent=2)
                 self.set_status(f"Exported key for {device.name} to {filename}")
@@ -409,7 +406,8 @@ class BtKeyGui(Gtk.Window):
                     device.name if record.device_mac == device.mac else record.device_mac
                 )
 
-                backup_path = import_bt_key(record)
+                result = self.backend.import_key(record)
+                backup_path = result.backup_path if result else None
                 backup_message = (
                     f" Timestamped JSON backup saved to: {backup_path}"
                     if backup_path

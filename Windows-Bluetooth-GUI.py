@@ -1,4 +1,3 @@
-import os
 import platform
 import sys
 
@@ -10,17 +9,15 @@ import json
 import traceback
 import tkinter as tk
 from tkinter import filedialog, ttk, messagebox
-import winreg
+
 from libraries.bluetooth import (
+    BluetoothAdapter,
+    BluetoothDevice,
+    ImportResult,
     WIN_BT_KEYS_REG_PATH,
-    backup_windows_bluetooth_registry,
-    format_mac,
-    get_bluetooth_adapters,
-    get_devices_for_adapter,
     normalize_mac,
-    read_device_key_hex,
+    get_bluetooth_backend,
     reload_bluetooth,
-    restore_windows_bluetooth_registry,
 )
 from libraries.bt_gui_logic import (
     BtKeyRecord,
@@ -42,8 +39,10 @@ class BluetoothKeyManagerApp(tk.Tk):
         self.title("Bluetooth Key Sync (Windows)")
         self.resizable(False, False)
 
-        self.display_to_adapter = {}
-        self.display_to_device = {}
+        self.backend = get_bluetooth_backend()
+
+        self.display_to_adapter: dict[str, BluetoothAdapter] = {}
+        self.display_to_device: dict[str, BluetoothDevice] = {}
 
         self.status_var = tk.StringVar(value="")
 
@@ -132,7 +131,7 @@ class BluetoothKeyManagerApp(tk.Tk):
 
     def _load_adapters(self):
         try:
-            adapters = get_bluetooth_adapters()
+            adapters = self.backend.list_adapters()
         except PermissionError:
             messagebox.showerror(
                 "Permission error",
@@ -162,7 +161,7 @@ class BluetoothKeyManagerApp(tk.Tk):
 
         display_values = []
         for adapter in adapters:
-            display = f"{adapter.get('name', adapter['mac'])} ({adapter['mac']})"
+            display = f"{adapter.name} ({adapter.mac})"
             self.display_to_adapter[display] = adapter
             display_values.append(display)
 
@@ -185,9 +184,7 @@ class BluetoothKeyManagerApp(tk.Tk):
             return
 
         try:
-            devices = get_devices_for_adapter(adapter["raw"])
-        except FileNotFoundError:
-            devices = []
+            devices = self.backend.list_devices(adapter)
         except PermissionError:
             messagebox.showerror(
                 "Permission error",
@@ -205,25 +202,25 @@ class BluetoothKeyManagerApp(tk.Tk):
             return
 
         if not devices:
-            self.set_status(f"No devices found for adapter {adapter['mac']}.")
+            self.set_status(f"No devices found for adapter {adapter.mac}.")
             return
 
         dev_display_values = []
         for dev in devices:
-            dev_display = f"{dev['name']} ({dev['mac']})"
+            dev_display = f"{dev.name} ({dev.mac})"
             self.display_to_device[dev_display] = dev
             dev_display_values.append(dev_display)
 
         self.device_combobox["values"] = dev_display_values
         self.device_combobox.current(0)
-        self.set_status(f"Found {len(devices)} device(s) for adapter {adapter['mac']}.")
+        self.set_status(f"Found {len(devices)} device(s) for adapter {adapter.mac}.")
         self.on_device_selected()
 
     def on_device_selected(self, event=None):
         # Hook left in case we want to show extra info later
         pass
 
-    def _get_selected_adapter(self):
+    def _get_selected_adapter(self) -> BluetoothAdapter | None:
         display = self.adapter_var.get()
         adapter = self.display_to_adapter.get(display)
         if not adapter:
@@ -231,7 +228,7 @@ class BluetoothKeyManagerApp(tk.Tk):
             return None
         return adapter
 
-    def _get_selected_device(self):
+    def _get_selected_device(self) -> BluetoothDevice | None:
         display = self.device_var.get()
         device = self.display_to_device.get(display)
         if not device:
@@ -246,12 +243,7 @@ class BluetoothKeyManagerApp(tk.Tk):
             return
 
         try:
-            key_hex = read_device_key_hex(adapter["raw"], device["raw"])
-            record = BtKeyRecord(
-                adapter_mac=format_mac(adapter["raw"]),
-                device_mac=format_mac(device["raw"]),
-                key_hex=key_hex,
-            )
+            record = self.backend.export_key(adapter, device)
         except Exception as e:
             messagebox.showerror("Export failed", str(e))
             return
@@ -272,9 +264,9 @@ class BluetoothKeyManagerApp(tk.Tk):
 
         messagebox.showinfo(
             "Export successful",
-            f"Exported key for {device['name']} ({device['mac']}) to:\n{filepath}",
+            f"Exported key for {device.name} ({device.mac}) to:\n{filepath}",
         )
-        self.set_status(f"Exported key for {device['name']} to {filepath}")
+        self.set_status(f"Exported key for {device.name} to {filepath}")
 
     def import_key(self):
         adapter = self._get_selected_adapter()
@@ -295,12 +287,8 @@ class BluetoothKeyManagerApp(tk.Tk):
             messagebox.showerror("Import failed", f"Invalid JSON file:\n\n{e}")
             return
 
-        try:
-            selected_adapter_mac = normalize_mac(format_mac(adapter["raw"]))
-            selected_device_mac = normalize_mac(format_mac(device["raw"]))
-        except ValueError as e:
-            messagebox.showerror("Import failed", str(e))
-            return
+        selected_adapter_mac = normalize_mac(adapter.mac)
+        selected_device_mac = normalize_mac(device.mac)
 
         if (record.adapter_mac != selected_adapter_mac) or (record.device_mac != selected_device_mac):
             if not messagebox.askyesno(
@@ -317,173 +305,20 @@ class BluetoothKeyManagerApp(tk.Tk):
                 return
 
         try:
-            key_bytes = bytes.fromhex(record.key_hex)
-        except ValueError:
-            messagebox.showerror("Import failed", "key_hex is not valid hexadecimal data.")
-            return
-
-        record_adapter_raw = record.adapter_mac.replace(":", "").replace("-", "").lower()
-        record_device_raw = record.device_mac.replace(":", "").replace("-", "").lower()
-
-        key_path = WIN_BT_KEYS_REG_PATH + "\\" + record_adapter_raw
-        previous_value = None
-        previous_value_type = None
-        backup_path = None
-
-        # Read the existing registry value so it can be backed up and restored on failure
-        try:
-            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key_path, 0, winreg.KEY_READ) as adap_key:
-                try:
-                    prev_value, prev_type = winreg.QueryValueEx(adap_key, record_device_raw)
-                    previous_value = prev_value
-                    previous_value_type = prev_type
-                except FileNotFoundError:
-                    pass
-        except PermissionError:
-            messagebox.showerror(
-                "Permission error",
-                "Unable to read the existing Bluetooth key from the registry.\n\n"
-                "Make sure you are running this script as SYSTEM or with sufficient privileges.",
-            )
-            return
-        except FileNotFoundError:
-            pass
-        except Exception as e:
-            messagebox.showerror("Import failed", f"Unexpected error while reading existing key:\n\n{e}")
-            return
-
-        backup_record = record
-        if isinstance(previous_value, (bytes, bytearray)):
-            backup_record = BtKeyRecord(
-                adapter_mac=record.adapter_mac,
-                device_mac=record.device_mac,
-                key_hex=bytes(previous_value).hex().upper(),
-            )
-
-        try:
-            backup_path = save_timestamped_backup(backup_record, directory=os.getcwd())
+            import_result: ImportResult | None = self.backend.import_key(record)
         except Exception as e:
             messagebox.showerror(
                 "Import failed",
-                "Unable to save a timestamped backup JSON in the working directory.\n\n"
-                f"Error: {e}",
+                f"Unexpected error while writing key:\n\n{e}",
             )
             return
 
-        registry_backups: dict[str, str] = {}
-        try:
-            registry_backups = backup_windows_bluetooth_registry(directory=os.getcwd())
-        except Exception as e:
-            messagebox.showerror(
-                "Import failed",
-                "Unable to export a registry backup (.reg) for Bluetooth Keys/Devices.\n\n"
-                f"Error: {e}",
-            )
-            return
+        display_device = device.name if record.device_mac == selected_device_mac else record.device_mac
+        display_adapter = adapter.mac if record.adapter_mac == selected_adapter_mac else record.adapter_mac
 
-        def restore_previous_value():
-            if previous_value is None:
-                return None
-            try:
-                with winreg.OpenKey(
-                    winreg.HKEY_LOCAL_MACHINE,
-                    key_path,
-                    0,
-                    winreg.KEY_SET_VALUE,
-                ) as adap_key:
-                    winreg.SetValueEx(
-                        adap_key,
-                        record_device_raw,
-                        0,
-                        previous_value_type if previous_value_type is not None else winreg.REG_BINARY,
-                        previous_value,
-                    )
-                return None
-            except Exception as restore_exc:
-                return restore_exc
+        backup_path = import_result.backup_path if import_result else None
+        registry_backups = import_result.registry_backups if import_result else None
 
-        def restore_registry_backup():
-            if not registry_backups:
-                return None
-            try:
-                restore_windows_bluetooth_registry(registry_backups)
-                return None
-            except Exception as restore_exc:
-                return restore_exc
-
-        def format_error_message(base_message: str, restore_error, registry_restore_error):
-            parts = [base_message]
-            if backup_path:
-                parts.append(f"Backup saved to: {backup_path}")
-            if registry_backups:
-                parts.append("Registry backup saved to:")
-                parts.extend(registry_backups.values())
-            if previous_value is not None:
-                if restore_error is None:
-                    parts.append("Previous value was restored automatically.")
-                elif restore_error:
-                    parts.append(
-                        "Failed to restore the previous value automatically: "
-                        f"{restore_error}"
-                    )
-            if registry_backups:
-                if registry_restore_error is None:
-                    parts.append("Registry backup was restored automatically.")
-                elif registry_restore_error:
-                    parts.append(
-                        "Failed to restore the registry backup automatically: "
-                        f"{registry_restore_error}"
-                    )
-            return "\n\n".join(parts)
-
-        try:
-            with winreg.OpenKey(
-                winreg.HKEY_LOCAL_MACHINE,
-                key_path,
-                0,
-                winreg.KEY_SET_VALUE,
-            ) as adap_key:
-                winreg.SetValueEx(adap_key, record_device_raw, 0, winreg.REG_BINARY, key_bytes)
-        except PermissionError:
-            restore_error = restore_previous_value()
-            registry_restore_error = restore_registry_backup()
-            messagebox.showerror(
-                "Permission error",
-                format_error_message(
-                    "Unable to write the Bluetooth key to the registry.\n\n"
-                    "Make sure you are running this script as SYSTEM or with sufficient privileges.",
-                    restore_error,
-                    registry_restore_error,
-                ),
-            )
-            return
-        except FileNotFoundError:
-            restore_error = restore_previous_value()
-            registry_restore_error = restore_registry_backup()
-            messagebox.showerror(
-                "Import failed",
-                format_error_message(
-                    "Registry path not found for the target adapter. Ensure the device is paired first.",
-                    restore_error,
-                    registry_restore_error,
-                ),
-            )
-            return
-        except Exception as e:
-            restore_error = restore_previous_value()
-            registry_restore_error = restore_registry_backup()
-            messagebox.showerror(
-                "Import failed",
-                format_error_message(
-                    f"Unexpected error while writing key:\n\n{e}",
-                    restore_error,
-                    registry_restore_error,
-                ),
-            )
-            return
-
-        display_device = device["name"] if record.device_mac == selected_device_mac else record.device_mac
-        display_adapter = adapter["mac"] if record.adapter_mac == selected_adapter_mac else record.adapter_mac
         backup_line = f"\nExisting registry value backed up to:\n{backup_path}" if backup_path else ""
         registry_line = ""
         if registry_backups:
