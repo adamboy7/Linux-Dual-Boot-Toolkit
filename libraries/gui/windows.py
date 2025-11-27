@@ -1,31 +1,28 @@
+"""Tkinter-based Bluetooth key GUI for Windows systems."""
+from __future__ import annotations
+
 import platform
 import sys
-
-if platform.system() != "Windows":
-    print("This GUI tool currently only supports Windows.")
-    sys.exit(1)
-
 import traceback
 import tkinter as tk
-from tkinter import filedialog, ttk, messagebox
+from tkinter import filedialog, messagebox, ttk
 
 from libraries.bluetooth import (
     BluetoothAdapter,
     BluetoothDevice,
     ImportResult,
     WIN_BT_KEYS_REG_PATH,
-    normalize_mac,
     get_bluetooth_backend,
+    normalize_mac,
     reload_bluetooth,
 )
-from libraries.bt_gui_logic import (
-    bt_record_from_json_file,
-    bt_record_to_json_file,
-)
+from libraries.bt_gui_logic import bt_record_from_json_file, bt_record_to_json_file
 from libraries.permissions import ensure_platform_permissions
 
-
 SYSTEM_FLAG = "--launched-as-system"
+
+if platform.system() != "Windows":
+    raise ImportError("windows GUI module is only available on Windows platforms.")
 
 
 class BluetoothKeyManagerApp(tk.Tk):
@@ -134,7 +131,7 @@ class BluetoothKeyManagerApp(tk.Tk):
                 "Permission error",
                 "Unable to read Bluetooth keys from the registry.\n\n"
                 "Make sure you are running this script as SYSTEM or with "
-                "sufficient privileges."
+                "sufficient privileges.",
             )
             self.after(100, self.destroy)
             return
@@ -151,7 +148,7 @@ class BluetoothKeyManagerApp(tk.Tk):
             messagebox.showerror(
                 "No adapters found",
                 "No Bluetooth adapter keys were found under:\n\n"
-                f"HKLM\\{WIN_BT_KEYS_REG_PATH}"
+                f"HKLM\\{WIN_BT_KEYS_REG_PATH}",
             )
             self.after(100, self.destroy)
             return
@@ -187,7 +184,7 @@ class BluetoothKeyManagerApp(tk.Tk):
                 "Permission error",
                 "Unable to read Bluetooth device keys from the registry.\n\n"
                 "Make sure you are running this script as SYSTEM or with "
-                "sufficient privileges."
+                "sufficient privileges.",
             )
             return
         except Exception:
@@ -283,7 +280,6 @@ class BluetoothKeyManagerApp(tk.Tk):
         except Exception as e:
             messagebox.showerror("Import failed", f"Invalid JSON file:\n\n{e}")
             return
-
         selected_adapter_mac = normalize_mac(adapter.mac)
         selected_device_mac = normalize_mac(device.mac)
 
@@ -344,13 +340,15 @@ class BluetoothKeyManagerApp(tk.Tk):
                 )
 
 
-def main():
+def run_windows_gui() -> None:
+    if platform.system() != "Windows":
+        print("This GUI tool currently only supports Windows.")
+        sys.exit(1)
+
     ensure_platform_permissions(SYSTEM_FLAG)
 
     app = BluetoothKeyManagerApp()
     app.mainloop()
 
 
-if __name__ == "__main__":
-    main()
-
+__all__ = ["run_windows_gui", "BluetoothKeyManagerApp"]

@@ -3,7 +3,7 @@
 This toolkit helps dual-boot users share Bluetooth pairings and Steam libraries between Windows and Linux. It includes cross-platform Bluetooth key managers and a Steam symlink helper so you can avoid re-pairing devices or re-downloading games when switching operating systems.
 
 ## Why transfer Bluetooth keys?
-Windows and Linux store Bluetooth link keys separately. Without transferring the keys, every reboot into the other OS requires re-pairing headphones, controllers, and other devices. The Linux (`Linux-Bluetooth-GUI.py`) and Windows (`Windows-Bluetooth-GUI.py`) managers export a paired device's link key to JSON on one platform and import it on the other, letting both systems recognize the device immediately.
+Windows and Linux store Bluetooth link keys separately. Without transferring the keys, every reboot into the other OS requires re-pairing headphones, controllers, and other devices. The cross-platform launcher (`Bluetooth-GUI.py`) dispatches to the Linux (`libraries/gui/linux.py`) or Windows (`libraries/gui/windows.py`) GUI to export a paired device's link key to JSON on one platform and import it on the other, letting both systems recognize the device immediately.
 
 ### Permission model on Windows
 Bluetooth link keys live under the system-wide registry path `HKLM\\SYSTEM\\CurrentControlSet\\Services\\BTHPORT\\Parameters` and are only visible and writable to the LocalSystem account. A standard Administrator account cannot even enumerate those keys, so the Windows GUI enforces SYSTEM-level execution and, when launched from an administrator session, re-invokes itself via PsExec to gain visibility into the `Keys` and `Devices` subkeys before editing. Keep a copy of `PsExec.exe`/`PsExec64.exe` in `PATH` or alongside the script to allow this elevation flow.
@@ -37,8 +37,7 @@ python3 Steam-Symlink-Helper.py \
 ```
 
 ## Repository layout
-- `Linux-Bluetooth-GUI.py`: GTK tool for exporting/importing BlueZ link keys on Linux.
-- `Windows-Bluetooth-GUI.py`: Tkinter tool for exporting/importing Bluetooth link keys on Windows with SYSTEM and PsExec support.
+- `Bluetooth-GUI.py`: Cross-platform entry point that launches the Linux or Windows Bluetooth GUI for exporting/importing link keys.
 - `Steam-Symlink-Helper.py`: GUI/CLI helper to mirror a Windows Steam library into Linux via symlinks.
 - `libraries/`: Shared logic for Bluetooth parsing, permissions, backup handling, and GUI helpers.
 
