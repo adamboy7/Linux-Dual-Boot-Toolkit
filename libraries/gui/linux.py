@@ -391,18 +391,28 @@ class BtKeyGui(Gtk.Window):
 
                 result = self.backend.import_key(record)
                 backup_path = result.backup_path if result else None
+                info_backup_path = result.info_backup_path if result else None
                 backup_message = (
                     f" Timestamped JSON backup saved to: {backup_path}"
                     if backup_path
                     else ""
                 )
-                self.set_status(f"Imported key for {display_device}.{backup_message}")
+                info_backup_message = (
+                    f" Info file backed up to: {info_backup_path}"
+                    if info_backup_path
+                    else ""
+                )
+                self.set_status(
+                    f"Imported key for {display_device}.{backup_message}{info_backup_message}"
+                )
                 details = [
                     f"Successfully imported key for {display_device}.",
                     "You may need to restart Bluetooth:\n  sudo systemctl restart bluetooth",
                 ]
                 if backup_path:
                     details.insert(1, f"Backup saved to:\n{backup_path}\n")
+                if info_backup_path:
+                    details.insert(1, f"Info file backup saved to:\n{info_backup_path}\n")
 
                 self._show_info_dialog(*details, title="Import successful")
 
