@@ -32,6 +32,9 @@ Headless mode is useful for automation and repeat runs after adding games. The C
 - `--linux-steam`: Linux `steamapps` path where symlinks should live (optional; auto-detected if omitted).
 - `--win-steam`: Windows NTFS `steamapps` path mounted on Linux (required in headless mode).
 - `--cleanup`: After syncing, remove stale symlinks in the Linux library.
+- `--headless`: Force headless execution even when no other flags are provided; combines with saved defaults.
+
+If you pass any CLI path flags or `--cleanup`, headless mode is implied. Without those flags the GTK GUI launches. Headless runs reuse the last saved GUI defaults when flags are omitted, auto-detect the Linux `steamapps` path if no default exists, and still require either `--win-steam` or a previously saved Windows path.
 
 Example headless sync with cleanup using a stable NTFS mount from `/etc/fstab`:
 
