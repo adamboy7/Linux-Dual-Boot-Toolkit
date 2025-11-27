@@ -6,15 +6,11 @@ if platform.system() != "Windows":
     print("This GUI tool currently only supports Windows.")
     sys.exit(1)
 
-import glob
 import json
 import traceback
-from datetime import datetime
 import tkinter as tk
 from tkinter import filedialog, ttk, messagebox
 import winreg
-
-from libraries.backup_validation import parse_backup_payload, validate_backup_matches
 from libraries.bluetooth_utils import (
     WIN_BT_KEYS_REG_PATH,
     format_mac,
@@ -24,7 +20,12 @@ from libraries.bluetooth_utils import (
     read_device_key_hex,
     reload_bluetooth,
 )
-from libraries.bt_gui_logic import BtKeyRecord, bt_record_from_json_file, bt_record_to_json_file
+from libraries.bt_gui_logic import (
+    BtKeyRecord,
+    bt_record_from_json_file,
+    bt_record_to_json_file,
+    save_timestamped_backup,
+)
 from libraries.permissions import ensure_platform_permissions
 
 
@@ -41,10 +42,6 @@ class BluetoothKeyManagerApp(tk.Tk):
 
         self.display_to_adapter = {}
         self.display_to_device = {}
-
-        # Track directories where the user is saving/loading files so we can
-        # discover backups created alongside them.
-        self.backup_search_dirs = [os.getcwd()]
 
         self.status_var = tk.StringVar(value="")
 
@@ -87,21 +84,17 @@ class BluetoothKeyManagerApp(tk.Tk):
         self.device_combobox.grid(row=1, column=1, sticky="ew", pady=(0, 5))
         self.device_combobox.bind("<<ComboboxSelected>>", self.on_device_selected)
 
-        # Button row: export/import/restore (match Linux layout)
+        # Button row: export/import (match Linux layout)
         button_frame = ttk.Frame(root)
         button_frame.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(5, 5))
         button_frame.columnconfigure(0, weight=1)
         button_frame.columnconfigure(1, weight=1)
-        button_frame.columnconfigure(2, weight=1)
 
         export_btn = ttk.Button(button_frame, text="Export key to JSON…", command=self.export_key)
         export_btn.grid(row=0, column=0, sticky="ew", padx=(0, 4))
 
         import_btn = ttk.Button(button_frame, text="Import key from JSON…", command=self.import_key)
         import_btn.grid(row=0, column=1, sticky="ew", padx=4)
-
-        restore_btn = ttk.Button(button_frame, text="Restore backup…", command=self.restore_backup)
-        restore_btn.grid(row=0, column=2, sticky="ew", padx=(4, 0))
 
         # Status row with Refresh + Exit on the right (Linux-style)
         status_frame = ttk.Frame(root)
@@ -244,80 +237,6 @@ class BluetoothKeyManagerApp(tk.Tk):
             return None
         return device
 
-    def _find_backup_files(self):
-        found = []
-        seen_paths = set()
-
-        for directory in self.backup_search_dirs:
-            pattern = os.path.join(directory, "bt_key_backup_*.json")
-            for path in glob.glob(pattern):
-                if path not in seen_paths:
-                    seen_paths.add(path)
-                    found.append(path)
-
-        return sorted(found, key=os.path.getmtime, reverse=True)
-
-    def _note_file_location(self, filepath: str):
-        directory = os.path.dirname(filepath) or os.getcwd()
-        if directory not in self.backup_search_dirs:
-            self.backup_search_dirs.append(directory)
-
-    def _prompt_for_backup_file(self, backups):
-        selected = {"path": None}
-
-        dialog = tk.Toplevel(self)
-        dialog.title("Select backup to restore")
-        dialog.resizable(False, False)
-        dialog.transient(self)
-
-        label = ttk.Label(dialog, text="Select a Bluetooth key backup to restore:")
-        label.pack(padx=10, pady=(10, 5), anchor="w")
-
-        listbox = tk.Listbox(dialog, width=80, height=min(len(backups), 10))
-        for path in backups:
-            listbox.insert(tk.END, os.path.basename(path))
-        listbox.pack(padx=10, pady=(0, 5), fill="both")
-
-        if backups:
-            listbox.selection_set(0)
-
-        def choose_from_list(event=None):
-            sel = listbox.curselection()
-            if sel:
-                selected["path"] = backups[sel[0]]
-                dialog.destroy()
-
-        def browse_for_file():
-            path = filedialog.askopenfilename(
-                title="Restore Bluetooth key backup",
-                initialdir=os.path.dirname(backups[0]) if backups else os.getcwd(),
-                filetypes=[
-                    ("Bluetooth key backups", "bt_key_backup_*.json"),
-                    ("JSON files", "*.json"),
-                    ("All files", "*.*"),
-                ],
-            )
-            if path:
-                selected["path"] = path
-                dialog.destroy()
-
-        btn_frame = ttk.Frame(dialog)
-        btn_frame.pack(fill="x", padx=10, pady=(5, 10))
-
-        restore_btn = ttk.Button(btn_frame, text="Restore", command=choose_from_list)
-        restore_btn.pack(side="left")
-
-        browse_btn = ttk.Button(btn_frame, text="Browse…", command=browse_for_file)
-        browse_btn.pack(side="left", padx=(5, 0))
-
-        cancel_btn = ttk.Button(btn_frame, text="Cancel", command=dialog.destroy)
-        cancel_btn.pack(side="right")
-
-        listbox.bind("<Double-Button-1>", choose_from_list)
-        dialog.grab_set()
-        self.wait_window(dialog)
-        return selected["path"]
-
     def export_key(self):
         adapter = self._get_selected_adapter()
         device = self._get_selected_device()
@@ -349,8 +268,6 @@ class BluetoothKeyManagerApp(tk.Tk):
             messagebox.showerror("Export failed", f"Unable to write JSON file:\n\n{e}")
             return
 
-        self._note_file_location(filepath)
-
         messagebox.showinfo(
             "Export successful",
             f"Exported key for {device['name']} ({device['mac']}) to:\n{filepath}",
@@ -369,8 +286,6 @@ class BluetoothKeyManagerApp(tk.Tk):
         )
         if not filepath:
             return
-
-        self._note_file_location(filepath)
 
         try:
             record = bt_record_from_json_file(filepath)
@@ -435,42 +350,23 @@ class BluetoothKeyManagerApp(tk.Tk):
             messagebox.showerror("Import failed", f"Unexpected error while reading existing key:\n\n{e}")
             return
 
-        if previous_value is not None:
-            try:
-                backup_dir = os.path.dirname(filepath) or os.getcwd()
-                timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-                backup_filename = (
-                    f"bt_key_backup_{record_adapter_raw}_{record_device_raw}_{timestamp}.json"
-                )
-                backup_path = os.path.join(backup_dir, backup_filename)
+        backup_record = record
+        if isinstance(previous_value, (bytes, bytearray)):
+            backup_record = BtKeyRecord(
+                adapter_mac=record.adapter_mac,
+                device_mac=record.device_mac,
+                key_hex=bytes(previous_value).hex().upper(),
+            )
 
-                if isinstance(previous_value, (bytes, bytearray)):
-                    backup_value = previous_value.hex()
-                    value_format = "hex"
-                else:
-                    backup_value = previous_value
-                    value_format = "literal"
-
-                backup_payload = {
-                    "key_path": key_path,
-                    "value_name": record_device_raw,
-                    "value_type": previous_value_type,
-                    "value_format": value_format,
-                    "value_data": backup_value,
-                    "created_at": timestamp,
-                }
-
-                with open(backup_path, "w", encoding="utf-8") as backup_file:
-                    json.dump(backup_payload, backup_file, indent=2)
-
-                self._note_file_location(backup_path)
-            except Exception as e:
-                messagebox.showerror(
-                    "Import failed",
-                    "Unable to create a backup of the existing registry value.\n\n"
-                    f"Error: {e}",
-                )
-                return
+        try:
+            backup_path = save_timestamped_backup(backup_record, directory=os.getcwd())
+        except Exception as e:
+            messagebox.showerror(
+                "Import failed",
+                "Unable to save a timestamped backup JSON in the working directory.\n\n"
+                f"Error: {e}",
+            )
+            return
 
         def restore_previous_value():
             if previous_value is None:
@@ -573,135 +469,3 @@ class BluetoothKeyManagerApp(tk.Tk):
                     f"Attempted: {detail}",
                 )
 
-    def restore_backup(self):
-        adapter = self._get_selected_adapter()
-        if adapter is None:
-            return
-
-        device = self.display_to_device.get(self.device_var.get())
-        if device is None:
-            self.set_status("No device selected; will infer device from backup metadata.")
-
-        backups = self._find_backup_files()
-
-        if backups:
-            filepath = self._prompt_for_backup_file(backups)
-        else:
-            browse_prompt = (
-                "No bt_key_backup_*.json files were found in the current directory.\n\n"
-                "Would you like to browse for a backup file?"
-            )
-
-            if not messagebox.askyesno("No backups found", browse_prompt):
-                return
-
-            filepath = filedialog.askopenfilename(
-                title="Restore Bluetooth key backup",
-                initialdir=os.getcwd(),
-                filetypes=[
-                    ("Bluetooth key backups", "bt_key_backup_*.json"),
-                    ("JSON files", "*.json"),
-                    ("All files", "*.*"),
-                ],
-            )
-
-        if not filepath:
-            return
-
-        try:
-            expected_adapter = normalize_mac(adapter["mac"])
-            expected_device = normalize_mac(device["mac"]) if device else None
-        except ValueError as e:
-            messagebox.showerror("Restore failed", str(e))
-            return
-
-        try:
-            parsed_backup = parse_backup_payload(filepath)
-        except ValueError as e:
-            messagebox.showerror("Restore failed", str(e))
-            return
-        except Exception as e:
-            messagebox.showerror("Restore failed", f"Unable to read backup file:\n\n{e}")
-            return
-
-        if not validate_backup_matches(
-            expected_adapter,
-            expected_device or parsed_backup.payload.get("device_mac"),
-            filepath,
-            lambda msg, title=None: messagebox.showerror(title or "Restore blocked", msg),
-        ):
-            return
-
-        payload = parsed_backup.payload
-        key_path = payload["key_path"]
-        value_name = payload["value_name"]
-        reg_type = payload["reg_type"]
-        reg_value = payload["reg_value"]
-        created_at = payload["created_at"]
-
-        try:
-            with winreg.OpenKey(
-                winreg.HKEY_LOCAL_MACHINE,
-                key_path,
-                0,
-                winreg.KEY_SET_VALUE,
-            ) as reg_key:
-                winreg.SetValueEx(reg_key, value_name, 0, reg_type, reg_value)
-        except PermissionError:
-            messagebox.showerror(
-                "Permission error",
-                "Unable to write the Bluetooth key to the registry.\n\n"
-                "Make sure you are running this script as SYSTEM or with sufficient privileges.",
-            )
-            return
-        except FileNotFoundError:
-            messagebox.showerror(
-                "Restore failed",
-                "Registry path from the backup file was not found. Ensure the adapter/device still exists.",
-            )
-            return
-        except Exception as e:
-            messagebox.showerror(
-                "Restore failed",
-                f"Unexpected error while writing key back to the registry:\n\n{e}",
-            )
-            return
-
-        created_line = f" (created at {created_at})" if created_at else ""
-        messagebox.showinfo(
-            "Restore successful",
-            "Restored registry value\n"
-            f"HKLM\\{key_path}\\{value_name}{created_line}\n\n"
-            f"Source file:\n{filepath}",
-        )
-        self.set_status("Restored registry value from backup.")
-
-        if messagebox.askyesno(
-            "Reload Bluetooth?",
-            "Reload the Windows Bluetooth service now to use the restored key?",
-        ):
-            success, detail = reload_bluetooth()
-            if success:
-                self.set_status(f"Bluetooth service reloaded via: {detail}")
-                messagebox.showinfo(
-                    "Bluetooth reloaded", "Bluetooth service was reloaded successfully.",
-                )
-            else:
-                messagebox.showerror(
-                    "Reload failed",
-                    "Failed to reload Bluetooth automatically.\n\n"
-                    f"Attempted: {detail}",
-                )
-
-def run_app():
-    app = BluetoothKeyManagerApp()
-    app.mainloop()
-
-
-def main():
-    ensure_platform_permissions(SYSTEM_FLAG)
-    run_app()
-
-
-if __name__ == "__main__":
-    main()

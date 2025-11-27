@@ -7,7 +7,6 @@ lightweight and aligns naming with the Windows helpers.
 """
 from __future__ import annotations
 
-import glob
 import json
 import os
 import platform
@@ -473,7 +472,9 @@ def export_bt_key(adapter_mac: str, device_mac: str, *, base_dir: str = BASE_DIR
     return BtKeyRecord(adapter_mac=adapter_mac, device_mac=device_mac, key_hex=key_hex)
 
 
-def import_bt_key(record: "BtKeyRecord", *, base_dir: str = BASE_DIR) -> str:
+def import_bt_key(record: "BtKeyRecord", *, base_dir: str = BASE_DIR) -> str | None:
+    from .bt_gui_logic import BtKeyRecord, save_timestamped_backup
+
     adapter_mac = normalize_mac_colon(record.adapter_mac)
     device_mac = normalize_mac_colon(record.device_mac)
     info_path = os.path.join(base_dir, adapter_mac, device_mac, "info")
@@ -484,24 +485,20 @@ def import_bt_key(record: "BtKeyRecord", *, base_dir: str = BASE_DIR) -> str:
             "Make sure the device is paired once in Linux so this file exists."
         )
 
-    # Backup first
-    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    backup_path = f"{info_path}.{timestamp}.bak"
-    shutil.copy2(info_path, backup_path)
-
-    metadata = {
-        "adapter_mac": adapter_mac,
-        "device_mac": device_mac,
-        "source_info_path": info_path,
-        "backup_path": backup_path,
-        "created_at": timestamp,
-    }
-
+    backup_record: BtKeyRecord | None = None
     try:
-        with open(f"{info_path}.{timestamp}.json", "w", encoding="utf-8") as meta_file:
-            json.dump(metadata, meta_file, indent=2)
+        existing_hex = read_key_from_info(info_path).upper()
+        backup_record = BtKeyRecord(
+            adapter_mac=adapter_mac, device_mac=device_mac, key_hex=existing_hex
+        )
     except Exception:  # noqa: BLE001
-        pass
+        backup_record = record
+
+    backup_path: str | None = None
+    try:
+        backup_path = save_timestamped_backup(backup_record, directory=os.getcwd())
+    except Exception:  # noqa: BLE001
+        backup_path = None
 
     # Read all lines and replace/insert Key=...
     with open(info_path, "r", encoding="utf-8") as f:
@@ -539,7 +536,12 @@ def import_bt_key(record: "BtKeyRecord", *, base_dir: str = BASE_DIR) -> str:
         new_lines = output_lines
 
     temp_path = None
+    info_backup_path = None
     try:
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        info_backup_path = f"{info_path}.{timestamp}.bak"
+        shutil.copy2(info_path, info_backup_path)
+
         fd, temp_path = tempfile.mkstemp(
             prefix="info.", suffix=".tmp", dir=os.path.dirname(info_path)
         )
@@ -555,61 +557,11 @@ def import_bt_key(record: "BtKeyRecord", *, base_dir: str = BASE_DIR) -> str:
                 os.remove(temp_path)
         finally:
             try:
-                shutil.copy2(backup_path, info_path)
+                if info_backup_path and os.path.exists(info_backup_path):
+                    shutil.copy2(info_backup_path, info_path)
             except Exception:  # noqa: BLE001
                 pass
         raise RuntimeError(f"Failed to update BlueZ info file: {exc}") from exc
-
-    return backup_path
-
-
-def list_backups(info_path: str) -> list[str]:
-    """Return available backup files for a BlueZ info file, newest first."""
-
-    directory = os.path.dirname(info_path) or "."
-    basename = os.path.basename(info_path)
-
-    timestamped = glob.glob(os.path.join(directory, f"{basename}.*.bak"))
-    legacy = os.path.join(directory, f"{basename}.bak")
-
-    backup_files: set[str] = set(timestamped)
-    if os.path.isfile(legacy):
-        backup_files.add(legacy)
-
-    return sorted(backup_files, key=lambda p: os.path.getmtime(p), reverse=True)
-
-
-def restore_backup(info_path: str, backup_path: str):
-    from . import backup_validation
-
-    def _should_parse_json(path: str) -> bool:
-        lower = path.lower()
-        return lower.endswith(".json") or lower.endswith(".json.bak") or lower.endswith(".bak.json")
-
-    if _should_parse_json(backup_path):
-        try:
-            backup_validation.parse_backup_payload(backup_path)
-        except ValueError as exc:
-            raise
-        except Exception as exc:  # noqa: BLE001
-            raise ValueError(f"Unable to read backup file: {exc}") from exc
-
-        expected_adapter, expected_device = backup_validation.extract_macs_from_path(info_path)
-        mismatch_messages: list[str] = []
-
-        if not backup_validation.validate_backup_matches(
-            expected_adapter,
-            expected_device,
-            backup_path,
-            lambda msg, title=None: mismatch_messages.append(msg),
-        ):
-            message = mismatch_messages[0] if mismatch_messages else (
-                "Backup file does not match the selected adapter/device."
-            )
-            raise ValueError(message)
-
-    shutil.copy2(backup_path, info_path)
-
 
 def get_linux_bluetooth_adapters(*, base_dir: str = BASE_DIR) -> list[AdapterInfo]:
     adapters: list[AdapterInfo] = []
@@ -743,9 +695,7 @@ __all__ = [
     "export_bt_key",
     "import_bt_key",
     "is_mac_dir_name",
-    "list_backups",
     "normalize_mac",
     "normalize_mac_colon",
     "reload_bluetooth",
-    "restore_backup",
 ]

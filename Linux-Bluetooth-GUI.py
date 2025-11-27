@@ -22,14 +22,7 @@ import json
 import os
 import platform
 import sys
-from datetime import datetime
 
-from libraries.backup_validation import (
-    extract_macs_from_info_content,
-    extract_macs_from_json_metadata,
-    extract_macs_from_path,
-    validate_backup_matches,
-)
 from libraries.bluetooth_utils import (
     BASE_DIR,
     AdapterInfo,
@@ -38,11 +31,9 @@ from libraries.bluetooth_utils import (
     get_bluetooth_adapters,
     get_devices_for_adapter,
     import_bt_key,
-    list_backups,
     reload_bluetooth,
-    restore_backup,
 )
-from libraries.bt_gui_logic import BackupSearchManager, BtKeyRecord
+from libraries.bt_gui_logic import BtKeyRecord
 from libraries.permissions import ensure_platform_permissions
 
 
@@ -65,7 +56,6 @@ class BtKeyGui(Gtk.Window):
         # Data
         self.adapters: list[AdapterInfo] = get_bluetooth_adapters()
         self.devices: list[DeviceInfo] = []
-        self.backup_manager = BackupSearchManager([os.getcwd()])
 
         if not self.adapters:
             self._show_error_and_quit("No Bluetooth adapters found in /var/lib/bluetooth.")
@@ -116,11 +106,6 @@ class BtKeyGui(Gtk.Window):
         self.import_button = Gtk.Button(label="Import key from JSON…")
         self.import_button.connect("clicked", self.on_import_clicked)
         button_box.pack_start(self.import_button, True, True, 0)
-
-        self.restore_button = Gtk.Button(label="Restore backup…")
-        self.restore_button.connect("clicked", self.on_restore_clicked)
-        button_box.pack_start(self.restore_button, True, True, 0)
-
         # Status row with refresh button on the right
         status_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         vbox.pack_start(status_box, False, False, 4)
@@ -286,106 +271,6 @@ class BtKeyGui(Gtk.Window):
         else:
             self.device_combo.set_active(-1)
 
-    def _prompt_for_backup_file(self, backups: list[str]) -> str | None:
-        chooser = Gtk.Dialog(title="Select backup to restore", parent=self)
-        chooser.add_buttons(
-            Gtk.STOCK_CANCEL,
-            Gtk.ResponseType.CANCEL,
-            Gtk.STOCK_OPEN,
-            Gtk.ResponseType.OK,
-        )
-
-        list_store = Gtk.ListStore(str, str)  # display text, path
-        for path in backups:
-            try:
-                modified = datetime.fromtimestamp(os.path.getmtime(path)).strftime(
-                    "%Y-%m-%d %H:%M:%S"
-                )
-                label = f"{os.path.basename(path)} (saved {modified})"
-            except OSError:
-                label = os.path.basename(path)
-            list_store.append([label, path])
-
-        combo = Gtk.ComboBox.new_with_model(list_store)
-        renderer = Gtk.CellRendererText()
-        combo.pack_start(renderer, True)
-        combo.add_attribute(renderer, "text", 0)
-        combo.set_id_column(1)
-        combo.set_active(0 if backups else -1)
-
-        def on_browse_clicked(_button: Gtk.Button):
-            file_dialog = Gtk.FileChooserDialog(
-                title="Restore Bluetooth key backup",
-                parent=self,
-                action=Gtk.FileChooserAction.OPEN,
-            )
-            file_dialog.add_buttons(
-                Gtk.STOCK_CANCEL,
-                Gtk.ResponseType.CANCEL,
-                Gtk.STOCK_OPEN,
-                Gtk.ResponseType.OK,
-            )
-
-            if backups:
-                file_dialog.set_current_folder(os.path.dirname(backups[0]))
-
-            backup_filter = Gtk.FileFilter()
-            backup_filter.set_name("Backup files (*.bak, *.json)")
-            backup_filter.add_pattern("bt_key_backup_*.json")
-            backup_filter.add_pattern("bt_key_backup_*.bak")
-            backup_filter.add_pattern("*.bak")
-            backup_filter.add_pattern("*.json")
-            file_dialog.add_filter(backup_filter)
-
-            any_filter = Gtk.FileFilter()
-            any_filter.set_name("All files")
-            any_filter.add_pattern("*")
-            file_dialog.add_filter(any_filter)
-
-            if file_dialog.run() == Gtk.ResponseType.OK:
-                filename = file_dialog.get_filename()
-                file_dialog.destroy()
-                chooser.response(Gtk.ResponseType.APPLY)
-                chooser.selected_backup = filename
-            else:
-                file_dialog.destroy()
-
-        browse_button = Gtk.Button(label="Browse…")
-        browse_button.connect("clicked", on_browse_clicked)
-
-        box = chooser.get_content_area()
-        box.set_spacing(8)
-        box.add(Gtk.Label(label="Choose a backup to restore:"))
-        box.add(combo)
-        box.add(browse_button)
-
-        chooser.selected_backup: str | None = None
-        chooser.show_all()
-
-        response = chooser.run()
-        selected_backup = chooser.selected_backup
-        if response == Gtk.ResponseType.OK and selected_backup is None:
-            selected_backup = combo.get_active_id()
-        elif response != Gtk.ResponseType.OK and response != Gtk.ResponseType.APPLY:
-            selected_backup = None
-
-        chooser.destroy()
-        return selected_backup
-
-    def _infer_macs_from_backup(self, backup_path: str) -> tuple[str | None, str | None]:
-        adapter_mac, device_mac = extract_macs_from_json_metadata(backup_path)
-
-        if adapter_mac is None or device_mac is None:
-            content_adapter, content_device = extract_macs_from_info_content(backup_path)
-            adapter_mac = adapter_mac or content_adapter
-            device_mac = device_mac or content_device
-
-        path_adapter, path_device = extract_macs_from_path(backup_path)
-        adapter_mac = adapter_mac or path_adapter
-        device_mac = device_mac or path_device
-
-        return adapter_mac, device_mac
-
     # ----- Callbacks -----
 
     def on_adapter_changed(self, combo: Gtk.ComboBox):
@@ -455,7 +340,6 @@ class BtKeyGui(Gtk.Window):
                 record = export_bt_key(adapter.mac, device.mac)
                 with open(filename, "w", encoding="utf-8") as f:
                     json.dump(record.to_dict(), f, indent=2)
-                self.backup_manager.note_file_location(filename)
                 self.set_status(f"Exported key for {device.name} to {filename}")
                 self._show_info_dialog(
                     f"Successfully exported key for {device.name}.\n\n"
@@ -504,7 +388,6 @@ class BtKeyGui(Gtk.Window):
             filename = dialog.get_filename()
             dialog.destroy()
             try:
-                self.backup_manager.note_file_location(filename)
                 with open(filename, "r", encoding="utf-8") as f:
                     data = json.load(f)
 
@@ -528,17 +411,20 @@ class BtKeyGui(Gtk.Window):
                 )
 
                 backup_path = import_bt_key(record)
-                self.backup_manager.note_file_location(backup_path)
-                self.set_status(
-                    f"Imported key for {display_device}. Backup created: {backup_path}"
+                backup_message = (
+                    f" Timestamped JSON backup saved to: {backup_path}"
+                    if backup_path
+                    else ""
                 )
-                self._show_info_dialog(
-                    f"Successfully imported key for {display_device}.\n\n",
-                    f"Original info file was backed up as:\n{backup_path}\n\n",
-                    f"You may need to restart Bluetooth:\n",
-                    f"  sudo systemctl restart bluetooth",
-                    title="Import successful",
-                )
+                self.set_status(f"Imported key for {display_device}.{backup_message}")
+                details = [
+                    f"Successfully imported key for {display_device}.",
+                    "You may need to restart Bluetooth:\n  sudo systemctl restart bluetooth",
+                ]
+                if backup_path:
+                    details.insert(1, f"Backup saved to:\n{backup_path}\n")
+
+                self._show_info_dialog(*details, title="Import successful")
 
                 if self._ask_yes_no(
                     "Reload the Bluetooth service now to use the new key?",
@@ -569,157 +455,6 @@ class BtKeyGui(Gtk.Window):
                 self._show_error_dialog(str(e), title="Import failed")
         else:
             dialog.destroy()
-
-    def on_restore_clicked(self, button: Gtk.Button):
-        adapter = self._get_selected_adapter()
-        device = self._get_selected_device()
-
-        if adapter is None:
-            self._show_error_dialog("No adapter selected.")
-            return
-
-        if device is None:
-            self.set_status("No device selected; will infer device from backup metadata.")
-
-        info_path = device.info_path if device else None
-        selected_device_mac = device.mac if device else None
-
-        backup_files = self.backup_manager.find_backup_files()
-        if not backup_files and info_path:
-            backup_files = list_backups(info_path)
-
-        selected_backup: str | None = None
-
-        if backup_files:
-            selected_backup = self._prompt_for_backup_file(backup_files)
-        else:
-            if not self._ask_yes_no(
-                "No Bluetooth key backups were found in recent directories.\n\n"
-                "Would you like to browse for an existing backup file to restore?",
-                title="No backups found",
-            ):
-                return
-
-            file_dialog = Gtk.FileChooserDialog(
-                title="Select backup file",
-                parent=self,
-                action=Gtk.FileChooserAction.OPEN,
-            )
-            file_dialog.add_buttons(
-                Gtk.STOCK_CANCEL,
-                Gtk.ResponseType.CANCEL,
-                Gtk.STOCK_OPEN,
-                Gtk.ResponseType.OK,
-            )
-
-            backup_filter = Gtk.FileFilter()
-            backup_filter.set_name("Backup files (*.bak, *.json)")
-            backup_filter.add_pattern("bt_key_backup_*.json")
-            backup_filter.add_pattern("bt_key_backup_*.bak")
-            backup_filter.add_pattern("*.bak")
-            backup_filter.add_pattern("*.json")
-            file_dialog.add_filter(backup_filter)
-
-            all_filter = Gtk.FileFilter()
-            all_filter.set_name("All files")
-            all_filter.add_pattern("*")
-            file_dialog.add_filter(all_filter)
-
-            if file_dialog.run() == Gtk.ResponseType.OK:
-                selected_backup = file_dialog.get_filename()
-            file_dialog.destroy()
-
-            if not selected_backup:
-                return
-
-        if not selected_backup:
-            return
-
-        if not os.path.isfile(selected_backup):
-            self._show_error_dialog(
-                f"Selected backup file not found:\n{selected_backup}",
-                title="Restore failed",
-            )
-            return
-
-        self.backup_manager.note_file_location(selected_backup)
-        _, inferred_device = self._infer_macs_from_backup(selected_backup)
-        target_device_mac = selected_device_mac or inferred_device
-
-        if target_device_mac is None:
-            self._show_error_dialog(
-                "Unable to determine the device MAC from the selection or backup metadata.",
-                title="Restore failed",
-            )
-            return
-
-        info_path = info_path or os.path.join(
-            BASE_DIR, adapter.mac, target_device_mac, "info"
-        )
-
-        if not validate_backup_matches(
-            adapter.mac,
-            target_device_mac,
-            selected_backup,
-            lambda msg, title=None: self._show_error_dialog(msg, title=title),
-        ):
-            return
-
-        os.makedirs(os.path.dirname(info_path), exist_ok=True)
-
-        if not os.path.exists(info_path):
-            try:
-                with open(info_path, "w", encoding="utf-8"):
-                    pass
-            except OSError as exc:
-                self._show_error_dialog(
-                    f"Failed to create BlueZ info file at {info_path}: {exc}",
-                    title="Restore failed",
-                )
-                return
-
-        target_label = device.name if device else target_device_mac
-
-        if not self._ask_yes_no(
-            f"Restore backup for {target_label}?\n\n",
-            f"This will overwrite the current info file with:\n{selected_backup}",
-            title="Restore backup?",
-        ):
-            return
-
-        try:
-            restore_backup(info_path, selected_backup)
-        except Exception as e:  # noqa: BLE001
-            self._show_error_dialog(str(e), title="Restore failed")
-            return
-
-        self.set_status(
-            f"Restored backup for {target_label} from {selected_backup} to {info_path}"
-        )
-        self._show_info_dialog(
-            f"Successfully restored backup for {target_label}.\n\n",
-            f"Backup file: {selected_backup}\n",
-            f"Restored to: {info_path}",
-            title="Restore successful",
-        )
-
-        if self._ask_yes_no(
-            "Reload the Bluetooth service now to use the restored key?",
-            title="Reload Bluetooth?",
-        ):
-            success, detail = reload_bluetooth()
-            if success:
-                self.set_status(f"Bluetooth service reloaded via: {detail}")
-                self._show_info_dialog(
-                    "Bluetooth service was reloaded successfully.",
-                    title="Bluetooth reloaded",
-                )
-            else:
-                self._show_error_dialog(
-                    "Failed to reload Bluetooth automatically.\n\n",
-                    f"Attempted: {detail}",
-                    title="Reload failed",
-                )
 
 
 def main():
