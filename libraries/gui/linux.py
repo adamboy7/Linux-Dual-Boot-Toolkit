@@ -226,7 +226,14 @@ class BtKeyGui(Gtk.Window):
             self.set_status("No adapter selected.")
             return
 
-        self.devices = self.backend.list_devices(adapter)
+        try:
+            self.devices = self.backend.list_devices(adapter)
+        except Exception as e:  # noqa: BLE001
+            message = f"Failed to enumerate devices for adapter {adapter.mac}: {e}"
+            self.devices = []
+            self.set_status(message)
+            self._show_error_dialog(message, title="Device enumeration failed")
+            return
 
         if not self.devices:
             self.set_status(f"No devices found for adapter {adapter.mac}.")
