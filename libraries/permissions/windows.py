@@ -5,7 +5,7 @@ import os
 import shutil
 import subprocess
 import sys
-from typing import Optional
+from typing import Optional, Tuple
 
 
 def get_windows_username() -> str:
@@ -40,6 +40,32 @@ def is_admin() -> bool:
         return bool(ctypes.windll.shell32.IsUserAnAdmin())
     except Exception:
         return False
+
+
+def get_windows_privileges(system_flag: str = "") -> Tuple[bool, bool]:
+    """Return ``(is_admin, is_system)`` for the current Windows process.
+
+    * ``is_system`` is ``True`` when the process token belongs to LocalSystem
+      **or** when the process is elevated as admin and launched with the
+      provided ``system_flag`` in ``sys.argv`` (our explicit opt-in marker for
+      SYSTEM relaunches).
+    * ``is_admin`` is ``True`` when the token has administrator privileges,
+      even if the custom ``system_flag`` is missing.
+
+    This lets callers distinguish between an elevated Administrator session
+    that still needs a SYSTEM relaunch versus one that already executed the
+    PsExec jump and includes the flag to mark that transition.
+    """
+
+    if is_system():
+        return True, True
+
+    admin = is_admin()
+    if not admin:
+        return False, False
+
+    system = system_flag and system_flag in sys.argv
+    return admin, bool(system)
 
 
 def relaunch_as_admin() -> None:

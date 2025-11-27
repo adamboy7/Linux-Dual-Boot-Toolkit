@@ -49,6 +49,26 @@ for device in devices:
 * Windows: runs `Restart-Service bthserv` via PowerShell, falling back to `net stop bthserv`/`net start bthserv` if needed.
 * Use this after operations that modify adapter or device state and may require a service refresh.
 
+## `permissions.get_platform_privileges(system_flag: Optional[str] = None)`
+* Returns a tuple ``(is_admin, is_system)`` describing the current privilege
+  level for the host OS.
+* Windows:
+  * ``is_admin`` is ``True`` when the token has administrator privileges.
+  * ``is_system`` is ``True`` when running as LocalSystem **or** when the
+    process was launched with the provided ``system_flag`` to indicate a
+    PsExec-based SYSTEM relaunch.
+* Linux: root (UID 0) is both admin and system. There is no higher privilege
+  than ``sudo``/root, so when ``geteuid() == 0`` both values are ``True``.
+* Other platforms: both values are ``False``.
+
+Example usage:
+```python
+from libraries.permissions import get_platform_privileges
+
+is_admin, is_system = get_platform_privileges(system_flag="--as-system")
+print(is_admin, is_system)
+```
+
 ## `permissions.ensure_platform_permissions(system_flag: Optional[str] = None)`
 * Dispatches to the correct platform helper based on `platform.system()`.
 * Linux: calls [`ensure_root_linux`](#ensure_root_linux) to guarantee the process is running as root.
@@ -95,6 +115,8 @@ ensure_platform_permissions(system_flag="--as-system")
   additional args supplied to the launcher.
 
 ### Supporting helpers
+* `permissions.get_platform_privileges(system_flag: Optional[str] = None)` –
+  reports the current `(is_admin, is_system)` tuple for the running platform.
 * `permissions.windows.is_admin()` – returns `True` when the current token has
   administrator privileges.
 * `permissions.windows.is_system()` – returns `True` when running under the
@@ -106,6 +128,19 @@ ensure_platform_permissions(system_flag="--as-system")
   `ensure_windows_system` and rarely needed directly.
 
 ## Usage tips
+* **Requesting Windows administrator**: call
+  `permissions.windows.relaunch_as_admin()` from a Windows-only entrypoint when
+  you need admin rights but do **not** require SYSTEM. The function shows a UAC
+  prompt and exits the current process after starting the elevated copy.
+* **Requesting Windows SYSTEM**: use `permissions.windows.ensure_windows_system`
+  with a unique `system_flag` (e.g., `"--as-system"`). If already running as
+  admin, it will spawn a SYSTEM instance via PsExec; otherwise it first relaunches
+  as admin and then escalates to SYSTEM. `ensure_platform_permissions` wraps this
+  automatically for cross-platform callers.
+* **Linux admin vs. system**: Linux treats root as both administrator and
+  system. Calling `permissions.linux.ensure_root_linux()` (or the cross-platform
+  `ensure_platform_permissions`) ensures the process is running as UID 0; there
+  is no separate SYSTEM concept on Linux.
 * Call `ensure_platform_permissions` early in the entrypoint of CLI or GUI tools
   that require elevated permissions to manage Bluetooth devices or system files.
 * On Windows, bundle PsExec with your script or ensure it is discoverable in the
