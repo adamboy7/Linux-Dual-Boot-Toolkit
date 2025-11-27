@@ -47,11 +47,11 @@ python3 Steam-Symlink-Helper.py \
 - Keep the JSON backups from imports— they are portable between OSes and act as a quick restore point.
 - Store your exported Bluetooth key JSONs on a network share or synced storage so updated keys are easy to import on both OSes.
 - Mount your Windows partition in `/etc/fstab` so the NTFS library path is stable across boots; add `nofail` if the drive might not always be connected.
-- For Steam, point the Windows path to the NTFS-mounted `steamapps` folder; rerun the tool after adding or moving games to refresh the symlinks.
 - To automate Steam syncs at login, run a headless command such as:
 
   ```bash
   python3 Steam-Symlink-Helper.py --win-steam /mnt/windows/SteamLibrary/steamapps --cleanup
   ```
+- For Steam, point the Windows path to the NTFS-mounted `steamapps` folder; rerun the tool after adding or moving games to refresh the symlinks.
 - To properly sync your bluetooth device, first pair your device to either Windows or Linux. Reboot to the other OS, re-sync and pair your device again, then export your device's bluetooth key. Reboot one last time to the OS you started in, import your recently exported key, and never re-pair your headphones again. Be sure to only export your key after the second pairing, connecting to a new device change's your heaphone's internal keys. Going out of order will "break" things.
 - It's absolutely possible to use the Bluetooth GUI tool to sync devices between two instances of windows, two instances of linux, or even two different computers alltogether. Just make sure if multiple devices are involved, they're not in range of one another.
