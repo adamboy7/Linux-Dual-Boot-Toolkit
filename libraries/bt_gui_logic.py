@@ -1,59 +1,13 @@
 """Shared Bluetooth GUI logic for cross-platform tools."""
 from __future__ import annotations
 
-import glob
 import json
 import os
 from dataclasses import dataclass
-from typing import Dict, Iterable, Sequence
+from datetime import datetime
+from typing import Dict
 
 from .bluetooth_utils import normalize_mac
-
-
-class BackupSearchManager:
-    """Track and locate Bluetooth backup files across directories.
-
-    This helper centralizes the backup search logic used by GUI frontends so
-    they can remain focused on presentation concerns.
-    """
-
-    def __init__(self, initial_dirs: Sequence[str] | None = None):
-        self.search_dirs: list[str] = []
-        if initial_dirs:
-            for directory in initial_dirs:
-                self.add_directory(directory)
-        else:
-            self.add_directory(".")
-
-    def add_directory(self, directory: str) -> None:
-        normalized = os.path.abspath(directory or ".")
-        if normalized not in self.search_dirs:
-            self.search_dirs.append(normalized)
-
-    def note_file_location(self, filepath: str) -> None:
-        self.add_directory(os.path.dirname(filepath) or ".")
-
-    def find_backup_files(
-        self, patterns: Iterable[str] | None = None, include_bak: bool = True
-    ) -> list[str]:
-        search_patterns = list(patterns or [])
-        if not search_patterns:
-            search_patterns.extend(["bt_key_backup_*.json"])
-            if include_bak:
-                search_patterns.append("bt_key_backup_*.bak")
-
-        found: list[str] = []
-        seen: set[str] = set()
-
-        for directory in self.search_dirs:
-            for pattern in search_patterns:
-                pattern_path = os.path.join(directory, pattern)
-                for path in glob.glob(pattern_path):
-                    if path not in seen:
-                        seen.add(path)
-                        found.append(path)
-
-        return sorted(found, key=os.path.getmtime, reverse=True)
 
 
 @dataclass
@@ -116,3 +70,28 @@ def bt_record_from_json_file(path: str) -> BtKeyRecord:
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
     return BtKeyRecord.from_dict(data)
+
+
+def save_timestamped_backup(record: BtKeyRecord, directory: str = ".") -> str:
+    """Write a timestamped JSON backup of a Bluetooth key.
+
+    Backups are saved in a consistent ``bt_key_backup_<adapter>_<device>_<timestamp>.json``
+    format to the provided directory (defaulting to the current working directory).
+    """
+
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+
+    def _sanitize(mac: str) -> str:
+        return mac.replace(":", "").replace("-", "").lower()
+
+    filename = (
+        f"bt_key_backup_{_sanitize(record.adapter_mac)}_{_sanitize(record.device_mac)}_{timestamp}.json"
+    )
+    path = os.path.join(directory or ".", filename)
+
+    payload = record.to_dict() | {"created_at": timestamp}
+
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+
+    return os.path.abspath(path)
