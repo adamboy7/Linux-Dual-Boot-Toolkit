@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import io
 import platform
+import re
 import subprocess
 
 from .common import format_mac
@@ -145,7 +146,75 @@ def get_windows_bluetooth_adapters():
                 mapping[_normalize_mac(mac)] = desc
         return mapping
 
+    def _read_pnp_friendly_names() -> dict[str, str]:
+        """
+        Try to map adapter MAC addresses to Device Manager friendly names.
+
+        Uses PowerShell/CIM to query Bluetooth PnP devices and extract a MAC-like
+        identifier from their PNP/Hardware IDs.
+        """
+
+        command = [
+            "powershell",
+            "-NoLogo",
+            "-NoProfile",
+            "-Command",
+            (
+                "Get-PnpDevice -Class Bluetooth -ErrorAction SilentlyContinue | "
+                "Select-Object "
+                "InstanceId, "
+                "@{Name='HardwareId';Expression={$_.HardwareId -join ';'}}, "
+                "FriendlyName, Name | "
+                "ConvertTo-Csv -NoTypeInformation"
+            ),
+        ]
+
+        try:
+            result = subprocess.run(
+                command,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+        except FileNotFoundError:
+            return {}
+
+        if result.returncode != 0 or not result.stdout:
+            return {}
+
+        mapping: dict[str, str] = {}
+        reader = csv.DictReader(io.StringIO(result.stdout))
+
+        def _mac_from_values(values: list[str]) -> str:
+            mac_pattern = re.compile(
+                r"([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}|[0-9A-Fa-f]{12}"
+            )
+            for value in values:
+                match = mac_pattern.search(value)
+                if match:
+                    return _normalize_mac(match.group(0))
+            return ""
+
+        for row in reader:
+            candidate_name = (row.get("FriendlyName") or row.get("Name") or "").strip()
+            if not candidate_name:
+                continue
+
+            id_candidates: list[str] = []
+            for key in ("InstanceId", "HardwareId"):
+                raw_val = row.get(key)
+                if raw_val:
+                    id_candidates.extend(str(raw_val).split(";"))
+
+            normalized_mac = _mac_from_values(id_candidates)
+            if normalized_mac:
+                mapping[normalized_mac] = candidate_name
+
+        return mapping
+
     adapter_descriptions = _read_adapter_descriptions()
+    adapter_friendly_names = _read_pnp_friendly_names()
 
     def _decode_adapter_name(raw_value) -> str:
         name = decode_bt_name(raw_value)
@@ -208,6 +277,11 @@ def get_windows_bluetooth_adapters():
                     pass
                 except PermissionError:
                     pass
+
+                if not adapter_name:
+                    adapter_name = adapter_friendly_names.get(
+                        _normalize_mac(subkey_name), ""
+                    )
 
                 if not adapter_name:
                     adapter_name = adapter_descriptions.get(
