@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import platform
 import sys
 
@@ -291,8 +292,12 @@ class BtKeyGui(Gtk.Window):
             self._show_error_dialog("No device selected.")
             return
 
-        # Pick default filename like "<device_name>-bt-key.json"
-        default_name = f"{device.name}-bt-key.json".replace(" ", "_")
+        # Pick default filename like "<device_name>-bt-key.json" while ensuring it
+        # does not contain path separators or other unsafe characters.
+        sanitized_device_name = re.sub(r"[^A-Za-z0-9._-]", "_", device.name)
+        if not sanitized_device_name.strip("_"):
+            sanitized_device_name = "device"
+        default_name = f"{sanitized_device_name}-bt-key.json"
 
         dialog = Gtk.FileChooserDialog(
             title="Save Bluetooth key as JSON",
