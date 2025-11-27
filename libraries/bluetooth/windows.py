@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import csv
+import io
 import platform
+import subprocess
 
 from .common import format_mac
 
@@ -95,6 +98,55 @@ def get_windows_bluetooth_adapters():
     winreg = _ensure_winreg()
     adapters = []
 
+    def _normalize_mac(value: str) -> str:
+        return "".join(ch for ch in value if ch not in ":-").lower()
+
+    def _read_adapter_descriptions() -> dict[str, str]:
+        """
+        Best-effort lookup for hardware-friendly adapter descriptions via PowerShell.
+
+        Returns a mapping of normalized MAC address -> interface description.
+        """
+
+        command = [
+            "powershell",
+            "-NoLogo",
+            "-NoProfile",
+            "-Command",
+            (
+                "Get-NetAdapter -ErrorAction SilentlyContinue | "
+                "Where-Object { $_.Name -like '*Bluetooth*' -or "
+                "$_.InterfaceDescription -like '*Bluetooth*' } | "
+                "Select-Object MacAddress, InterfaceDescription | "
+                "ConvertTo-Csv -NoTypeInformation"
+            ),
+        ]
+
+        try:
+            result = subprocess.run(
+                command,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+        except FileNotFoundError:
+            return {}
+
+        if result.returncode != 0 or not result.stdout:
+            return {}
+
+        mapping: dict[str, str] = {}
+        reader = csv.DictReader(io.StringIO(result.stdout))
+        for row in reader:
+            mac = (row.get("MacAddress") or "").strip()
+            desc = (row.get("InterfaceDescription") or "").strip()
+            if mac and desc:
+                mapping[_normalize_mac(mac)] = desc
+        return mapping
+
+    adapter_descriptions = _read_adapter_descriptions()
+
     def _decode_adapter_name(raw_value) -> str:
         name = decode_bt_name(raw_value)
         return name if name else ""
@@ -156,6 +208,11 @@ def get_windows_bluetooth_adapters():
                     pass
                 except PermissionError:
                     pass
+
+                if not adapter_name:
+                    adapter_name = adapter_descriptions.get(
+                        _normalize_mac(subkey_name), ""
+                    )
 
                 if not adapter_name:
                     adapter_name = global_name or ""
