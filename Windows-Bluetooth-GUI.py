@@ -13,11 +13,13 @@ from tkinter import filedialog, ttk, messagebox
 import winreg
 from libraries.bluetooth_utils import (
     WIN_BT_KEYS_REG_PATH,
+    backup_windows_bluetooth_registry,
     format_mac,
     get_bluetooth_adapters,
     get_devices_for_adapter,
     normalize_mac,
     read_device_key_hex,
+    restore_windows_bluetooth_registry,
     reload_bluetooth,
 )
 from libraries.bt_gui_logic import (
@@ -368,6 +370,17 @@ class BluetoothKeyManagerApp(tk.Tk):
             )
             return
 
+        registry_backups: dict[str, str] = {}
+        try:
+            registry_backups = backup_windows_bluetooth_registry(directory=os.getcwd())
+        except Exception as e:
+            messagebox.showerror(
+                "Import failed",
+                "Unable to export a registry backup (.reg) for Bluetooth Keys/Devices.\n\n"
+                f"Error: {e}",
+            )
+            return
+
         def restore_previous_value():
             if previous_value is None:
                 return None
@@ -389,10 +402,22 @@ class BluetoothKeyManagerApp(tk.Tk):
             except Exception as restore_exc:
                 return restore_exc
 
-        def format_error_message(base_message: str, restore_error):
+        def restore_registry_backup():
+            if not registry_backups:
+                return None
+            try:
+                restore_windows_bluetooth_registry(registry_backups)
+                return None
+            except Exception as restore_exc:
+                return restore_exc
+
+        def format_error_message(base_message: str, restore_error, registry_restore_error):
             parts = [base_message]
             if backup_path:
                 parts.append(f"Backup saved to: {backup_path}")
+            if registry_backups:
+                parts.append("Registry backup saved to:")
+                parts.extend(registry_backups.values())
             if previous_value is not None:
                 if restore_error is None:
                     parts.append("Previous value was restored automatically.")
@@ -400,6 +425,14 @@ class BluetoothKeyManagerApp(tk.Tk):
                     parts.append(
                         "Failed to restore the previous value automatically: "
                         f"{restore_error}"
+                    )
+            if registry_backups:
+                if registry_restore_error is None:
+                    parts.append("Registry backup was restored automatically.")
+                elif registry_restore_error:
+                    parts.append(
+                        "Failed to restore the registry backup automatically: "
+                        f"{registry_restore_error}"
                     )
             return "\n\n".join(parts)
 
@@ -413,32 +446,38 @@ class BluetoothKeyManagerApp(tk.Tk):
                 winreg.SetValueEx(adap_key, record_device_raw, 0, winreg.REG_BINARY, key_bytes)
         except PermissionError:
             restore_error = restore_previous_value()
+            registry_restore_error = restore_registry_backup()
             messagebox.showerror(
                 "Permission error",
                 format_error_message(
                     "Unable to write the Bluetooth key to the registry.\n\n"
                     "Make sure you are running this script as SYSTEM or with sufficient privileges.",
                     restore_error,
+                    registry_restore_error,
                 ),
             )
             return
         except FileNotFoundError:
             restore_error = restore_previous_value()
+            registry_restore_error = restore_registry_backup()
             messagebox.showerror(
                 "Import failed",
                 format_error_message(
                     "Registry path not found for the target adapter. Ensure the device is paired first.",
                     restore_error,
+                    registry_restore_error,
                 ),
             )
             return
         except Exception as e:
             restore_error = restore_previous_value()
+            registry_restore_error = restore_registry_backup()
             messagebox.showerror(
                 "Import failed",
                 format_error_message(
                     f"Unexpected error while writing key:\n\n{e}",
                     restore_error,
+                    registry_restore_error,
                 ),
             )
             return
@@ -446,9 +485,12 @@ class BluetoothKeyManagerApp(tk.Tk):
         display_device = device["name"] if record.device_mac == selected_device_mac else record.device_mac
         display_adapter = adapter["mac"] if record.adapter_mac == selected_adapter_mac else record.adapter_mac
         backup_line = f"\nExisting registry value backed up to:\n{backup_path}" if backup_path else ""
+        registry_line = ""
+        if registry_backups:
+            registry_line = "\nRegistry backups saved to:\n" + "\n".join(registry_backups.values())
         messagebox.showinfo(
             "Import successful",
-            f"Imported key for {display_device} on adapter {display_adapter} from:\n{filepath}{backup_line}",
+            f"Imported key for {display_device} on adapter {display_adapter} from:\n{filepath}{backup_line}{registry_line}",
         )
         self.set_status(f"Imported key for {display_device} on {display_adapter}.")
 
