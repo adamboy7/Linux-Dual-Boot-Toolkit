@@ -116,6 +116,12 @@ class BluetoothKeyManagerApp(tk.Tk):
 
     def refresh_all(self):
         """Reload adapter and device lists from the registry."""
+
+        prev_adapter = self.display_to_adapter.get(self.adapter_var.get())
+        prev_device = self.display_to_device.get(self.device_var.get())
+        prev_adapter_mac = normalize_mac(prev_adapter.mac) if prev_adapter else None
+        prev_device_mac = normalize_mac(prev_device.mac) if prev_device else None
+
         self.display_to_adapter.clear()
         self.display_to_device.clear()
         self.adapter_combobox["values"] = ()
@@ -123,9 +129,13 @@ class BluetoothKeyManagerApp(tk.Tk):
         self.adapter_var.set("")
         self.device_var.set("")
         self.set_status("")
-        self._load_adapters()
+        self._load_adapters(prev_adapter_mac, prev_device_mac)
 
-    def _load_adapters(self):
+    def _load_adapters(
+        self,
+        preferred_adapter_mac: str | None = None,
+        preferred_device_mac: str | None = None,
+    ):
         try:
             adapters = self.backend.list_adapters()
         except PermissionError:
@@ -155,19 +165,40 @@ class BluetoothKeyManagerApp(tk.Tk):
             self.after(100, self.destroy)
             return
 
+        normalized_preferred_adapter = (
+            normalize_mac(preferred_adapter_mac) if preferred_adapter_mac else None
+        )
         display_values = []
-        for adapter in adapters:
+        selected_index: int | None = None
+        for idx, adapter in enumerate(adapters):
             display = f"{adapter.name} ({adapter.mac})"
             self.display_to_adapter[display] = adapter
             display_values.append(display)
+            if normalized_preferred_adapter and normalize_mac(adapter.mac) == normalized_preferred_adapter:
+                selected_index = idx
 
         self.adapter_combobox["values"] = display_values
 
         if display_values:
-            self.adapter_combobox.current(0)
-            self.on_adapter_selected()
+            fallback_status = None
+            if selected_index is not None:
+                self.adapter_combobox.current(selected_index)
+                self.on_adapter_selected(preferred_device_mac)
+            else:
+                self.adapter_combobox.current(0)
+                if preferred_adapter_mac:
+                    fallback_status = (
+                        f"Previous adapter {preferred_adapter_mac} not available; "
+                        f"showing {self.adapter_var.get()}."
+                    )
+                self.on_adapter_selected(fallback_message=fallback_status)
 
-    def on_adapter_selected(self, event=None):
+    def on_adapter_selected(
+        self,
+        event=None,
+        preferred_device_mac: str | None = None,
+        fallback_message: str | None = None,
+    ):
         display = self.adapter_var.get()
         adapter = self.display_to_adapter.get(display)
 
@@ -201,15 +232,42 @@ class BluetoothKeyManagerApp(tk.Tk):
             self.set_status(f"No devices found for adapter {adapter.mac}.")
             return
 
+        normalized_preferred_device = (
+            normalize_mac(preferred_device_mac) if preferred_device_mac else None
+        )
+        selected_index: int | None = None
         dev_display_values = []
-        for dev in devices:
+        for idx, dev in enumerate(devices):
             dev_display = f"{dev.name} ({dev.mac})"
             self.display_to_device[dev_display] = dev
             dev_display_values.append(dev_display)
+            if normalized_preferred_device and normalize_mac(dev.mac) == normalized_preferred_device:
+                selected_index = idx
 
         self.device_combobox["values"] = dev_display_values
-        self.device_combobox.current(0)
-        self.set_status(f"Found {len(devices)} device(s) for adapter {adapter.mac}.")
+        status_parts: list[str] = []
+        if fallback_message:
+            status_parts.append(fallback_message)
+
+        if selected_index is not None:
+            self.device_combobox.current(selected_index)
+            status_parts.append(
+                f"Found {len(devices)} device(s) for adapter {adapter.mac}."
+            )
+        else:
+            self.device_combobox.current(0)
+            device_fallback = None
+            if preferred_device_mac:
+                device_fallback = (
+                    f"Device {preferred_device_mac} not available; "
+                    f"showing {self.device_var.get()}."
+                )
+                status_parts.append(device_fallback)
+            status_parts.append(
+                f"Found {len(devices)} device(s) for adapter {adapter.mac}."
+            )
+
+        self.set_status(" ".join(status_parts).strip())
         self.on_device_selected()
 
     def on_device_selected(self, event=None):
