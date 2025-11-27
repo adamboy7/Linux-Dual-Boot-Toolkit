@@ -371,25 +371,56 @@ class BtKeyGui(Gtk.Window):
                     data = json.load(f)
 
                 record = BtKeyRecord.from_dict(data)
-                if record.adapter_mac != adapter.mac or record.device_mac != device.mac:
-                    if not self._ask_yes_no(
+                adapter_match = record.adapter_mac == adapter.mac
+                device_match = record.device_mac == device.mac
+
+                if not device_match:
+                    self._show_error_dialog(
                         (
-                            "The selected adapter/device differ from the JSON file.\n\n"
+                            "The selected device does not match the JSON file.\n\n"
+                            f"Selected device: {device.mac}\n"
+                            f"File device:     {record.device_mac}"
+                        ),
+                        title="Device mismatch",
+                    )
+                    return
+
+                import_record = record
+
+                if not adapter_match:
+                    dialog = Gtk.MessageDialog(
+                        transient_for=self,
+                        flags=0,
+                        message_type=Gtk.MessageType.QUESTION,
+                        buttons=Gtk.ButtonsType.NONE,
+                        text="Adapter mismatch",
+                    )
+                    dialog.format_secondary_text(
+                        (
+                            "The selected adapter differs from the JSON file.\n\n"
                             f"Selected adapter: {adapter.mac}\n"
                             f"File adapter:     {record.adapter_mac}\n\n"
-                            f"Selected device:  {device.mac}\n"
-                            f"File device:      {record.device_mac}\n\n"
-                            "Import using the adapter/device from the file?"
-                        ),
-                        title="Confirm adapter/device mismatch",
-                    ):
+                            "Choose how to proceed:"
+                        )
+                    )
+                    dialog.add_button("Trust File", Gtk.ResponseType.YES)
+                    dialog.add_button("Override Selection", Gtk.ResponseType.APPLY)
+                    dialog.add_button("Exit", Gtk.ResponseType.CANCEL)
+                    response = dialog.run()
+                    dialog.destroy()
+
+                    if response == Gtk.ResponseType.CANCEL or response == Gtk.ResponseType.DELETE_EVENT:
                         return
+                    if response == Gtk.ResponseType.APPLY:
+                        import_record = BtKeyRecord(
+                            adapter_mac=adapter.mac,
+                            device_mac=device.mac,
+                            key_hex=record.key_hex,
+                        )
 
-                display_device = (
-                    device.name if record.device_mac == device.mac else record.device_mac
-                )
+                display_device = device.name
 
-                result = self.backend.import_key(record)
+                result = self.backend.import_key(import_record)
                 backup_path = result.backup_path if result else None
                 info_backup_path = result.info_backup_path if result else None
                 backup_message = (

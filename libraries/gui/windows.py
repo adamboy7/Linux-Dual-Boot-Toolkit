@@ -16,7 +16,7 @@ from libraries.bluetooth import (
     normalize_mac,
     reload_bluetooth,
 )
-from libraries.bt_gui_logic import bt_record_from_json_file, bt_record_to_json_file
+from libraries.bt_gui_logic import BtKeyRecord, bt_record_from_json_file, bt_record_to_json_file
 from libraries.permissions import ensure_platform_permissions
 
 SYSTEM_FLAG = "--launched-as-system"
@@ -232,6 +232,50 @@ class BluetoothKeyManagerApp(tk.Tk):
             return None
         return device
 
+    def _adapter_mismatch_prompt(self, selected_adapter: str, file_adapter: str) -> str:
+        """Return one of "trust", "override", or "exit" based on user selection."""
+
+        dialog = tk.Toplevel(self)
+        dialog.title("Adapter mismatch")
+        dialog.transient(self)
+        dialog.resizable(False, False)
+
+        frame = ttk.Frame(dialog, padding=(12, 12, 12, 12))
+        frame.grid(row=0, column=0, sticky="nsew")
+
+        message = (
+            "The selected adapter differs from the JSON file.\n\n"
+            f"Selected adapter: {selected_adapter}\n"
+            f"File adapter:     {file_adapter}\n\n"
+            "Choose how to proceed:"
+        )
+        label = ttk.Label(frame, text=message, justify="left")
+        label.grid(row=0, column=0, sticky="w")
+
+        button_frame = ttk.Frame(frame)
+        button_frame.grid(row=1, column=0, sticky="e", pady=(10, 0))
+
+        choice: dict[str, str] = {"value": "exit"}
+
+        def close_with(value: str) -> None:
+            choice["value"] = value
+            dialog.destroy()
+
+        ttk.Button(button_frame, text="Trust File", command=lambda: close_with("trust")).grid(
+            row=0, column=0, padx=4
+        )
+        ttk.Button(
+            button_frame, text="Override Selection", command=lambda: close_with("override")
+        ).grid(row=0, column=1, padx=4)
+        ttk.Button(button_frame, text="Exit", command=lambda: close_with("exit")).grid(
+            row=0, column=2, padx=(4, 0)
+        )
+
+        dialog.protocol("WM_DELETE_WINDOW", lambda: close_with("exit"))
+        dialog.grab_set()
+        dialog.wait_window()
+        return choice["value"]
+
     def export_key(self):
         adapter = self._get_selected_adapter()
         device = self._get_selected_device()
@@ -285,22 +329,32 @@ class BluetoothKeyManagerApp(tk.Tk):
         selected_adapter_mac = normalize_mac(adapter.mac)
         selected_device_mac = normalize_mac(device.mac)
 
-        if (record.adapter_mac != selected_adapter_mac) or (record.device_mac != selected_device_mac):
-            if not messagebox.askyesno(
-                "Confirm adapter/device mismatch",
+        if record.device_mac != selected_device_mac:
+            messagebox.showerror(
+                "Device mismatch",
                 (
-                    "The selected adapter/device differ from the JSON file.\n\n"
-                    f"Selected adapter: {selected_adapter_mac}\n"
-                    f"File adapter:     {record.adapter_mac}\n\n"
-                    f"Selected device:  {selected_device_mac}\n"
-                    f"File device:      {record.device_mac}\n\n"
-                    "Import using the adapter/device from the file?"
+                    "The selected device does not match the JSON file.\n\n"
+                    f"Selected device: {selected_device_mac}\n"
+                    f"File device:     {record.device_mac}"
                 ),
-            ):
+            )
+            return
+
+        import_record = record
+
+        if record.adapter_mac != selected_adapter_mac:
+            choice = self._adapter_mismatch_prompt(selected_adapter_mac, record.adapter_mac)
+            if choice == "exit":
                 return
+            if choice == "override":
+                import_record = BtKeyRecord(
+                    adapter_mac=selected_adapter_mac,
+                    device_mac=selected_device_mac,
+                    key_hex=record.key_hex,
+                )
 
         try:
-            import_result: ImportResult | None = self.backend.import_key(record)
+            import_result: ImportResult | None = self.backend.import_key(import_record)
         except Exception as e:
             messagebox.showerror(
                 "Import failed",
@@ -308,8 +362,10 @@ class BluetoothKeyManagerApp(tk.Tk):
             )
             return
 
-        display_device = device.name if record.device_mac == selected_device_mac else record.device_mac
-        display_adapter = adapter.mac if record.adapter_mac == selected_adapter_mac else record.adapter_mac
+        display_device = device.name
+        display_adapter = (
+            adapter.mac if import_record.adapter_mac == selected_adapter_mac else import_record.adapter_mac
+        )
 
         backup_path = import_result.backup_path if import_result else None
         registry_backups = import_result.registry_backups if import_result else None
