@@ -676,6 +676,23 @@ class BluetoothKeyManagerApp(tk.Tk):
         )
         self.set_status("Restored registry value from backup.")
 
+        if messagebox.askyesno(
+            "Reload Bluetooth?",
+            "Reload the Windows Bluetooth service now to use the restored key?",
+        ):
+            success, detail = reload_bluetooth()
+            if success:
+                self.set_status(f"Bluetooth service reloaded via: {detail}")
+                messagebox.showinfo(
+                    "Bluetooth reloaded", "Bluetooth service was reloaded successfully.",
+                )
+            else:
+                messagebox.showerror(
+                    "Reload failed",
+                    "Failed to reload Bluetooth automatically.\n\n"
+                    f"Attempted: {detail}",
+                )
+
 def run_app():
     app = BluetoothKeyManagerApp()
     app.mainloop()

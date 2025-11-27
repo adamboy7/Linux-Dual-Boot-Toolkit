@@ -703,6 +703,24 @@ class BtKeyGui(Gtk.Window):
             title="Restore successful",
         )
 
+        if self._ask_yes_no(
+            "Reload the Bluetooth service now to use the restored key?",
+            title="Reload Bluetooth?",
+        ):
+            success, detail = reload_bluetooth()
+            if success:
+                self.set_status(f"Bluetooth service reloaded via: {detail}")
+                self._show_info_dialog(
+                    "Bluetooth service was reloaded successfully.",
+                    title="Bluetooth reloaded",
+                )
+            else:
+                self._show_error_dialog(
+                    "Failed to reload Bluetooth automatically.\n\n",
+                    f"Attempted: {detail}",
+                    title="Reload failed",
+                )
+
 
 def main():
     # Basic OS check already done at import time, but just in case:
