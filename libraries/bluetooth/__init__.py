@@ -30,6 +30,10 @@ from .windows import (
     get_windows_devices_for_adapter,
     read_device_key_hex,
 )
+from .windows_registry import (
+    backup_windows_bluetooth_registry,
+    restore_windows_bluetooth_registry,
+)
 
 
 def get_bluetooth_adapters(*, base_dir: str = BASE_DIR):
@@ -65,6 +69,7 @@ __all__ = [
     "WIN_BT_DEVICES_REG_PATH",
     "WIN_BT_KEYS_REG_PATH",
     "decode_bt_name",
+    "backup_windows_bluetooth_registry",
     "export_bt_key",
     "find_adapters",
     "format_mac",
@@ -81,6 +86,7 @@ __all__ = [
     "normalize_mac",
     "normalize_mac_colon",
     "read_device_key_hex",
+    "restore_windows_bluetooth_registry",
     "read_key_from_info",
     "reload_bluetooth",
 ]
