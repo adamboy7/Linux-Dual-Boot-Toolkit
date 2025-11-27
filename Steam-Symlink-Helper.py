@@ -5,11 +5,6 @@ from pathlib import Path
 import argparse
 import json
 
-import gi
-
-gi.require_version("Gtk", "3.0")
-from gi.repository import Gtk
-
 # ---------- Config ----------
 
 CONFIG_PATH = Path.home() / ".steam_symlink_manager.json"
@@ -289,208 +284,216 @@ def remove_stale_symlinks(linux_steamapps, windows_steamapps, logger=print):
 
 # ---------- Tkinter GUI ----------
 
-class SteamSymlinkGTK(Gtk.Window):
-    def __init__(self):
-        super().__init__(title="Steam Symlink Manager")
-        self.set_default_size(720, 480)
-        self.set_border_width(10)
-
-        cfg = load_config()
-        candidates = guess_steamapps_candidates()
-        default_linux = cfg.get("linux_steamapps") or (candidates[0] if candidates else "")
-
-        self.linux_entry = Gtk.Entry(text=default_linux)
-        self.win_entry = Gtk.Entry(text=cfg.get("windows_steamapps", ""))
-
-        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
-        self.add(outer)
-
-        self._build_path_row(outer)
-        self._build_toolbar(outer)
-        self._build_log_area(outer)
-
-        self.connect("destroy", Gtk.main_quit)
-        self.show_all()
-
-        logger = self.make_logger()
-        logger("[INFO] GUI ready. Set paths and click 'Sync Symlinks' or 'Cleanup Stale'.")
-
-    def _build_path_row(self, outer: Gtk.Box):
-        grid = Gtk.Grid(column_spacing=8, row_spacing=6)
-        outer.pack_start(grid, False, False, 0)
-
-        linux_label = Gtk.Label(label="Linux steamapps:")
-        linux_label.set_xalign(0.0)
-        grid.attach(linux_label, 0, 0, 1, 1)
-
-        grid.attach(self.linux_entry, 1, 0, 1, 1)
-        self.linux_entry.set_hexpand(True)
-
-        linux_btn = Gtk.Button(label="Browse…")
-        linux_btn.connect("clicked", self.browse_linux)
-        grid.attach(linux_btn, 2, 0, 1, 1)
-
-        win_label = Gtk.Label(label="Windows steamapps:")
-        win_label.set_xalign(0.0)
-        grid.attach(win_label, 0, 1, 1, 1)
-
-        grid.attach(self.win_entry, 1, 1, 1, 1)
-        self.win_entry.set_hexpand(True)
-
-        win_btn = Gtk.Button(label="Browse…")
-        win_btn.connect("clicked", self.browse_win)
-        grid.attach(win_btn, 2, 1, 1, 1)
-
-    def _build_toolbar(self, outer: Gtk.Box):
-        toolbar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        outer.pack_start(toolbar, False, False, 0)
-
-        sync_btn = Gtk.Button(label="Sync Symlinks")
-        sync_btn.connect("clicked", self.on_sync)
-        toolbar.pack_start(sync_btn, False, False, 0)
-
-        cleanup_btn = Gtk.Button(label="Cleanup Stale")
-        cleanup_btn.connect("clicked", self.on_cleanup)
-        toolbar.pack_start(cleanup_btn, False, False, 0)
-
-        save_btn = Gtk.Button(label="Save Paths")
-        save_btn.connect("clicked", self.on_save)
-        toolbar.pack_start(save_btn, False, False, 0)
-
-        toolbar.set_child_packing(save_btn, False, False, 0, Gtk.PackType.START)
-
-        quit_btn = Gtk.Button(label="Quit")
-        quit_btn.connect("clicked", self.on_quit)
-        toolbar.pack_end(quit_btn, False, False, 0)
-
-    def _build_log_area(self, outer: Gtk.Box):
-        frame = Gtk.Frame()
-        outer.pack_start(frame, True, True, 0)
-
-        scroller = Gtk.ScrolledWindow()
-        scroller.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
-        frame.add(scroller)
-
-        self.log_view = Gtk.TextView(editable=False, wrap_mode=Gtk.WrapMode.WORD)
-        self.log_buffer = self.log_view.get_buffer()
-        scroller.add(self.log_view)
-
-    def make_logger(self):
-        def logger(msg: str):
-            print(msg)
-            try:
-                end_iter = self.log_buffer.get_end_iter()
-                self.log_buffer.insert(end_iter, msg + "\n")
-                mark = self.log_buffer.create_mark(None, self.log_buffer.get_end_iter(), False)
-                self.log_view.scroll_to_mark(mark, 0.0, True, 0.0, 1.0)
-            except Exception:
-                pass
-
-        return logger
-
-    def browse_linux(self, _button=None):
-        path = self._choose_directory("Select Linux steamapps directory")
-        if path:
-            self.linux_entry.set_text(path)
-
-    def browse_win(self, _button=None):
-        path = self._choose_directory("Select Windows (NTFS) steamapps directory")
-        if path:
-            self.win_entry.set_text(path)
-
-    def _choose_directory(self, title: str) -> str | None:
-        dialog = Gtk.FileChooserDialog(
-            title=title,
-            parent=self,
-            action=Gtk.FileChooserAction.SELECT_FOLDER,
-        )
-        dialog.add_buttons(
-            Gtk.STOCK_CANCEL,
-            Gtk.ResponseType.CANCEL,
-            Gtk.STOCK_OPEN,
-            Gtk.ResponseType.OK,
-        )
-
-        response = dialog.run()
-        filename = dialog.get_filename() if response == Gtk.ResponseType.OK else None
-        dialog.destroy()
-        return filename
-
-    def _error_dialog(self, message: str):
-        dialog = Gtk.MessageDialog(
-            transient_for=self,
-            flags=0,
-            message_type=Gtk.MessageType.ERROR,
-            buttons=Gtk.ButtonsType.OK,
-            text="Error",
-        )
-        dialog.format_secondary_text(message)
-        dialog.run()
-        dialog.destroy()
-
-    def _info_dialog(self, message: str, title: str = "Info"):
-        dialog = Gtk.MessageDialog(
-            transient_for=self,
-            flags=0,
-            message_type=Gtk.MessageType.INFO,
-            buttons=Gtk.ButtonsType.OK,
-            text=title,
-        )
-        dialog.format_secondary_text(message)
-        dialog.run()
-        dialog.destroy()
-
-    def validate_paths(self):
-        linux = self.linux_entry.get_text().strip()
-        win = self.win_entry.get_text().strip()
-        if not linux or not win:
-            self._error_dialog("Both Linux and Windows steamapps paths are required.")
-            return None, None
-        return linux, win
-
-    def on_sync(self, _button=None):
-        linux, win = self.validate_paths()
-        if not linux:
-            return
-        logger = self.make_logger()
-        logger("[INFO] Running sync…")
-        rc = sync_symlinks(linux, win, logger=logger)
-        if rc == 0:
-            logger("[INFO] Sync finished successfully.")
-        else:
-            logger("[INFO] Sync completed with warnings or errors (see above).")
-
-    def on_cleanup(self, _button=None):
-        linux, win = self.validate_paths()
-        if not linux:
-            return
-        logger = self.make_logger()
-        logger("[INFO] Running cleanup…")
-        rc = remove_stale_symlinks(linux, win, logger=logger)
-        if rc == 0:
-            logger("[INFO] Cleanup finished.")
-        else:
-            logger("[INFO] Cleanup completed with warnings or errors (see above).")
-
-    def on_save(self, _button=None):
-        linux = self.linux_entry.get_text().strip()
-        win = self.win_entry.get_text().strip()
-        if not linux or not win:
-            self._error_dialog("Both paths must be set to save.")
-            return
-        ok = save_config(linux, win)
-        if ok:
-            self._info_dialog(f"Paths saved to {CONFIG_PATH}", title="Saved")
-        else:
-            self._error_dialog("Failed to save configuration.")
-
-    def on_quit(self, _button=None):
-        # Explicit handler to ensure the application closes cleanly
-        self.destroy()
-        Gtk.main_quit()
-
-
 def run_gui():
+    try:
+        import gi
+
+        gi.require_version("Gtk", "3.0")
+        from gi.repository import Gtk
+    except Exception as e:
+        print(f"[ERROR] GTK not available: {e}")
+        sys.exit(1)
+
+    class SteamSymlinkGTK(Gtk.Window):
+        def __init__(self):
+            super().__init__(title="Steam Symlink Manager")
+            self.set_default_size(720, 480)
+            self.set_border_width(10)
+
+            cfg = load_config()
+            candidates = guess_steamapps_candidates()
+            default_linux = cfg.get("linux_steamapps") or (candidates[0] if candidates else "")
+
+            self.linux_entry = Gtk.Entry(text=default_linux)
+            self.win_entry = Gtk.Entry(text=cfg.get("windows_steamapps", ""))
+
+            outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+            self.add(outer)
+
+            self._build_path_row(outer)
+            self._build_toolbar(outer)
+            self._build_log_area(outer)
+
+            self.connect("destroy", Gtk.main_quit)
+            self.show_all()
+
+            logger = self.make_logger()
+            logger("[INFO] GUI ready. Set paths and click 'Sync Symlinks' or 'Cleanup Stale'.")
+
+        def _build_path_row(self, outer: Gtk.Box):
+            grid = Gtk.Grid(column_spacing=8, row_spacing=6)
+            outer.pack_start(grid, False, False, 0)
+
+            linux_label = Gtk.Label(label="Linux steamapps:")
+            linux_label.set_xalign(0.0)
+            grid.attach(linux_label, 0, 0, 1, 1)
+
+            grid.attach(self.linux_entry, 1, 0, 1, 1)
+            self.linux_entry.set_hexpand(True)
+
+            linux_btn = Gtk.Button(label="Browse…")
+            linux_btn.connect("clicked", self.browse_linux)
+            grid.attach(linux_btn, 2, 0, 1, 1)
+
+            win_label = Gtk.Label(label="Windows steamapps:")
+            win_label.set_xalign(0.0)
+            grid.attach(win_label, 0, 1, 1, 1)
+
+            grid.attach(self.win_entry, 1, 1, 1, 1)
+            self.win_entry.set_hexpand(True)
+
+            win_btn = Gtk.Button(label="Browse…")
+            win_btn.connect("clicked", self.browse_win)
+            grid.attach(win_btn, 2, 1, 1, 1)
+
+        def _build_toolbar(self, outer: Gtk.Box):
+            toolbar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            outer.pack_start(toolbar, False, False, 0)
+
+            sync_btn = Gtk.Button(label="Sync Symlinks")
+            sync_btn.connect("clicked", self.on_sync)
+            toolbar.pack_start(sync_btn, False, False, 0)
+
+            cleanup_btn = Gtk.Button(label="Cleanup Stale")
+            cleanup_btn.connect("clicked", self.on_cleanup)
+            toolbar.pack_start(cleanup_btn, False, False, 0)
+
+            save_btn = Gtk.Button(label="Save Paths")
+            save_btn.connect("clicked", self.on_save)
+            toolbar.pack_start(save_btn, False, False, 0)
+
+            toolbar.set_child_packing(save_btn, False, False, 0, Gtk.PackType.START)
+
+            quit_btn = Gtk.Button(label="Quit")
+            quit_btn.connect("clicked", self.on_quit)
+            toolbar.pack_end(quit_btn, False, False, 0)
+
+        def _build_log_area(self, outer: Gtk.Box):
+            frame = Gtk.Frame()
+            outer.pack_start(frame, True, True, 0)
+
+            scroller = Gtk.ScrolledWindow()
+            scroller.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+            frame.add(scroller)
+
+            self.log_view = Gtk.TextView(editable=False, wrap_mode=Gtk.WrapMode.WORD)
+            self.log_buffer = self.log_view.get_buffer()
+            scroller.add(self.log_view)
+
+        def make_logger(self):
+            def logger(msg: str):
+                print(msg)
+                try:
+                    end_iter = self.log_buffer.get_end_iter()
+                    self.log_buffer.insert(end_iter, msg + "\n")
+                    mark = self.log_buffer.create_mark(None, self.log_buffer.get_end_iter(), False)
+                    self.log_view.scroll_to_mark(mark, 0.0, True, 0.0, 1.0)
+                except Exception:
+                    pass
+
+            return logger
+
+        def browse_linux(self, _button=None):
+            path = self._choose_directory("Select Linux steamapps directory")
+            if path:
+                self.linux_entry.set_text(path)
+
+        def browse_win(self, _button=None):
+            path = self._choose_directory("Select Windows (NTFS) steamapps directory")
+            if path:
+                self.win_entry.set_text(path)
+
+        def _choose_directory(self, title: str) -> str | None:
+            dialog = Gtk.FileChooserDialog(
+                title=title,
+                parent=self,
+                action=Gtk.FileChooserAction.SELECT_FOLDER,
+            )
+            dialog.add_buttons(
+                Gtk.STOCK_CANCEL,
+                Gtk.ResponseType.CANCEL,
+                Gtk.STOCK_OPEN,
+                Gtk.ResponseType.OK,
+            )
+
+            response = dialog.run()
+            filename = dialog.get_filename() if response == Gtk.ResponseType.OK else None
+            dialog.destroy()
+            return filename
+
+        def _error_dialog(self, message: str):
+            dialog = Gtk.MessageDialog(
+                transient_for=self,
+                flags=0,
+                message_type=Gtk.MessageType.ERROR,
+                buttons=Gtk.ButtonsType.OK,
+                text="Error",
+            )
+            dialog.format_secondary_text(message)
+            dialog.run()
+            dialog.destroy()
+
+        def _info_dialog(self, message: str, title: str = "Info"):
+            dialog = Gtk.MessageDialog(
+                transient_for=self,
+                flags=0,
+                message_type=Gtk.MessageType.INFO,
+                buttons=Gtk.ButtonsType.OK,
+                text=title,
+            )
+            dialog.format_secondary_text(message)
+            dialog.run()
+            dialog.destroy()
+
+        def validate_paths(self):
+            linux = self.linux_entry.get_text().strip()
+            win = self.win_entry.get_text().strip()
+            if not linux or not win:
+                self._error_dialog("Both Linux and Windows steamapps paths are required.")
+                return None, None
+            return linux, win
+
+        def on_sync(self, _button=None):
+            linux, win = self.validate_paths()
+            if not linux:
+                return
+            logger = self.make_logger()
+            logger("[INFO] Running sync…")
+            rc = sync_symlinks(linux, win, logger=logger)
+            if rc == 0:
+                logger("[INFO] Sync finished successfully.")
+            else:
+                logger("[INFO] Sync completed with warnings or errors (see above).")
+
+        def on_cleanup(self, _button=None):
+            linux, win = self.validate_paths()
+            if not linux:
+                return
+            logger = self.make_logger()
+            logger("[INFO] Running cleanup…")
+            rc = remove_stale_symlinks(linux, win, logger=logger)
+            if rc == 0:
+                logger("[INFO] Cleanup finished.")
+            else:
+                logger("[INFO] Cleanup completed with warnings or errors (see above).")
+
+        def on_save(self, _button=None):
+            linux = self.linux_entry.get_text().strip()
+            win = self.win_entry.get_text().strip()
+            if not linux or not win:
+                self._error_dialog("Both paths must be set to save.")
+                return
+            ok = save_config(linux, win)
+            if ok:
+                self._info_dialog(f"Paths saved to {CONFIG_PATH}", title="Saved")
+            else:
+                self._error_dialog("Failed to save configuration.")
+
+        def on_quit(self, _button=None):
+            # Explicit handler to ensure the application closes cleanly
+            self.destroy()
+            Gtk.main_quit()
+
     app = SteamSymlinkGTK()
     Gtk.main()
 
