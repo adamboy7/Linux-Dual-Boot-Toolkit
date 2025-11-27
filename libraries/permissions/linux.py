@@ -5,6 +5,7 @@ import os
 import platform
 import shutil
 import sys
+from typing import Tuple
 
 
 DISPLAY_ENV_VARS = (
@@ -48,3 +49,19 @@ def ensure_root_linux() -> None:
 
     sys.stderr.write("This tool must be run as root (pkexec/sudo not found).\n")
     sys.exit(1)
+
+
+def get_linux_privileges() -> Tuple[bool, bool]:
+    """Return ``(is_admin, is_system)`` for the current Linux process.
+
+    Linux collapses administrator and system privileges into root; there is no
+    higher context than UID 0. If the effective UID is 0, both values are
+    ``True``. Otherwise, both are ``False`` because additional flags are
+    unnecessary and cannot elevate a non-root process beyond its current level.
+    """
+
+    if platform.system() != "Linux":
+        return False, False
+
+    is_root = hasattr(os, "geteuid") and os.geteuid() == 0
+    return is_root, is_root
