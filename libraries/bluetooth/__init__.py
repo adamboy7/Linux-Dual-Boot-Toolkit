@@ -1,7 +1,14 @@
 from __future__ import annotations
 
-import platform
-
+from .backend import (
+    BluetoothAdapter,
+    BluetoothBackend,
+    BluetoothDevice,
+    ImportResult,
+    LinuxBluetoothBackend,
+    WindowsBluetoothBackend,
+    get_bluetooth_backend,
+)
 from .common import (
     BASE_DIR,
     format_mac,
@@ -39,36 +46,31 @@ from .windows_registry import (
 def get_bluetooth_adapters(*, base_dir: str = BASE_DIR):
     """Return Bluetooth adapters using platform-specific discovery."""
 
-    if platform.system() == "Windows":
-        return get_windows_bluetooth_adapters()
-
-    return get_linux_bluetooth_adapters(base_dir=base_dir)
+    backend = get_bluetooth_backend(base_dir=base_dir)
+    return backend.list_adapters()
 
 
 def get_devices_for_adapter(adapter):
     """Return devices paired to the given adapter using platform rules."""
 
-    if platform.system() == "Windows":
-        raw = adapter
-        if isinstance(adapter, dict):
-            raw = adapter.get("raw")
-        if not isinstance(raw, str):
-            raise TypeError("Expected adapter raw string or mapping with 'raw' key")
-        return get_windows_devices_for_adapter(raw)
-
-    if not isinstance(adapter, AdapterInfo):
-        raise TypeError("Expected AdapterInfo for Linux adapters")
-
-    return get_linux_devices_for_adapter(adapter)
+    backend = get_bluetooth_backend()
+    return backend.list_devices(adapter)
 
 
 __all__ = [
+    "BluetoothAdapter",
+    "BluetoothBackend",
+    "BluetoothDevice",
+    "LinuxBluetoothBackend",
+    "WindowsBluetoothBackend",
     "BASE_DIR",
     "AdapterInfo",
     "DeviceInfo",
     "WIN_BT_DEVICES_REG_PATH",
     "WIN_BT_KEYS_REG_PATH",
     "decode_bt_name",
+    "get_bluetooth_backend",
+    "ImportResult",
     "backup_windows_bluetooth_registry",
     "export_bt_key",
     "find_adapters",
