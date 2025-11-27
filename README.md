@@ -30,7 +30,7 @@ Bluetooth link keys live under the system-wide registry path `HKLM\\SYSTEM\\Curr
 ### Launch options
 Headless mode is useful for automation and repeat runs after adding games. The CLI accepts:
 - `--linux-steam`: Linux `steamapps` path where symlinks should live (optional; auto-detected if omitted).
-- `--win-steam`: Windows NTFS `steamapps` path mounted on Linux (required in headless mode).
+- `--win-steam`: Windows NTFS `steamapps` path mounted on Linux (required in headless mode if a path is not saved or detected).
 - `--cleanup`: After syncing, remove stale symlinks in the Linux library.
 - `--headless`: Force headless execution even when no other flags are provided; combines with saved defaults.
 
@@ -50,12 +50,12 @@ python3 Steam-Symlink-Helper.py \
 - Keep the JSON backups from imports— they are portable between OSes and act as a quick restore point.
 - Store your exported Bluetooth key JSONs on a network share or synced storage so updated keys are easy to import on both OSes.
 - Mount your Windows partition in `/etc/fstab` so the NTFS library path is stable across boots; add `nofail` if the drive might not always be connected.
+- To properly sync your Bluetooth device, first pair your device to either Windows or Linux. Reboot to the other OS, re-sync and pair your device again, then export your device's Bluetooth key. Reboot one last time to the OS you started in, import your recently exported key, and never re-pair your headphones again. Be sure to only export your key after the second pairing; connecting to a new device changes your headphone's internal keys. Going out of order will "break" things.
+- It's absolutely possible to use the Bluetooth GUI tool to sync devices between two instances of Windows, two instances of Linux, or even two different computers altogether. Just make sure if multiple devices are involved, they're not in range of one another.
+- If you overwrite a key to a device that's actively in use (for some reason), Windows stores the active key in memory even after refreshing. Linux should update immediately after a reload, but Windows will require a reboot.
+- Remember to mark the scripts as executable on Linux, that lets you just double click and run my scripts. Scripts will automatically attempt to escalate privileges from any level when necisary.
 - To automate Steam syncs at login, run a headless command such as:
 
   ```bash
   python3 Steam-Symlink-Helper.py --win-steam /mnt/windows/SteamLibrary/steamapps --cleanup
   ```
-- To properly sync your Bluetooth device, first pair your device to either Windows or Linux. Reboot to the other OS, re-sync and pair your device again, then export your device's Bluetooth key. Reboot one last time to the OS you started in, import your recently exported key, and never re-pair your headphones again. Be sure to only export your key after the second pairing; connecting to a new device changes your headphone's internal keys. Going out of order will "break" things.
-- It's absolutely possible to use the Bluetooth GUI tool to sync devices between two instances of Windows, two instances of Linux, or even two different computers altogether. Just make sure if multiple devices are involved, they're not in range of one another.
-- If you overwrite a key to a device that's actively in use (for some reason), Windows stores the active key in memory even after refreshing. Linux should update immediately after a reload, but Windows will require a reboot.
-- Remember to mark the scripts as executable on Linux, that lets you just double click and run my scripts. Scripts will automatically attempt to escalate privileges from any level when necisary.
