@@ -33,6 +33,8 @@ class BluetoothKeyManagerApp(tk.Tk):
         self.title("Bluetooth Key Sync (Windows)")
         self.resizable(False, False)
 
+        ensure_platform_permissions(SYSTEM_FLAG)
+
         self.backend = get_bluetooth_backend()
 
         self.display_to_adapter: dict[str, BluetoothAdapter] = {}
