@@ -13,19 +13,19 @@ from tkinter import filedialog, ttk, messagebox
 import winreg
 from libraries.bluetooth_utils import (
     WIN_BT_KEYS_REG_PATH,
-    backup_windows_bluetooth_registry,
     format_mac,
     get_bluetooth_adapters,
     get_devices_for_adapter,
     normalize_mac,
     read_device_key_hex,
-    restore_windows_bluetooth_registry,
     reload_bluetooth,
 )
 from libraries.bt_gui_logic import (
     BtKeyRecord,
+    backup_windows_bluetooth_registry,
     bt_record_from_json_file,
     bt_record_to_json_file,
+    restore_windows_bluetooth_registry,
     save_timestamped_backup,
 )
 from libraries.permissions import ensure_platform_permissions
