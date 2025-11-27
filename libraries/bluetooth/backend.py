@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from ..bt_gui_logic import BtKeyRecord, save_timestamped_backup
-from .common import BASE_DIR, normalize_mac
+from .common import BASE_DIR, format_mac, normalize_mac
 from .linux import (
     AdapterInfo,
     DeviceInfo,
@@ -16,7 +16,6 @@ from .linux import (
     import_bt_key,
 )
 from .windows import (
-    format_mac,
     get_windows_bluetooth_adapters,
     get_windows_devices_for_adapter,
     read_device_key_hex,
