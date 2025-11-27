@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from dataclasses import dataclass
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 from .common import BASE_DIR, is_mac_dir_name, normalize_mac_colon
@@ -106,7 +108,9 @@ def export_bt_key(adapter_mac: str, device_mac: str, *, base_dir: str = BASE_DIR
     return BtKeyRecord(adapter_mac=adapter_mac, device_mac=device_mac, key_hex=key_hex)
 
 
-def import_bt_key(record: "BtKeyRecord", *, base_dir: str = BASE_DIR) -> str | None:
+def import_bt_key(
+    record: "BtKeyRecord", *, base_dir: str = BASE_DIR
+) -> tuple[str | None, str]:
     from ..bt_gui_logic import BtKeyRecord, save_timestamped_backup
 
     adapter_mac = normalize_mac_colon(record.adapter_mac)
@@ -133,6 +137,15 @@ def import_bt_key(record: "BtKeyRecord", *, base_dir: str = BASE_DIR) -> str | N
         backup_path = save_timestamped_backup(backup_record, directory=os.getcwd())
     except Exception:  # noqa: BLE001
         backup_path = None
+
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    info_backup_path = os.path.join(os.path.dirname(info_path), f"info.{timestamp}.bak")
+    try:
+        shutil.copy2(info_path, info_backup_path)
+    except Exception as e:  # noqa: BLE001
+        raise RuntimeError(
+            f"Failed to create backup of {info_path} before writing: {e}"
+        ) from e
 
     # Read all lines and replace/insert Key=...
     with open(info_path, "r", encoding="utf-8") as f:
@@ -165,10 +178,28 @@ def import_bt_key(record: "BtKeyRecord", *, base_dir: str = BASE_DIR) -> str | N
             output_lines.append(f"Key={record.key_hex}\n")
         new_lines = output_lines
 
-    with open(info_path, "w", encoding="utf-8") as f:
-        f.writelines(new_lines)
+    try:
+        with open(info_path, "w", encoding="utf-8") as f:
+            f.writelines(new_lines)
+    except Exception as write_err:  # noqa: BLE001
+        restore_error: Exception | None = None
+        try:
+            shutil.copy2(info_backup_path, info_path)
+        except Exception as restore_exc:  # noqa: BLE001
+            restore_error = restore_exc
 
-    return backup_path
+        if restore_error is not None:
+            raise RuntimeError(
+                "Failed to update BlueZ info file and failed to restore from backup. "
+                f"Update error: {write_err}; restore error: {restore_error}"
+            ) from write_err
+
+        raise RuntimeError(
+            "Failed to update BlueZ info file. The original file was restored from "
+            f"backup. Update error: {write_err}"
+        ) from write_err
+
+    return backup_path, info_backup_path
 
 
 def get_linux_bluetooth_adapters(*, base_dir: str = BASE_DIR) -> list[AdapterInfo]:

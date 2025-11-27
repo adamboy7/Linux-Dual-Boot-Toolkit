@@ -42,6 +42,7 @@ class BluetoothDevice:
 @dataclass
 class ImportResult:
     backup_path: str | None = None
+    info_backup_path: str | None = None
     registry_backups: dict[str, str] | None = None
 
 
@@ -89,8 +90,8 @@ class LinuxBluetoothBackend:
         return export_bt_key(adapter.mac, device.mac, base_dir=self.base_dir)
 
     def import_key(self, record: BtKeyRecord) -> ImportResult | None:
-        backup_path = import_bt_key(record, base_dir=self.base_dir)
-        return ImportResult(backup_path=backup_path)
+        backup_path, info_backup_path = import_bt_key(record, base_dir=self.base_dir)
+        return ImportResult(backup_path=backup_path, info_backup_path=info_backup_path)
 
 
 class WindowsBluetoothBackend:
@@ -188,7 +189,11 @@ class WindowsBluetoothBackend:
                 adap_key, device_raw, 0, winreg.REG_BINARY, key_bytes
             )
 
-        return ImportResult(backup_path=backup_path, registry_backups=registry_backups)
+        return ImportResult(
+            backup_path=backup_path,
+            info_backup_path=None,
+            registry_backups=registry_backups,
+        )
 
 
 def get_bluetooth_backend(*, base_dir: str = BASE_DIR) -> BluetoothBackend:
