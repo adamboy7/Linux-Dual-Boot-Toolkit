@@ -310,7 +310,6 @@ class BtKeyGui(Gtk.Window):
         renderer = Gtk.CellRendererText()
         combo.pack_start(renderer, True)
         combo.add_attribute(renderer, "text", 0)
-        combo.set_id_column(1)
         combo.set_active(0 if backups else -1)
 
         def on_browse_clicked(_button: Gtk.Button):
@@ -365,7 +364,10 @@ class BtKeyGui(Gtk.Window):
         response = chooser.run()
         selected_backup = chooser.selected_backup
         if response == Gtk.ResponseType.OK and selected_backup is None:
-            selected_backup = combo.get_active_id()
+            active_iter = combo.get_active_iter()
+            if active_iter is not None:
+                model = combo.get_model()
+                selected_backup = model[active_iter][1]
         elif response != Gtk.ResponseType.OK and response != Gtk.ResponseType.APPLY:
             selected_backup = None
 
