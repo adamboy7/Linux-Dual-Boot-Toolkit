@@ -582,13 +582,32 @@ def list_backups(info_path: str) -> list[str]:
 def restore_backup(info_path: str, backup_path: str):
     from . import backup_validation
 
-    payload = backup_validation.parse_backup_payload(backup_path)
-    if payload:
-        backup_validation.validate_backup_matches(
-            expected_adapter=None,
-            expected_device=None,
-            backup_path=backup_path,
-        )
+    def _should_parse_json(path: str) -> bool:
+        lower = path.lower()
+        return lower.endswith(".json") or lower.endswith(".json.bak") or lower.endswith(".bak.json")
+
+    if _should_parse_json(backup_path):
+        try:
+            backup_validation.parse_backup_payload(backup_path)
+        except ValueError as exc:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise ValueError(f"Unable to read backup file: {exc}") from exc
+
+        expected_adapter, expected_device = backup_validation.extract_macs_from_path(info_path)
+        mismatch_messages: list[str] = []
+
+        if not backup_validation.validate_backup_matches(
+            expected_adapter,
+            expected_device,
+            backup_path,
+            lambda msg, title=None: mismatch_messages.append(msg),
+        ):
+            message = mismatch_messages[0] if mismatch_messages else (
+                "Backup file does not match the selected adapter/device."
+            )
+            raise ValueError(message)
+
     shutil.copy2(backup_path, info_path)
 
 
