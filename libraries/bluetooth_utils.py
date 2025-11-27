@@ -582,7 +582,17 @@ def list_backups(info_path: str) -> list[str]:
 def restore_backup(info_path: str, backup_path: str):
     from . import backup_validation
 
-    payload = backup_validation.parse_backup_payload(backup_path)
+    payload = None
+    lower_path = backup_path.lower()
+    should_force_json = lower_path.endswith(".json") or lower_path.endswith(".json.bak")
+
+    try:
+        payload = backup_validation.parse_backup_payload(backup_path)
+    except ValueError:
+        if should_force_json:
+            raise
+        payload = None
+
     if payload:
         backup_validation.validate_backup_matches(
             expected_adapter=None,
