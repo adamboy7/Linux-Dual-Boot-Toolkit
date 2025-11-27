@@ -11,7 +11,7 @@ import traceback
 import tkinter as tk
 from tkinter import filedialog, ttk, messagebox
 import winreg
-from libraries.bluetooth_utils import (
+from libraries.bluetooth import (
     WIN_BT_KEYS_REG_PATH,
     format_mac,
     get_bluetooth_adapters,

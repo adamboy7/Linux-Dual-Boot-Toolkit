@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Dict
 
-from .bluetooth_utils import WIN_BT_DEVICES_REG_PATH, WIN_BT_KEYS_REG_PATH, normalize_mac
+from .bluetooth import WIN_BT_DEVICES_REG_PATH, WIN_BT_KEYS_REG_PATH, normalize_mac
 
 
 @dataclass
