@@ -1,7 +1,7 @@
 # Linux Dual-Boot Toolkit
 
 ## Repository layout
-- `Bluetooth-GUI.py`: Cross-platform entry point that launches the Linux or Windows Bluetooth GUI for exporting/importing link keys.
+- `Bluetooth-GUI.py`: Cross-platform entry point that launches the Linux or Windows Bluetooth GUI for exporting/importing link keys. Windows version uses Tkinter.
 - `Steam-Symlink-Helper.py`: GUI/CLI helper to mirror a Windows Steam library into Linux via symlinks.
 - `libraries/`: Shared logic for Bluetooth parsing, permissions, backup handling, and GUI helpers.
 
