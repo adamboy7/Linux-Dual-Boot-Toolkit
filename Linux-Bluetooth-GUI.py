@@ -19,7 +19,6 @@ and then import that JSON here into the selected device.
 """
 
 import json
-import os
 import platform
 import sys
 
