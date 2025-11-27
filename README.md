@@ -42,6 +42,13 @@ python3 Steam-Symlink-Helper.py \
 - `libraries/`: Shared logic for Bluetooth parsing, permissions, backup handling, and GUI helpers.
 
 ## Usage tips
-- Always run the Windows Bluetooth manager with PsExec-enabled SYSTEM rights so registry writes succeed.
+- Keep `PsExec.exe`/`PsExec64.exe` in your `PATH` on Windows so the GUI can elevate to SYSTEM when needed for registry writes.
 - Keep the JSON backups from imports— they are portable between OSes and act as a quick restore point.
+- Mount your Windows partition in `/etc/fstab` so the NTFS library path is stable across boots; add `nofail` if the drive might not always be connected.
 - For Steam, point the Windows path to the NTFS-mounted `steamapps` folder; rerun the tool after adding or moving games to refresh the symlinks.
+- To automate Steam syncs at login, run a headless command such as:
+
+  ```bash
+  python3 Steam-Symlink-Helper.py --win-steam /mnt/windows/SteamLibrary/steamapps --cleanup
+  ```
+- Store your exported Bluetooth key JSONs on a network share or synced storage so updated keys are easy to import on both OSes.
