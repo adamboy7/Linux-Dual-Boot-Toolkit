@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Dict
 
-from .bluetooth import normalize_mac
+from .bluetooth.common import normalize_mac
 
 
 @dataclass
