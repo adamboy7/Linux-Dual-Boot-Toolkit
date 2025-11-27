@@ -1,22 +1,5 @@
-#!/usr/bin/env python3
-"""
-Linux-Bluetooth-GUI.py
-
-GTK-based GUI to export/import Bluetooth pairing keys on Linux (BlueZ).
-
-Features:
-- Detect adapters from /var/lib/bluetooth
-- Detect devices for the selected adapter (names + MACs)
-- Export selected device's link key to JSON
-- Import link key from JSON into selected device's BlueZ "info" file
-
-Usage:
-    python3 Linux-Bluetooth-GUI.py
-
-This script is intended for the Linux side of a dual-boot setup.
-You can pair your headphones in Windows, export the key there to JSON,
-and then import that JSON here into the selected device.
-"""
+"""GTK-based Bluetooth key GUI for Linux systems."""
+from __future__ import annotations
 
 import json
 import platform
@@ -31,16 +14,16 @@ from libraries.bluetooth import (
 from libraries.bt_gui_logic import BtKeyRecord
 from libraries.permissions import ensure_platform_permissions
 
+if platform.system() != "Linux":
+    raise ImportError("linux GUI module is only available on Linux platforms.")
 
-# Only import GTK if on Linux
-if platform.system() == "Linux":
-    ensure_platform_permissions()
-    import gi
-    gi.require_version("Gtk", "3.0")
-    from gi.repository import Gtk
-else:
-    print("This GUI tool currently only supports Linux (BlueZ).")
-    sys.exit(1)
+ensure_platform_permissions()
+
+import gi
+
+gi.require_version("Gtk", "3.0")
+from gi.repository import Gtk
+
 
 class BtKeyGui(Gtk.Window):
     def __init__(self):
@@ -122,7 +105,7 @@ class BtKeyGui(Gtk.Window):
         self._populate_adapters()
 
         # If there's only one adapter, we can leave selection as-is; the user
-        # still sees which one it is, but they don't *have* to change it.
+        # still sees which one it is, but they don't *have to* change it.
 
         self.adapter_combo.connect("changed", self.on_adapter_changed)
 
@@ -338,7 +321,7 @@ class BtKeyGui(Gtk.Window):
                     json.dump(record.to_dict(), f, indent=2)
                 self.set_status(f"Exported key for {device.name} to {filename}")
                 self._show_info_dialog(
-                    f"Successfully exported key for {device.name}.\n\n"
+                    f"Successfully exported key for {device.name}.\n\n",
                     f"File: {filename}",
                     title="Export successful",
                 )
@@ -454,15 +437,13 @@ class BtKeyGui(Gtk.Window):
             dialog.destroy()
 
 
-def main():
-    # Basic OS check already done at import time, but just in case:
+def run_linux_gui() -> None:
     if platform.system() != "Linux":
-        print("This tool is intended for Linux (BlueZ).")
-        return
+        print("This tool is intended for Linux (BlueZ).", file=sys.stderr)
+        sys.exit(1)
 
     win = BtKeyGui()
     Gtk.main()
 
 
-if __name__ == "__main__":
-    main()
+__all__ = ["run_linux_gui", "BtKeyGui"]
