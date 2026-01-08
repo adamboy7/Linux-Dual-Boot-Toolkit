@@ -17,6 +17,7 @@ from pystray import MenuItem as Item, Menu as Menu
 from PIL import Image, ImageDraw
 
 if sys.platform == "win32":
+    import queue
     import tkinter as tk
     from tkinter import simpledialog, messagebox
 else:
@@ -33,6 +34,7 @@ if sys.platform == "win32":
 
 APP_NAME = "MediaRelay"
 DEFAULT_PORT = 50123
+_WIN_PROMPTER = None
 
 
 # -------------------- Media control (Windows) --------------------
@@ -542,8 +544,49 @@ class RelayCore:
 
 # -------------------- Tray UI --------------------
 
+class WinPromptThread:
+    def __init__(self):
+        self._queue = queue.Queue()
+        self._ready = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+        self._ready.wait()
+
+    def _run(self):
+        self._root = tk.Tk()
+        self._root.withdraw()
+        self._ready.set()
+        self._root.after(50, self._process_queue)
+        self._root.mainloop()
+
+    def _process_queue(self):
+        while True:
+            try:
+                task = self._queue.get_nowait()
+            except queue.Empty:
+                break
+            prompt, initial, result, done = task
+            value = simpledialog.askstring(APP_NAME, prompt, initialvalue=initial, parent=self._root)
+            result["value"] = value
+            done.set()
+        self._root.after(50, self._process_queue)
+
+    def ask_string(self, prompt: str, initial: str = "") -> Optional[str]:
+        result = {}
+        done = threading.Event()
+        self._queue.put((prompt, initial, result, done))
+        done.wait()
+        return result.get("value")
+
+    def stop(self):
+        if self._root:
+            self._root.after(0, self._root.quit)
+
+
 def prompt_string(prompt: str, initial: str = "") -> Optional[str]:
     if sys.platform == "win32":
+        if _WIN_PROMPTER is not None:
+            return _WIN_PROMPTER.ask_string(prompt, initial)
         return simpledialog.askstring(APP_NAME, prompt, initialvalue=initial)
 
     dialog = Gtk.Dialog(title=APP_NAME)
@@ -605,10 +648,10 @@ class TrayApp:
         self.core = RelayCore(listen_port=self.listen_port)
         self.core.on_status_change = self._refresh_tray
 
-        self.root = None
         if sys.platform == "win32":
-            self.root = tk.Tk()
-            self.root.withdraw()
+            global _WIN_PROMPTER
+            if _WIN_PROMPTER is None:
+                _WIN_PROMPTER = WinPromptThread()
 
         self.icon = pystray.Icon(APP_NAME, make_icon(Role.HOST, False), APP_NAME, menu=self._build_menu())
 
@@ -683,11 +726,8 @@ class TrayApp:
     def _exit(self, icon=None, item=None):
         self.core.stop()
         self.icon.stop()
-        try:
-            if self.root is not None:
-                self.root.destroy()
-        except Exception:
-            pass
+        if _WIN_PROMPTER is not None:
+            _WIN_PROMPTER.stop()
 
     def run(self):
         # Start core networking
