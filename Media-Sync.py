@@ -380,7 +380,7 @@ class RelayCore:
 
                 # handle messages
                 if mtype == "connect_request":
-                    await self._handle_connect_request(addr)
+                    await self._handle_connect_request(addr, msg)
                 elif mtype == "connect_ack":
                     # client receives this as part of connect_out flow (rpc handles it)
                     pass
@@ -411,22 +411,22 @@ class RelayCore:
                     return
                 continue
 
-    async def _handle_connect_request(self, addr):
+    async def _handle_connect_request(self, addr, msg):
         # If we are connected as a CLIENT, we don't accept inbound connect (by design).
         if self.role == Role.CLIENT:
-            await self._send(addr, {"t": "connect_ack", "ok": False, "reason": "busy_client", "ts": now_ms()})
+            await self._send(addr, {"t": "connect_ack", "id": msg.get("id"), "ok": False, "reason": "busy_client", "ts": now_ms()})
             return
 
         # If we already have a peer, refuse new ones (simple policy).
         if self.peer and addr != self.peer:
-            await self._send(addr, {"t": "connect_ack", "ok": False, "reason": "already_connected", "ts": now_ms()})
+            await self._send(addr, {"t": "connect_ack", "id": msg.get("id"), "ok": False, "reason": "already_connected", "ts": now_ms()})
             return
 
         # Accept: we remain/become HOST.
         self.role = Role.HOST
         self.peer = (addr[0], addr[1])
         self.peer_last_seen = time.time()
-        await self._send(addr, {"t": "connect_ack", "ok": True, "ts": now_ms()})
+        await self._send(addr, {"t": "connect_ack", "id": msg.get("id"), "ok": True, "ts": now_ms()})
         self._notify()
 
     async def _connect_out(self, ip: str, port: int):
@@ -681,9 +681,15 @@ class TrayApp:
             self.icon.title = f"{APP_NAME} - {self.core.status_text()}"
             self._persist_state()
         try:
-            self.icon._handler_queue.put(do)
+            # Preferred: marshal to the tray thread if the backend provides a handler queue
+            q = getattr(self.icon, "_handler_queue", None)
+            if q is not None:
+                q.put(do)
+            else:
+                # Fallback: best-effort direct call (works on some backends)
+                do()
         except Exception:
-            # Fallback if handler queue differs across backends
+            # Last resort: swallow (but at least we tried)
             pass
 
     def _persist_state(self):
