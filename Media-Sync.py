@@ -9,6 +9,7 @@ import sys
 import threading
 import time
 import uuid
+import struct
 from dataclasses import dataclass
 from enum import Enum
 from typing import Optional, Tuple
@@ -186,6 +187,20 @@ if sys.platform == "win32":
     VK_MEDIA_PREV_TRACK = 0xB1
     VK_MEDIA_STOP = 0xB2
     VK_MEDIA_PLAY_PAUSE = 0xB3
+    WM_INPUT = 0x00FF
+    WM_APPCOMMAND = 0x0319
+    RIM_TYPEHID = 2
+    RID_INPUT = 0x10000003
+    RIDI_PREPARSEDDATA = 0x20000005
+    RIDEV_INPUTSINK = 0x00000100
+    APPCOMMAND_MEDIA_STOP = 13
+    APPCOMMAND_MEDIA_PLAY_PAUSE = 14
+    HID_USAGE_PAGE_CONSUMER = 0x0C
+    HID_USAGE_CONSUMER_CONTROL = 0x01
+    HID_USAGE_PLAY_PAUSE = 0xCD
+    HID_USAGE_STOP = 0xB7
+
+    HWND_MESSAGE = wintypes.HWND(-3)
 
     _user32.CallNextHookEx.argtypes = (
         wintypes.HHOOK,
@@ -194,6 +209,106 @@ if sys.platform == "win32":
         wintypes.LPARAM,
     )
     _user32.CallNextHookEx.restype = ctypes.c_long
+    _user32.DefWindowProcW.argtypes = (
+        wintypes.HWND,
+        wintypes.UINT,
+        wintypes.WPARAM,
+        wintypes.LPARAM,
+    )
+    _user32.DefWindowProcW.restype = wintypes.LRESULT
+
+    class RAWINPUTDEVICE(ctypes.Structure):
+        _fields_ = [
+            ("usUsagePage", wintypes.USHORT),
+            ("usUsage", wintypes.USHORT),
+            ("dwFlags", wintypes.DWORD),
+            ("hwndTarget", wintypes.HWND),
+        ]
+
+    class RAWINPUTHEADER(ctypes.Structure):
+        _fields_ = [
+            ("dwType", wintypes.DWORD),
+            ("dwSize", wintypes.DWORD),
+            ("hDevice", wintypes.HANDLE),
+            ("wParam", wintypes.WPARAM),
+        ]
+
+    class WNDCLASS(ctypes.Structure):
+        _fields_ = [
+            ("style", wintypes.UINT),
+            ("lpfnWndProc", ctypes.WINFUNCTYPE(wintypes.LRESULT, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)),
+            ("cbClsExtra", ctypes.c_int),
+            ("cbWndExtra", ctypes.c_int),
+            ("hInstance", wintypes.HINSTANCE),
+            ("hIcon", wintypes.HICON),
+            ("hCursor", wintypes.HCURSOR),
+            ("hbrBackground", wintypes.HBRUSH),
+            ("lpszMenuName", wintypes.LPCWSTR),
+            ("lpszClassName", wintypes.LPCWSTR),
+        ]
+
+    class HIDP_CAPS(ctypes.Structure):
+        _fields_ = [
+            ("Usage", wintypes.USHORT),
+            ("UsagePage", wintypes.USHORT),
+            ("InputReportByteLength", wintypes.USHORT),
+            ("OutputReportByteLength", wintypes.USHORT),
+            ("FeatureReportByteLength", wintypes.USHORT),
+            ("Reserved", wintypes.USHORT * 17),
+            ("NumberLinkCollectionNodes", wintypes.USHORT),
+            ("NumberInputButtonCaps", wintypes.USHORT),
+            ("NumberInputValueCaps", wintypes.USHORT),
+            ("NumberInputDataIndices", wintypes.USHORT),
+            ("NumberOutputButtonCaps", wintypes.USHORT),
+            ("NumberOutputValueCaps", wintypes.USHORT),
+            ("NumberOutputDataIndices", wintypes.USHORT),
+            ("NumberFeatureButtonCaps", wintypes.USHORT),
+            ("NumberFeatureValueCaps", wintypes.USHORT),
+            ("NumberFeatureDataIndices", wintypes.USHORT),
+        ]
+
+    _user32.RegisterRawInputDevices.argtypes = (
+        ctypes.POINTER(RAWINPUTDEVICE),
+        wintypes.UINT,
+        wintypes.UINT,
+    )
+    _user32.RegisterRawInputDevices.restype = wintypes.BOOL
+    _user32.GetRawInputData.argtypes = (
+        wintypes.HRAWINPUT,
+        wintypes.UINT,
+        wintypes.LPVOID,
+        ctypes.POINTER(wintypes.UINT),
+        wintypes.UINT,
+    )
+    _user32.GetRawInputData.restype = wintypes.UINT
+    _user32.GetRawInputDeviceInfoW.argtypes = (
+        wintypes.HANDLE,
+        wintypes.UINT,
+        wintypes.LPVOID,
+        ctypes.POINTER(wintypes.UINT),
+    )
+    _user32.GetRawInputDeviceInfoW.restype = wintypes.UINT
+    _user32.CreateWindowExW.argtypes = (
+        wintypes.DWORD,
+        wintypes.LPCWSTR,
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.c_int,
+        wintypes.HWND,
+        wintypes.HMENU,
+        wintypes.HINSTANCE,
+        wintypes.LPVOID,
+    )
+    _user32.CreateWindowExW.restype = wintypes.HWND
+    _user32.DestroyWindow.argtypes = (wintypes.HWND,)
+    _user32.DestroyWindow.restype = wintypes.BOOL
+    _user32.RegisterClassW.argtypes = (ctypes.POINTER(WNDCLASS),)
+    _user32.RegisterClassW.restype = wintypes.ATOM
+    _user32.UnregisterClassW.argtypes = (wintypes.LPCWSTR, wintypes.HINSTANCE)
+    _user32.UnregisterClassW.restype = wintypes.BOOL
 
     class KBDLLHOOKSTRUCT(ctypes.Structure):
         _fields_ = [
@@ -217,6 +332,9 @@ if sys.platform == "win32":
             self._thread_id = None
             self._ready = threading.Event()
             self._stop_evt = threading.Event()
+            self._hwnd = None
+            self._wnd_proc = None
+            self._class_name = "MediaRelayConsumerWindow"
 
         def start(self):
             if self._thread and self._thread.is_alive():
@@ -241,6 +359,124 @@ if sys.platform == "win32":
                 return True
             return False
 
+        def _handle_appcommand(self, cmd: int) -> bool:
+            if cmd == APPCOMMAND_MEDIA_PLAY_PAUSE:
+                self._core.ui_toggle()
+                return True
+            if cmd == APPCOMMAND_MEDIA_STOP:
+                self._core.ui_stop_all()
+                return True
+            return False
+
+        def _handle_consumer_usage(self, usage: int) -> bool:
+            if usage == HID_USAGE_PLAY_PAUSE:
+                self._core.ui_toggle()
+                return True
+            if usage == HID_USAGE_STOP:
+                self._core.ui_stop_all()
+                return True
+            return False
+
+        def _get_preparsed_data(self, device_handle):
+            size = wintypes.UINT(0)
+            if _user32.GetRawInputDeviceInfoW(device_handle, RIDI_PREPARSEDDATA, None, ctypes.byref(size)) == 0xFFFFFFFF:
+                return None
+            if not size.value:
+                return None
+            buffer = ctypes.create_string_buffer(size.value)
+            if _user32.GetRawInputDeviceInfoW(device_handle, RIDI_PREPARSEDDATA, buffer, ctypes.byref(size)) == 0xFFFFFFFF:
+                return None
+            return buffer
+
+        def _parse_hid_usages(self, device_handle, raw_data: bytes):
+            try:
+                hid = ctypes.windll.hid
+            except Exception:
+                return []
+            preparsed = self._get_preparsed_data(device_handle)
+            if not preparsed:
+                return []
+
+            caps = HIDP_CAPS()
+            HidP_GetCaps = hid.HidP_GetCaps
+            HidP_GetCaps.argtypes = (wintypes.LPVOID, ctypes.POINTER(HIDP_CAPS))
+            HidP_GetCaps.restype = ctypes.c_long
+            if HidP_GetCaps(preparsed, ctypes.byref(caps)) < 0:
+                return []
+
+            report_len = caps.InputReportByteLength
+            if not report_len:
+                return []
+
+            HidP_GetUsages = hid.HidP_GetUsages
+            HidP_GetUsages.argtypes = (
+                ctypes.c_int,
+                wintypes.USHORT,
+                wintypes.USHORT,
+                ctypes.POINTER(wintypes.USHORT),
+                ctypes.POINTER(wintypes.ULONG),
+                wintypes.LPVOID,
+                ctypes.c_char_p,
+                wintypes.ULONG,
+            )
+            HidP_GetUsages.restype = ctypes.c_long
+
+            usages = []
+            max_usages = 16
+            for offset in range(0, len(raw_data), report_len):
+                report = raw_data[offset:offset + report_len]
+                usage_list = (wintypes.USHORT * max_usages)()
+                usage_len = wintypes.ULONG(max_usages)
+                status = HidP_GetUsages(
+                    0,
+                    HID_USAGE_PAGE_CONSUMER,
+                    0,
+                    usage_list,
+                    ctypes.byref(usage_len),
+                    preparsed,
+                    report,
+                    len(report),
+                )
+                if status >= 0 and usage_len.value:
+                    usages.extend(usage_list[: usage_len.value])
+            return usages
+
+        def _register_raw_input(self):
+            if not self._hwnd:
+                return
+            rid = RAWINPUTDEVICE(
+                usUsagePage=HID_USAGE_PAGE_CONSUMER,
+                usUsage=HID_USAGE_CONSUMER_CONTROL,
+                dwFlags=RIDEV_INPUTSINK,
+                hwndTarget=self._hwnd,
+            )
+            _user32.RegisterRawInputDevices(ctypes.byref(rid), 1, ctypes.sizeof(RAWINPUTDEVICE))
+
+        def _handle_wm_input(self, l_param):
+            size = wintypes.UINT(0)
+            if _user32.GetRawInputData(l_param, RID_INPUT, None, ctypes.byref(size), ctypes.sizeof(RAWINPUTHEADER)) == 0xFFFFFFFF:
+                return
+            if not size.value:
+                return
+            buffer = ctypes.create_string_buffer(size.value)
+            if _user32.GetRawInputData(l_param, RID_INPUT, buffer, ctypes.byref(size), ctypes.sizeof(RAWINPUTHEADER)) == 0xFFFFFFFF:
+                return
+            header = RAWINPUTHEADER.from_buffer_copy(buffer)
+            if header.dwType != RIM_TYPEHID:
+                return
+            offset = ctypes.sizeof(RAWINPUTHEADER)
+            if size.value < offset + 8:
+                return
+            dw_size_hid, dw_count = struct.unpack_from("II", buffer.raw, offset)
+            data_offset = offset + 8
+            total_size = dw_size_hid * dw_count
+            if total_size <= 0:
+                return
+            raw_data = buffer.raw[data_offset:data_offset + total_size]
+            for usage in self._parse_hid_usages(header.hDevice, raw_data):
+                if self._handle_consumer_usage(int(usage)):
+                    return
+
         def _run(self):
             self._thread_id = _kernel32.GetCurrentThreadId()
 
@@ -256,6 +492,41 @@ if sys.platform == "win32":
                     wintypes.WPARAM(w_param),
                     wintypes.LPARAM(l_param),
                 )
+
+            @ctypes.WINFUNCTYPE(wintypes.LRESULT, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
+            def window_proc(hwnd, msg, w_param, l_param):
+                if msg == WM_APPCOMMAND:
+                    cmd = (l_param >> 16) & 0xFFF
+                    if self._handle_appcommand(int(cmd)):
+                        return 0
+                if msg == WM_INPUT:
+                    self._handle_wm_input(l_param)
+                    return 0
+                return _user32.DefWindowProcW(hwnd, msg, w_param, l_param)
+
+            self._wnd_proc = window_proc
+            wnd_class = WNDCLASS()
+            wnd_class.lpfnWndProc = self._wnd_proc
+            wnd_class.lpszClassName = self._class_name
+            wnd_class.hInstance = _kernel32.GetModuleHandleW(None)
+            atom = _user32.RegisterClassW(ctypes.byref(wnd_class))
+
+            self._hwnd = _user32.CreateWindowExW(
+                0,
+                self._class_name,
+                self._class_name,
+                0,
+                0,
+                0,
+                0,
+                0,
+                HWND_MESSAGE,
+                None,
+                wnd_class.hInstance,
+                None,
+            )
+            if self._hwnd:
+                self._register_raw_input()
 
             self._callback = LowLevelKeyboardProc(hook_proc)
             self._hook = _user32.SetWindowsHookExW(WH_KEYBOARD_LL, self._callback, None, 0)
@@ -274,6 +545,11 @@ if sys.platform == "win32":
             if self._hook:
                 _user32.UnhookWindowsHookEx(self._hook)
                 self._hook = None
+            if self._hwnd:
+                _user32.DestroyWindow(self._hwnd)
+                self._hwnd = None
+            if atom:
+                _user32.UnregisterClassW(self._class_name, wnd_class.hInstance)
 else:
     class WindowsMediaKeyListener:
         def __init__(self, core: "RelayCore", swallow: bool = True):
