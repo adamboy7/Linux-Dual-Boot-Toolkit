@@ -288,6 +288,17 @@ else:
 
 if sys.platform != "win32":
     class LinuxMediaKeyListener:
+        MEDIA_KEY_CODES = {
+            evdev.ecodes.KEY_PLAYPAUSE,
+            evdev.ecodes.KEY_PLAY,
+            evdev.ecodes.KEY_PAUSE,
+            evdev.ecodes.KEY_STOPCD,
+            evdev.ecodes.KEY_STOP,
+            evdev.ecodes.KEY_NEXTSONG,
+            evdev.ecodes.KEY_PREVIOUSSONG,
+            evdev.ecodes.KEY_MEDIA,
+        }
+
         def __init__(self, core: "RelayCore", swallow: bool = True):
             self._core = core
             self._swallow = swallow
@@ -328,10 +339,15 @@ if sys.platform != "win32":
             self._uinputs = {}
 
         def _handle_key(self, key_code: int) -> bool:
-            if key_code == evdev.ecodes.KEY_PLAYPAUSE:
+            if key_code in (
+                evdev.ecodes.KEY_PLAYPAUSE,
+                evdev.ecodes.KEY_PLAY,
+                evdev.ecodes.KEY_PAUSE,
+                evdev.ecodes.KEY_MEDIA,
+            ):
                 self._core.ui_toggle()
                 return True
-            if key_code == evdev.ecodes.KEY_STOPCD:
+            if key_code in (evdev.ecodes.KEY_STOPCD, evdev.ecodes.KEY_STOP):
                 self._core.ui_stop_all()
                 return True
             return False
@@ -348,7 +364,7 @@ if sys.platform != "win32":
                 except Exception:
                     dev.close()
                     continue
-                if evdev.ecodes.KEY_PLAYPAUSE in caps or evdev.ecodes.KEY_STOPCD in caps:
+                if any(code in caps for code in self.MEDIA_KEY_CODES):
                     devices.append(dev)
                 else:
                     dev.close()
@@ -415,10 +431,12 @@ if sys.platform != "win32":
                         for event in dev.read():
                             swallow_event = False
                             if event.type == evdev.ecodes.EV_KEY:
-                                if event.code in (evdev.ecodes.KEY_PLAYPAUSE, evdev.ecodes.KEY_STOPCD):
+                                if event.code in self.MEDIA_KEY_CODES:
                                     if event.value == 1:
-                                        self._handle_key(event.code)
-                                    if self._swallow:
+                                        handled = self._handle_key(event.code)
+                                    else:
+                                        handled = False
+                                    if self._swallow and handled:
                                         swallow_event = True
                             if self._swallow and not swallow_event:
                                 self._forward_event(dev, event)
