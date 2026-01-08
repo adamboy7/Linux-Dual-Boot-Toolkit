@@ -186,6 +186,8 @@ if sys.platform == "win32":
     VK_MEDIA_PREV_TRACK = 0xB1
     VK_MEDIA_STOP = 0xB2
     VK_MEDIA_PLAY_PAUSE = 0xB3
+    VK_PLAY = 0xFA
+    VK_PAUSE = 0x13
 
     _user32.CallNextHookEx.argtypes = (
         wintypes.HHOOK,
@@ -233,7 +235,7 @@ if sys.platform == "win32":
                 self._thread.join(timeout=2.0)
 
         def _handle_vk(self, vk_code: int) -> bool:
-            if vk_code == VK_MEDIA_PLAY_PAUSE:
+            if vk_code in (VK_MEDIA_PLAY_PAUSE, VK_PLAY, VK_PAUSE):
                 self._core.ui_toggle()
                 return True
             if vk_code == VK_MEDIA_STOP:
