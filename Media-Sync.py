@@ -187,6 +187,14 @@ if sys.platform == "win32":
     VK_MEDIA_STOP = 0xB2
     VK_MEDIA_PLAY_PAUSE = 0xB3
 
+    _user32.CallNextHookEx.argtypes = (
+        wintypes.HHOOK,
+        ctypes.c_int,
+        wintypes.WPARAM,
+        wintypes.LPARAM,
+    )
+    _user32.CallNextHookEx.restype = ctypes.c_long
+
     class KBDLLHOOKSTRUCT(ctypes.Structure):
         _fields_ = [
             ("vkCode", wintypes.DWORD),
@@ -242,7 +250,12 @@ if sys.platform == "win32":
                     if self._handle_vk(int(info.vkCode)):
                         if self._swallow:
                             return 1
-                return _user32.CallNextHookEx(self._hook, n_code, w_param, l_param)
+                return _user32.CallNextHookEx(
+                    self._hook,
+                    n_code,
+                    wintypes.WPARAM(w_param),
+                    wintypes.LPARAM(l_param),
+                )
 
             self._callback = LowLevelKeyboardProc(hook_proc)
             self._hook = _user32.SetWindowsHookExW(WH_KEYBOARD_LL, self._callback, None, 0)
