@@ -187,6 +187,14 @@ if sys.platform == "win32":
     VK_MEDIA_STOP = 0xB2
     VK_MEDIA_PLAY_PAUSE = 0xB3
 
+    _user32.CallNextHookEx.argtypes = (
+        wintypes.HHOOK,
+        ctypes.c_int,
+        wintypes.WPARAM,
+        wintypes.LPARAM,
+    )
+    _user32.CallNextHookEx.restype = ctypes.c_long
+
     class KBDLLHOOKSTRUCT(ctypes.Structure):
         _fields_ = [
             ("vkCode", wintypes.DWORD),
@@ -242,7 +250,12 @@ if sys.platform == "win32":
                     if self._handle_vk(int(info.vkCode)):
                         if self._swallow:
                             return 1
-                return _user32.CallNextHookEx(self._hook, n_code, w_param, l_param)
+                return _user32.CallNextHookEx(
+                    self._hook,
+                    n_code,
+                    wintypes.WPARAM(w_param),
+                    wintypes.LPARAM(l_param),
+                )
 
             self._callback = LowLevelKeyboardProc(hook_proc)
             self._hook = _user32.SetWindowsHookExW(WH_KEYBOARD_LL, self._callback, None, 0)
@@ -281,6 +294,7 @@ if sys.platform != "win32":
             self._thread = None
             self._stop_evt = threading.Event()
             self._devices = []
+            self._uinputs = {}
 
         def start(self):
             if not EVDEV_AVAILABLE:
@@ -301,7 +315,17 @@ if sys.platform != "win32":
                     dev.ungrab()
                 except Exception:
                     pass
+                try:
+                    dev.close()
+                except Exception:
+                    pass
+            for ui in self._uinputs.values():
+                try:
+                    ui.close()
+                except Exception:
+                    pass
             self._devices = []
+            self._uinputs = {}
 
         def _handle_key(self, key_code: int) -> bool:
             if key_code == evdev.ecodes.KEY_PLAYPAUSE:
@@ -330,35 +354,76 @@ if sys.platform != "win32":
                     dev.close()
             return devices
 
+        def _setup_devices(self):
+            if not self._swallow:
+                return
+            for dev in self._devices:
+                try:
+                    dev.grab()
+                except Exception:
+                    pass
+                try:
+                    self._uinputs[dev.path] = evdev.UInput.from_device(
+                        dev,
+                        name=f"{dev.name} (MediaRelay)",
+                    )
+                except Exception:
+                    pass
+
+        def _teardown_device(self, dev):
+            try:
+                dev.ungrab()
+            except Exception:
+                pass
+            try:
+                dev.close()
+            except Exception:
+                pass
+            ui = self._uinputs.pop(dev.path, None)
+            if ui:
+                try:
+                    ui.close()
+                except Exception:
+                    pass
+
+        def _forward_event(self, dev, event):
+            ui = self._uinputs.get(dev.path)
+            if not ui:
+                return
+            try:
+                if event.type == evdev.ecodes.EV_SYN and event.code == evdev.ecodes.SYN_REPORT:
+                    ui.syn()
+                else:
+                    ui.write_event(event)
+            except Exception:
+                pass
+
         def _run(self):
             self._devices = self._find_devices()
-            if self._swallow:
-                for dev in self._devices:
-                    try:
-                        dev.grab()
-                    except Exception:
-                        pass
+            self._setup_devices()
 
             while not self._stop_evt.is_set():
                 if not self._devices:
                     time.sleep(1.0)
                     self._devices = self._find_devices()
+                    self._setup_devices()
                     continue
 
                 rlist, _, _ = evdev.util.select(self._devices, [], [], 0.5)
                 for dev in rlist:
                     try:
                         for event in dev.read():
-                            if event.type != evdev.ecodes.EV_KEY:
-                                continue
-                            if event.value != 1:
-                                continue
-                            self._handle_key(event.code)
+                            swallow_event = False
+                            if event.type == evdev.ecodes.EV_KEY:
+                                if event.code in (evdev.ecodes.KEY_PLAYPAUSE, evdev.ecodes.KEY_STOPCD):
+                                    if event.value == 1:
+                                        self._handle_key(event.code)
+                                    if self._swallow:
+                                        swallow_event = True
+                            if self._swallow and not swallow_event:
+                                self._forward_event(dev, event)
                     except OSError:
-                        try:
-                            dev.close()
-                        except Exception:
-                            pass
+                        self._teardown_device(dev)
                         if dev in self._devices:
                             self._devices.remove(dev)
 else:
@@ -569,7 +634,10 @@ class RelayCore:
     async def _send(self, addr: Tuple[str, int], msg: dict):
         if not self.sock:
             return
-        self.sock.sendto(encode(msg), addr)
+        try:
+            self.sock.sendto(encode(msg), addr)
+        except OSError:
+            return
 
     async def _rpc(self, addr: Tuple[str, int], msg: dict, timeout: float = 0.5) -> Optional[dict]:
         rid = uuid.uuid4().hex
