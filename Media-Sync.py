@@ -600,6 +600,7 @@ class TrayApp:
     def __init__(self):
         self.cfg = load_config()
         self.listen_port = int(self.cfg.get("listen_port", DEFAULT_PORT))
+        self._last_saved_state = {}
 
         self.core = RelayCore(listen_port=self.listen_port)
         self.core.on_status_change = self._refresh_tray
@@ -628,11 +629,30 @@ class TrayApp:
             self.icon.icon = make_icon(self.core.role, connected)
             self.icon.menu = self._build_menu()
             self.icon.title = f"{APP_NAME} - {self.core.status_text()}"
+            self._persist_state()
         try:
             self.icon._handler_queue.put(do)
         except Exception:
             # Fallback if handler queue differs across backends
             pass
+
+    def _persist_state(self):
+        if self.core.peer:
+            self.cfg["peer_ip"] = self.core.peer[0]
+            self.cfg["peer_port"] = int(self.core.peer[1])
+            self.cfg["last_role"] = self.core.role.value
+            self.cfg["auto_connect"] = self.core.role == Role.CLIENT
+        else:
+            self.cfg["last_role"] = self.core.role.value
+        state = {
+            "peer_ip": self.cfg.get("peer_ip", ""),
+            "peer_port": self.cfg.get("peer_port", DEFAULT_PORT),
+            "last_role": self.cfg.get("last_role", ""),
+            "auto_connect": self.cfg.get("auto_connect", False),
+        }
+        if state != self._last_saved_state:
+            save_config(self.cfg)
+            self._last_saved_state = dict(state)
 
     def _toggle(self, icon=None, item=None):
         self.core.ui_toggle()
@@ -656,6 +676,8 @@ class TrayApp:
         self.core.ui_connect(ip, int(port))
 
     def _disconnect(self, icon=None, item=None):
+        self.cfg["auto_connect"] = False
+        save_config(self.cfg)
         self.core.ui_disconnect()
 
     def _exit(self, icon=None, item=None):
@@ -670,6 +692,15 @@ class TrayApp:
     def run(self):
         # Start core networking
         self.core.start_in_thread()
+        if (
+            self.cfg.get("auto_connect")
+            and self.cfg.get("last_role") == Role.CLIENT.value
+            and self.cfg.get("peer_ip")
+        ):
+            self.core.ui_connect(
+                self.cfg.get("peer_ip"),
+                int(self.cfg.get("peer_port", DEFAULT_PORT)),
+            )
         # Run tray
         self.icon.run()
 
