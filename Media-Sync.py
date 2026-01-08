@@ -430,18 +430,25 @@ class RelayCore:
         self._notify()
 
     async def _connect_out(self, ip: str, port: int):
-        # Connecting out makes us a CLIENT (you wanted this)
-        addr = (ip, int(port))
-        self.role = Role.CLIENT
-        self.peer = addr
-        self.peer_last_seen = time.time()
-        self._notify()
+    addr = (ip, int(port))
 
-        # ask to connect (rpc so we can see ok/fail)
-        resp = await self._rpc(addr, {"t": "connect_request", "ts": now_ms()}, timeout=0.8)
-        if not resp or not resp.get("ok"):
-            # failed -> revert to HOST with no peer
-            await self._disconnect("connect_failed")
+    # Send request FIRST — do not mark connected yet
+    resp = await self._rpc(
+        addr,
+        {"t": "connect_request", "ts": now_ms()},
+        timeout=0.8,
+    )
+
+    if not resp or not resp.get("ok"):
+        # Stay / revert as host
+        await self._disconnect("connect_failed")
+        return
+
+    # Only now do we become a client
+    self.role = Role.CLIENT
+    self.peer = addr
+    self.peer_last_seen = time.time()
+    self._notify()
 
     async def _disconnect(self, why: str):
         if self.peer:
