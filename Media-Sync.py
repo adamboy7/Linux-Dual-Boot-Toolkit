@@ -17,6 +17,7 @@ from pystray import MenuItem as Item, Menu as Menu
 from PIL import Image, ImageDraw
 
 if sys.platform == "win32":
+    import queue
     import tkinter as tk
     from tkinter import simpledialog, messagebox
 else:
@@ -33,6 +34,7 @@ if sys.platform == "win32":
 
 APP_NAME = "MediaRelay"
 DEFAULT_PORT = 50123
+_WIN_PROMPTER = None
 
 
 # -------------------- Media control (Windows) --------------------
@@ -378,7 +380,7 @@ class RelayCore:
 
                 # handle messages
                 if mtype == "connect_request":
-                    await self._handle_connect_request(addr)
+                    await self._handle_connect_request(addr, msg)
                 elif mtype == "connect_ack":
                     # client receives this as part of connect_out flow (rpc handles it)
                     pass
@@ -409,37 +411,44 @@ class RelayCore:
                     return
                 continue
 
-    async def _handle_connect_request(self, addr):
+    async def _handle_connect_request(self, addr, msg):
         # If we are connected as a CLIENT, we don't accept inbound connect (by design).
         if self.role == Role.CLIENT:
-            await self._send(addr, {"t": "connect_ack", "ok": False, "reason": "busy_client", "ts": now_ms()})
+            await self._send(addr, {"t": "connect_ack", "id": msg.get("id"), "ok": False, "reason": "busy_client", "ts": now_ms()})
             return
 
         # If we already have a peer, refuse new ones (simple policy).
         if self.peer and addr != self.peer:
-            await self._send(addr, {"t": "connect_ack", "ok": False, "reason": "already_connected", "ts": now_ms()})
+            await self._send(addr, {"t": "connect_ack", "id": msg.get("id"), "ok": False, "reason": "already_connected", "ts": now_ms()})
             return
 
         # Accept: we remain/become HOST.
         self.role = Role.HOST
         self.peer = (addr[0], addr[1])
         self.peer_last_seen = time.time()
-        await self._send(addr, {"t": "connect_ack", "ok": True, "ts": now_ms()})
+        await self._send(addr, {"t": "connect_ack", "id": msg.get("id"), "ok": True, "ts": now_ms()})
         self._notify()
 
     async def _connect_out(self, ip: str, port: int):
-        # Connecting out makes us a CLIENT (you wanted this)
         addr = (ip, int(port))
+
+        # Send request FIRST — do not mark connected yet
+        resp = await self._rpc(
+            addr,
+            {"t": "connect_request", "ts": now_ms()},
+            timeout=0.8,
+        )
+
+        if not resp or not resp.get("ok"):
+            # Stay / revert as host
+            await self._disconnect("connect_failed")
+            return
+
+        # Only now do we become a client
         self.role = Role.CLIENT
         self.peer = addr
         self.peer_last_seen = time.time()
         self._notify()
-
-        # ask to connect (rpc so we can see ok/fail)
-        resp = await self._rpc(addr, {"t": "connect_request", "ts": now_ms()}, timeout=0.8)
-        if not resp or not resp.get("ok"):
-            # failed -> revert to HOST with no peer
-            await self._disconnect("connect_failed")
 
     async def _disconnect(self, why: str):
         if self.peer:
@@ -542,8 +551,49 @@ class RelayCore:
 
 # -------------------- Tray UI --------------------
 
+class WinPromptThread:
+    def __init__(self):
+        self._queue = queue.Queue()
+        self._ready = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+        self._ready.wait()
+
+    def _run(self):
+        self._root = tk.Tk()
+        self._root.withdraw()
+        self._ready.set()
+        self._root.after(50, self._process_queue)
+        self._root.mainloop()
+
+    def _process_queue(self):
+        while True:
+            try:
+                task = self._queue.get_nowait()
+            except queue.Empty:
+                break
+            prompt, initial, result, done = task
+            value = simpledialog.askstring(APP_NAME, prompt, initialvalue=initial, parent=self._root)
+            result["value"] = value
+            done.set()
+        self._root.after(50, self._process_queue)
+
+    def ask_string(self, prompt: str, initial: str = "") -> Optional[str]:
+        result = {}
+        done = threading.Event()
+        self._queue.put((prompt, initial, result, done))
+        done.wait()
+        return result.get("value")
+
+    def stop(self):
+        if self._root:
+            self._root.after(0, self._root.quit)
+
+
 def prompt_string(prompt: str, initial: str = "") -> Optional[str]:
     if sys.platform == "win32":
+        if _WIN_PROMPTER is not None:
+            return _WIN_PROMPTER.ask_string(prompt, initial)
         return simpledialog.askstring(APP_NAME, prompt, initialvalue=initial)
 
     dialog = Gtk.Dialog(title=APP_NAME)
@@ -605,10 +655,10 @@ class TrayApp:
         self.core = RelayCore(listen_port=self.listen_port)
         self.core.on_status_change = self._refresh_tray
 
-        self.root = None
         if sys.platform == "win32":
-            self.root = tk.Tk()
-            self.root.withdraw()
+            global _WIN_PROMPTER
+            if _WIN_PROMPTER is None:
+                _WIN_PROMPTER = WinPromptThread()
 
         self.icon = pystray.Icon(APP_NAME, make_icon(Role.HOST, False), APP_NAME, menu=self._build_menu())
 
@@ -631,9 +681,15 @@ class TrayApp:
             self.icon.title = f"{APP_NAME} - {self.core.status_text()}"
             self._persist_state()
         try:
-            self.icon._handler_queue.put(do)
+            # Preferred: marshal to the tray thread if the backend provides a handler queue
+            q = getattr(self.icon, "_handler_queue", None)
+            if q is not None:
+                q.put(do)
+            else:
+                # Fallback: best-effort direct call (works on some backends)
+                do()
         except Exception:
-            # Fallback if handler queue differs across backends
+            # Last resort: swallow (but at least we tried)
             pass
 
     def _persist_state(self):
@@ -683,11 +739,8 @@ class TrayApp:
     def _exit(self, icon=None, item=None):
         self.core.stop()
         self.icon.stop()
-        try:
-            if self.root is not None:
-                self.root.destroy()
-        except Exception:
-            pass
+        if _WIN_PROMPTER is not None:
+            _WIN_PROMPTER.stop()
 
     def run(self):
         # Start core networking
