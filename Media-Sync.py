@@ -1,7 +1,10 @@
 import asyncio
 import json
 import os
+import shutil
 import socket
+import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -13,14 +16,20 @@ import pystray
 from pystray import MenuItem as Item, Menu as Menu
 from PIL import Image, ImageDraw
 
-import tkinter as tk
-from tkinter import simpledialog, messagebox
+if sys.platform == "win32":
+    import tkinter as tk
+    from tkinter import simpledialog, messagebox
+else:
+    import gi
+    gi.require_version("Gtk", "3.0")
+    from gi.repository import Gtk
 
-# WinRT GSMTC
-from winrt.windows.media.control import (
-    GlobalSystemMediaTransportControlsSessionManager as GSMTCManager,
-    GlobalSystemMediaTransportControlsSessionPlaybackStatus as PlaybackStatus,
-)
+if sys.platform == "win32":
+    # WinRT GSMTC
+    from winrt.windows.media.control import (
+        GlobalSystemMediaTransportControlsSessionManager as GSMTCManager,
+        GlobalSystemMediaTransportControlsSessionPlaybackStatus as PlaybackStatus,
+    )
 
 APP_NAME = "MediaRelay"
 DEFAULT_PORT = 50123
@@ -41,7 +50,7 @@ class MediaSnapshot:
     title: str = ""
 
 
-class MediaController:
+class WindowsMediaController:
     async def snapshot(self) -> MediaSnapshot:
         mgr = await GSMTCManager.request_async()
         session = mgr.get_current_session()
@@ -96,6 +105,61 @@ class MediaController:
         return False
 
 
+class LinuxMediaController:
+    def __init__(self):
+        self._playerctl = shutil.which("playerctl")
+
+    def _run_playerctl(self, *args: str) -> Optional[subprocess.CompletedProcess]:
+        if not self._playerctl:
+            return None
+        result = subprocess.run(
+            [self._playerctl, *args],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            return None
+        return result
+
+    async def snapshot(self) -> MediaSnapshot:
+        result = self._run_playerctl("status")
+        if not result:
+            return MediaSnapshot(State.NONE)
+
+        status = result.stdout.strip().lower()
+        if status == "playing":
+            state = State.PLAYING
+        elif status in ("paused", "stopped"):
+            state = State.PAUSED
+        else:
+            state = State.NONE
+
+        app = ""
+        title = ""
+        meta = self._run_playerctl("metadata", "--format", "{{playerName}}||{{title}}")
+        if meta:
+            parts = meta.stdout.strip().split("||", 1)
+            if parts:
+                app = parts[0].strip()
+            if len(parts) > 1:
+                title = parts[1].strip()
+
+        return MediaSnapshot(state, app=app, title=title)
+
+    async def command(self, cmd: str) -> bool:
+        if cmd not in ("play", "pause", "stop"):
+            return False
+        result = self._run_playerctl(cmd)
+        return result is not None
+
+
+def build_media_controller():
+    if sys.platform == "win32":
+        return WindowsMediaController()
+    return LinuxMediaController()
+
+
 # -------------------- Arbitration rules --------------------
 
 def decide_actions(host: State, client: State) -> Tuple[Optional[str], Optional[str]]:
@@ -129,7 +193,10 @@ def decide_actions(host: State, client: State) -> Tuple[Optional[str], Optional[
 # -------------------- Storage --------------------
 
 def config_path() -> str:
-    base = os.environ.get("APPDATA") or os.path.expanduser("~")
+    if os.name == "nt":
+        base = os.environ.get("APPDATA") or os.path.expanduser("~")
+    else:
+        base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
     folder = os.path.join(base, APP_NAME)
     os.makedirs(folder, exist_ok=True)
     return os.path.join(folder, "config.json")
@@ -180,7 +247,7 @@ class RelayCore:
     """
     def __init__(self, listen_port: int):
         self.listen_port = listen_port
-        self.media = MediaController()
+        self.media = build_media_controller()
 
         self.role: Role = Role.HOST
         self.peer: Optional[Tuple[str, int]] = None
@@ -475,6 +542,40 @@ class RelayCore:
 
 # -------------------- Tray UI --------------------
 
+def prompt_string(prompt: str, initial: str = "") -> Optional[str]:
+    if sys.platform == "win32":
+        return simpledialog.askstring(APP_NAME, prompt, initialvalue=initial)
+
+    dialog = Gtk.Dialog(title=APP_NAME)
+    dialog.add_buttons(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL, Gtk.STOCK_OK, Gtk.ResponseType.OK)
+    dialog.set_default_response(Gtk.ResponseType.OK)
+    box = dialog.get_content_area()
+    label = Gtk.Label(label=prompt)
+    label.set_halign(Gtk.Align.START)
+    entry = Gtk.Entry()
+    entry.set_text(initial)
+    entry.set_activates_default(True)
+    box.add(label)
+    box.add(entry)
+    dialog.show_all()
+    response = dialog.run()
+    value = entry.get_text().strip()
+    dialog.destroy()
+    if response != Gtk.ResponseType.OK or not value:
+        return None
+    return value
+
+
+def prompt_int(prompt: str, initial: int) -> Optional[int]:
+    value = prompt_string(prompt, str(initial))
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
 def make_icon(role: Role, connected: bool) -> Image.Image:
     """
     Simple colored-dot icon:
@@ -499,12 +600,15 @@ class TrayApp:
     def __init__(self):
         self.cfg = load_config()
         self.listen_port = int(self.cfg.get("listen_port", DEFAULT_PORT))
+        self._last_saved_state = {}
 
         self.core = RelayCore(listen_port=self.listen_port)
         self.core.on_status_change = self._refresh_tray
 
-        self.root = tk.Tk()
-        self.root.withdraw()
+        self.root = None
+        if sys.platform == "win32":
+            self.root = tk.Tk()
+            self.root.withdraw()
 
         self.icon = pystray.Icon(APP_NAME, make_icon(Role.HOST, False), APP_NAME, menu=self._build_menu())
 
@@ -525,11 +629,30 @@ class TrayApp:
             self.icon.icon = make_icon(self.core.role, connected)
             self.icon.menu = self._build_menu()
             self.icon.title = f"{APP_NAME} - {self.core.status_text()}"
+            self._persist_state()
         try:
             self.icon._handler_queue.put(do)
         except Exception:
             # Fallback if handler queue differs across backends
             pass
+
+    def _persist_state(self):
+        if self.core.peer:
+            self.cfg["peer_ip"] = self.core.peer[0]
+            self.cfg["peer_port"] = int(self.core.peer[1])
+            self.cfg["last_role"] = self.core.role.value
+            self.cfg["auto_connect"] = self.core.role == Role.CLIENT
+        else:
+            self.cfg["last_role"] = self.core.role.value
+        state = {
+            "peer_ip": self.cfg.get("peer_ip", ""),
+            "peer_port": self.cfg.get("peer_port", DEFAULT_PORT),
+            "last_role": self.cfg.get("last_role", ""),
+            "auto_connect": self.cfg.get("auto_connect", False),
+        }
+        if state != self._last_saved_state:
+            save_config(self.cfg)
+            self._last_saved_state = dict(state)
 
     def _toggle(self, icon=None, item=None):
         self.core.ui_toggle()
@@ -538,10 +661,10 @@ class TrayApp:
         self.core.ui_stop_all()
 
     def _connect(self, icon=None, item=None):
-        ip = simpledialog.askstring(APP_NAME, "Host IP:", initialvalue=self.cfg.get("peer_ip", ""))
+        ip = prompt_string("Host IP:", self.cfg.get("peer_ip", ""))
         if not ip:
             return
-        port = simpledialog.askinteger(APP_NAME, "Host Port:", initialvalue=int(self.cfg.get("peer_port", DEFAULT_PORT)))
+        port = prompt_int("Host Port:", int(self.cfg.get("peer_port", DEFAULT_PORT)))
         if not port:
             return
 
@@ -553,19 +676,31 @@ class TrayApp:
         self.core.ui_connect(ip, int(port))
 
     def _disconnect(self, icon=None, item=None):
+        self.cfg["auto_connect"] = False
+        save_config(self.cfg)
         self.core.ui_disconnect()
 
     def _exit(self, icon=None, item=None):
         self.core.stop()
         self.icon.stop()
         try:
-            self.root.destroy()
+            if self.root is not None:
+                self.root.destroy()
         except Exception:
             pass
 
     def run(self):
         # Start core networking
         self.core.start_in_thread()
+        if (
+            self.cfg.get("auto_connect")
+            and self.cfg.get("last_role") == Role.CLIENT.value
+            and self.cfg.get("peer_ip")
+        ):
+            self.core.ui_connect(
+                self.cfg.get("peer_ip"),
+                int(self.cfg.get("peer_port", DEFAULT_PORT)),
+            )
         # Run tray
         self.icon.run()
 
