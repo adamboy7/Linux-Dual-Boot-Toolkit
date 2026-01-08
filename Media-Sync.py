@@ -175,6 +175,8 @@ def build_media_controller():
 if sys.platform == "win32":
     _user32 = ctypes.windll.user32
     _kernel32 = ctypes.windll.kernel32
+    if not hasattr(wintypes, "ULONG_PTR"):
+        wintypes.ULONG_PTR = ctypes.c_ulonglong if ctypes.sizeof(ctypes.c_void_p) == 8 else ctypes.c_ulong
 
     WH_KEYBOARD_LL = 13
     WM_KEYDOWN = 0x0100
