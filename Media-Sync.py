@@ -16,8 +16,13 @@ import pystray
 from pystray import MenuItem as Item, Menu as Menu
 from PIL import Image, ImageDraw
 
-import tkinter as tk
-from tkinter import simpledialog, messagebox
+if sys.platform == "win32":
+    import tkinter as tk
+    from tkinter import simpledialog, messagebox
+else:
+    import gi
+    gi.require_version("Gtk", "3.0")
+    from gi.repository import Gtk
 
 if sys.platform == "win32":
     # WinRT GSMTC
@@ -537,6 +542,40 @@ class RelayCore:
 
 # -------------------- Tray UI --------------------
 
+def prompt_string(prompt: str, initial: str = "") -> Optional[str]:
+    if sys.platform == "win32":
+        return simpledialog.askstring(APP_NAME, prompt, initialvalue=initial)
+
+    dialog = Gtk.Dialog(title=APP_NAME)
+    dialog.add_buttons(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL, Gtk.STOCK_OK, Gtk.ResponseType.OK)
+    dialog.set_default_response(Gtk.ResponseType.OK)
+    box = dialog.get_content_area()
+    label = Gtk.Label(label=prompt)
+    label.set_halign(Gtk.Align.START)
+    entry = Gtk.Entry()
+    entry.set_text(initial)
+    entry.set_activates_default(True)
+    box.add(label)
+    box.add(entry)
+    dialog.show_all()
+    response = dialog.run()
+    value = entry.get_text().strip()
+    dialog.destroy()
+    if response != Gtk.ResponseType.OK or not value:
+        return None
+    return value
+
+
+def prompt_int(prompt: str, initial: int) -> Optional[int]:
+    value = prompt_string(prompt, str(initial))
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
 def make_icon(role: Role, connected: bool) -> Image.Image:
     """
     Simple colored-dot icon:
@@ -565,8 +604,10 @@ class TrayApp:
         self.core = RelayCore(listen_port=self.listen_port)
         self.core.on_status_change = self._refresh_tray
 
-        self.root = tk.Tk()
-        self.root.withdraw()
+        self.root = None
+        if sys.platform == "win32":
+            self.root = tk.Tk()
+            self.root.withdraw()
 
         self.icon = pystray.Icon(APP_NAME, make_icon(Role.HOST, False), APP_NAME, menu=self._build_menu())
 
@@ -600,10 +641,10 @@ class TrayApp:
         self.core.ui_stop_all()
 
     def _connect(self, icon=None, item=None):
-        ip = simpledialog.askstring(APP_NAME, "Host IP:", initialvalue=self.cfg.get("peer_ip", ""))
+        ip = prompt_string("Host IP:", self.cfg.get("peer_ip", ""))
         if not ip:
             return
-        port = simpledialog.askinteger(APP_NAME, "Host Port:", initialvalue=int(self.cfg.get("peer_port", DEFAULT_PORT)))
+        port = prompt_int("Host Port:", int(self.cfg.get("peer_port", DEFAULT_PORT)))
         if not port:
             return
 
@@ -621,7 +662,8 @@ class TrayApp:
         self.core.stop()
         self.icon.stop()
         try:
-            self.root.destroy()
+            if self.root is not None:
+                self.root.destroy()
         except Exception:
             pass
 
