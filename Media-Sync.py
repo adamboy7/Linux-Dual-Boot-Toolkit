@@ -20,6 +20,8 @@ if sys.platform == "win32":
     import queue
     import tkinter as tk
     from tkinter import simpledialog, messagebox
+    import ctypes
+    from ctypes import wintypes
 else:
     import gi
     gi.require_version("Gtk", "3.0")
@@ -162,6 +164,107 @@ def build_media_controller():
     return LinuxMediaController()
 
 
+# -------------------- Windows media key hook --------------------
+
+if sys.platform == "win32":
+    _user32 = ctypes.windll.user32
+    _kernel32 = ctypes.windll.kernel32
+
+    WH_KEYBOARD_LL = 13
+    WM_KEYDOWN = 0x0100
+    WM_SYSKEYDOWN = 0x0104
+    WM_QUIT = 0x0012
+    VK_MEDIA_NEXT_TRACK = 0xB0
+    VK_MEDIA_PREV_TRACK = 0xB1
+    VK_MEDIA_STOP = 0xB2
+    VK_MEDIA_PLAY_PAUSE = 0xB3
+
+    class KBDLLHOOKSTRUCT(ctypes.Structure):
+        _fields_ = [
+            ("vkCode", wintypes.DWORD),
+            ("scanCode", wintypes.DWORD),
+            ("flags", wintypes.DWORD),
+            ("time", wintypes.DWORD),
+            ("dwExtraInfo", wintypes.ULONG_PTR),
+        ]
+
+    LowLevelKeyboardProc = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM)
+
+
+    class WindowsMediaKeyListener:
+        def __init__(self, core: "RelayCore", swallow: bool = True):
+            self._core = core
+            self._swallow = swallow
+            self._thread = None
+            self._hook = None
+            self._callback = None
+            self._thread_id = None
+            self._ready = threading.Event()
+            self._stop_evt = threading.Event()
+
+        def start(self):
+            if self._thread and self._thread.is_alive():
+                return
+            self._thread = threading.Thread(target=self._run, daemon=True)
+            self._thread.start()
+            self._ready.wait(timeout=2.0)
+
+        def stop(self):
+            self._stop_evt.set()
+            if self._thread_id:
+                _user32.PostThreadMessageW(self._thread_id, WM_QUIT, 0, 0)
+            if self._thread:
+                self._thread.join(timeout=2.0)
+
+        def _handle_vk(self, vk_code: int) -> bool:
+            if vk_code == VK_MEDIA_PLAY_PAUSE:
+                self._core.ui_toggle()
+                return True
+            if vk_code == VK_MEDIA_STOP:
+                self._core.ui_stop_all()
+                return True
+            return False
+
+        def _run(self):
+            self._thread_id = _kernel32.GetCurrentThreadId()
+
+            def hook_proc(n_code, w_param, l_param):
+                if n_code == 0 and w_param in (WM_KEYDOWN, WM_SYSKEYDOWN):
+                    info = ctypes.cast(l_param, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents
+                    if self._handle_vk(int(info.vkCode)):
+                        if self._swallow:
+                            return 1
+                return _user32.CallNextHookEx(self._hook, n_code, w_param, l_param)
+
+            self._callback = LowLevelKeyboardProc(hook_proc)
+            self._hook = _user32.SetWindowsHookExW(WH_KEYBOARD_LL, self._callback, None, 0)
+            self._ready.set()
+
+            msg = wintypes.MSG()
+            while not self._stop_evt.is_set():
+                result = _user32.GetMessageW(ctypes.byref(msg), 0, 0, 0)
+                if result == 0:
+                    break
+                if result == -1:
+                    break
+                _user32.TranslateMessage(ctypes.byref(msg))
+                _user32.DispatchMessageW(ctypes.byref(msg))
+
+            if self._hook:
+                _user32.UnhookWindowsHookEx(self._hook)
+                self._hook = None
+else:
+    class WindowsMediaKeyListener:
+        def __init__(self, core: "RelayCore", swallow: bool = True):
+            self._core = core
+
+        def start(self):
+            return
+
+        def stop(self):
+            return
+
+
 # -------------------- Arbitration rules --------------------
 
 def decide_actions(host: State, client: State) -> Tuple[Optional[str], Optional[str]]:
@@ -207,12 +310,22 @@ def config_path() -> str:
 def load_config() -> dict:
     p = config_path()
     if not os.path.exists(p):
-        return {"listen_port": DEFAULT_PORT, "peer_ip": "", "peer_port": DEFAULT_PORT}
+        return {
+            "listen_port": DEFAULT_PORT,
+            "peer_ip": "",
+            "peer_port": DEFAULT_PORT,
+            "swallow_media_keys": True,
+        }
     try:
         with open(p, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception:
-        return {"listen_port": DEFAULT_PORT, "peer_ip": "", "peer_port": DEFAULT_PORT}
+        return {
+            "listen_port": DEFAULT_PORT,
+            "peer_ip": "",
+            "peer_port": DEFAULT_PORT,
+            "swallow_media_keys": True,
+        }
 
 
 def save_config(cfg: dict) -> None:
@@ -654,6 +767,10 @@ class TrayApp:
 
         self.core = RelayCore(listen_port=self.listen_port)
         self.core.on_status_change = self._refresh_tray
+        self.media_key_listener = WindowsMediaKeyListener(
+            self.core,
+            swallow=bool(self.cfg.get("swallow_media_keys", True)),
+        )
 
         if sys.platform == "win32":
             global _WIN_PROMPTER
@@ -738,6 +855,7 @@ class TrayApp:
 
     def _exit(self, icon=None, item=None):
         self.core.stop()
+        self.media_key_listener.stop()
         self.icon.stop()
         if _WIN_PROMPTER is not None:
             _WIN_PROMPTER.stop()
@@ -745,6 +863,7 @@ class TrayApp:
     def run(self):
         # Start core networking
         self.core.start_in_thread()
+        self.media_key_listener.start()
         if (
             self.cfg.get("auto_connect")
             and self.cfg.get("last_role") == Role.CLIENT.value
