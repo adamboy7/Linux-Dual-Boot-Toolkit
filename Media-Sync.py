@@ -290,49 +290,56 @@ class RelayCore:
 
     async def _rx_loop(self):
         while True:
-            data, addr = await self.loop.sock_recvfrom(self.sock, 65535)
-            msg = decode(data)
-            if not msg:
-                continue
+            try:
+                data, addr = await self.loop.sock_recvfrom(self.sock, 65535)
+                msg = decode(data)
+                if not msg:
+                    continue
 
-            mtype = msg.get("t")
-            rid = msg.get("id")
+                mtype = msg.get("t")
+                rid = msg.get("id")
 
-            # resolve RPC futures
-            if rid and rid in self.pending and not self.pending[rid].done():
-                self.pending[rid].set_result(msg)
-                continue
+                # resolve RPC futures
+                if rid and rid in self.pending and not self.pending[rid].done():
+                    self.pending[rid].set_result(msg)
+                    continue
 
-            # record peer liveness when relevant
-            if self.peer and addr == self.peer:
-                self.peer_last_seen = time.time()
-
-            # handle messages
-            if mtype == "connect_request":
-                await self._handle_connect_request(addr)
-            elif mtype == "connect_ack":
-                # client receives this as part of connect_out flow (rpc handles it)
-                pass
-            elif mtype == "disconnect":
-                # peer asked to disconnect
+                # record peer liveness when relevant
                 if self.peer and addr == self.peer:
-                    await self._disconnect("peer")
-            elif mtype == "ping":
-                await self._send(addr, {"t": "pong", "ts": now_ms()})
-            elif mtype == "pong":
-                # liveness updated above if addr==peer
-                pass
-            elif mtype == "get_state":
-                await self._handle_get_state(addr, msg)
-            elif mtype == "cmd":
-                await self._handle_cmd(addr, msg)
-            elif mtype == "request_toggle":
-                # client asks host to arbitrate
-                if self.role == Role.HOST and self.peer and addr == self.peer:
-                    await self._toggle_pressed(source="peer")
-            elif mtype == "request_stop":
-                if self.role == Role.HOST and self.peer and addr == self.peer:
-                    await self._stop_pressed(source="peer")
+                    self.peer_last_seen = time.time()
+
+                # handle messages
+                if mtype == "connect_request":
+                    await self._handle_connect_request(addr)
+                elif mtype == "connect_ack":
+                    # client receives this as part of connect_out flow (rpc handles it)
+                    pass
+                elif mtype == "disconnect":
+                    # peer asked to disconnect
+                    if self.peer and addr == self.peer:
+                        await self._disconnect("peer")
+                elif mtype == "ping":
+                    await self._send(addr, {"t": "pong", "ts": now_ms()})
+                elif mtype == "pong":
+                    # liveness updated above if addr==peer
+                    pass
+                elif mtype == "get_state":
+                    await self._handle_get_state(addr, msg)
+                elif mtype == "cmd":
+                    await self._handle_cmd(addr, msg)
+                elif mtype == "request_toggle":
+                    # client asks host to arbitrate
+                    if self.role == Role.HOST and self.peer and addr == self.peer:
+                        await self._toggle_pressed(source="peer")
+                elif mtype == "request_stop":
+                    if self.role == Role.HOST and self.peer and addr == self.peer:
+                        await self._stop_pressed(source="peer")
+            except asyncio.CancelledError:
+                return
+            except (OSError, RuntimeError):
+                if self._stop_evt.is_set() or not self.sock or self.sock.fileno() == -1:
+                    return
+                continue
 
     async def _handle_connect_request(self, addr):
         # If we are connected as a CLIENT, we don't accept inbound connect (by design).
