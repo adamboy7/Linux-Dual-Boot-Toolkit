@@ -1,7 +1,10 @@
 import asyncio
 import json
 import os
+import shutil
 import socket
+import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -16,11 +19,12 @@ from PIL import Image, ImageDraw
 import tkinter as tk
 from tkinter import simpledialog, messagebox
 
-# WinRT GSMTC
-from winrt.windows.media.control import (
-    GlobalSystemMediaTransportControlsSessionManager as GSMTCManager,
-    GlobalSystemMediaTransportControlsSessionPlaybackStatus as PlaybackStatus,
-)
+if sys.platform == "win32":
+    # WinRT GSMTC
+    from winrt.windows.media.control import (
+        GlobalSystemMediaTransportControlsSessionManager as GSMTCManager,
+        GlobalSystemMediaTransportControlsSessionPlaybackStatus as PlaybackStatus,
+    )
 
 APP_NAME = "MediaRelay"
 DEFAULT_PORT = 50123
@@ -41,7 +45,7 @@ class MediaSnapshot:
     title: str = ""
 
 
-class MediaController:
+class WindowsMediaController:
     async def snapshot(self) -> MediaSnapshot:
         mgr = await GSMTCManager.request_async()
         session = mgr.get_current_session()
@@ -96,6 +100,61 @@ class MediaController:
         return False
 
 
+class LinuxMediaController:
+    def __init__(self):
+        self._playerctl = shutil.which("playerctl")
+
+    def _run_playerctl(self, *args: str) -> Optional[subprocess.CompletedProcess]:
+        if not self._playerctl:
+            return None
+        result = subprocess.run(
+            [self._playerctl, *args],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            return None
+        return result
+
+    async def snapshot(self) -> MediaSnapshot:
+        result = self._run_playerctl("status")
+        if not result:
+            return MediaSnapshot(State.NONE)
+
+        status = result.stdout.strip().lower()
+        if status == "playing":
+            state = State.PLAYING
+        elif status in ("paused", "stopped"):
+            state = State.PAUSED
+        else:
+            state = State.NONE
+
+        app = ""
+        title = ""
+        meta = self._run_playerctl("metadata", "--format", "{{playerName}}||{{title}}")
+        if meta:
+            parts = meta.stdout.strip().split("||", 1)
+            if parts:
+                app = parts[0].strip()
+            if len(parts) > 1:
+                title = parts[1].strip()
+
+        return MediaSnapshot(state, app=app, title=title)
+
+    async def command(self, cmd: str) -> bool:
+        if cmd not in ("play", "pause", "stop"):
+            return False
+        result = self._run_playerctl(cmd)
+        return result is not None
+
+
+def build_media_controller():
+    if sys.platform == "win32":
+        return WindowsMediaController()
+    return LinuxMediaController()
+
+
 # -------------------- Arbitration rules --------------------
 
 def decide_actions(host: State, client: State) -> Tuple[Optional[str], Optional[str]]:
@@ -129,7 +188,10 @@ def decide_actions(host: State, client: State) -> Tuple[Optional[str], Optional[
 # -------------------- Storage --------------------
 
 def config_path() -> str:
-    base = os.environ.get("APPDATA") or os.path.expanduser("~")
+    if os.name == "nt":
+        base = os.environ.get("APPDATA") or os.path.expanduser("~")
+    else:
+        base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
     folder = os.path.join(base, APP_NAME)
     os.makedirs(folder, exist_ok=True)
     return os.path.join(folder, "config.json")
@@ -180,7 +242,7 @@ class RelayCore:
     """
     def __init__(self, listen_port: int):
         self.listen_port = listen_port
-        self.media = MediaController()
+        self.media = build_media_controller()
 
         self.role: Role = Role.HOST
         self.peer: Optional[Tuple[str, int]] = None
