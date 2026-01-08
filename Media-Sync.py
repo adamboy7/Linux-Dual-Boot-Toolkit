@@ -4,6 +4,7 @@ import os
 import socket
 import threading
 import time
+import uuid
 from dataclasses import dataclass
 from enum import Enum
 from typing import Optional, Tuple
@@ -275,7 +276,7 @@ class RelayCore:
         self.sock.sendto(encode(msg), addr)
 
     async def _rpc(self, addr: Tuple[str, int], msg: dict, timeout: float = 0.5) -> Optional[dict]:
-        rid = f"{now_ms()}-{os.getpid()}"
+        rid = uuid.uuid4().hex
         msg = dict(msg)
         msg["id"] = rid
         fut = self.loop.create_future()
