@@ -1,0 +1,65 @@
+name: Build Windows EXEs
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'Bluetooth-GUI.py'
+      - 'Media-Sync.py'
+      - 'libraries/**'
+      - '.github/workflows/build-windows-exes.yml'
+  pull_request:
+    paths:
+      - 'Bluetooth-GUI.py'
+      - 'Media-Sync.py'
+      - 'libraries/**'
+      - '.github/workflows/build-windows-exes.yml'
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller pystray pillow winrt
+
+      - name: Build Bluetooth GUI EXE
+        run: |
+          pyinstaller \
+            --onefile \
+            --name Bluetooth-GUI \
+            --add-data "libraries;libraries" \
+            --collect-submodules libraries \
+            Bluetooth-GUI.py
+
+      - name: Build Media Sync EXE
+        run: |
+          pyinstaller \
+            --onefile \
+            --name Media-Sync \
+            --add-data "libraries;libraries" \
+            --collect-submodules libraries \
+            --hidden-import winrt.windows.media.control \
+            Media-Sync.py
+
+      - name: Upload Bluetooth GUI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Bluetooth-GUI-windows
+          path: dist/Bluetooth-GUI.exe
+
+      - name: Upload Media Sync artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Media-Sync-windows
+          path: dist/Media-Sync.exe
