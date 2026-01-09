@@ -45,52 +45,126 @@ jobs:
       # -------------------------
       - name: Build Bluetooth GUI EXE (release, no console)
         run: |
-          python -m py2exe `
-            --bundle-files 1 `
-            --compressed `
-            --dist-dir dist/bluetooth-gui-release `
-            --windows `
-            Bluetooth-GUI.py
-          Copy-Item dist/bluetooth-gui-release/Bluetooth-GUI.exe dist/Bluetooth-GUI.exe
+          python - <<'PY'
+          from pathlib import Path
+          from setuptools import setup
+
+          base_options = {
+              "bundle_files": 1,
+              "compressed": True,
+              "packages": ["libraries"],
+          }
+          data_files = [
+              ("libraries", [str(path) for path in Path("libraries").rglob("*") if path.is_file()]),
+          ]
+
+          setup(
+              windows=[{
+                  "script": "Bluetooth-GUI.py",
+                  "icon_resources": [(1, "libraries/Bluetooth-Key.ico")],
+                  "dest_base": "Bluetooth-GUI",
+              }],
+              options={"py2exe": base_options},
+              data_files=data_files,
+              zipfile=None,
+              script_args=["py2exe", "--dist-dir", "dist"],
+          )
+          PY
 
       # -------------------------
       # Bluetooth GUI - Console
       # -------------------------
       - name: Build Bluetooth GUI EXE (console)
         run: |
-          python -m py2exe `
-            --bundle-files 1 `
-            --compressed `
-            --dist-dir dist/bluetooth-gui-debug `
-            --console `
-            Bluetooth-GUI.py
-          Copy-Item dist/bluetooth-gui-debug/Bluetooth-GUI.exe dist/Bluetooth-GUI-Debug.exe
+          python - <<'PY'
+          from pathlib import Path
+          from setuptools import setup
+
+          base_options = {
+              "bundle_files": 1,
+              "compressed": True,
+              "packages": ["libraries"],
+          }
+          data_files = [
+              ("libraries", [str(path) for path in Path("libraries").rglob("*") if path.is_file()]),
+          ]
+
+          setup(
+              console=[{
+                  "script": "Bluetooth-GUI.py",
+                  "icon_resources": [(1, "libraries/Bluetooth-Key.ico")],
+                  "dest_base": "Bluetooth-GUI-Debug",
+              }],
+              options={"py2exe": base_options},
+              data_files=data_files,
+              zipfile=None,
+              script_args=["py2exe", "--dist-dir", "dist"],
+          )
+          PY
 
       # -------------------------
       # Media Sync - Release
       # -------------------------
       - name: Build Media Sync EXE (release, no console)
         run: |
-          python -m py2exe `
-            --bundle-files 1 `
-            --compressed `
-            --dist-dir dist/media-sync-release `
-            --windows `
-            Media-Sync.py
-          Copy-Item dist/media-sync-release/Media-Sync.exe dist/Media-Sync.exe
+          python - <<'PY'
+          from pathlib import Path
+          from setuptools import setup
+
+          base_options = {
+              "bundle_files": 1,
+              "compressed": True,
+              "packages": ["libraries"],
+              "includes": ["winrt.windows.media.control"],
+          }
+          data_files = [
+              ("libraries", [str(path) for path in Path("libraries").rglob("*") if path.is_file()]),
+          ]
+
+          setup(
+              windows=[{
+                  "script": "Media-Sync.py",
+                  "icon_resources": [(1, "libraries/Media-Sync.ico")],
+                  "dest_base": "Media-Sync",
+              }],
+              options={"py2exe": base_options},
+              data_files=data_files,
+              zipfile=None,
+              script_args=["py2exe", "--dist-dir", "dist"],
+          )
+          PY
 
       # -------------------------
       # Media Sync - Console
       # -------------------------
       - name: Build Media Sync EXE (console)
         run: |
-          python -m py2exe `
-            --bundle-files 1 `
-            --compressed `
-            --dist-dir dist/media-sync-debug `
-            --console `
-            Media-Sync.py
-          Copy-Item dist/media-sync-debug/Media-Sync.exe dist/Media-Sync-Debug.exe
+          python - <<'PY'
+          from pathlib import Path
+          from setuptools import setup
+
+          base_options = {
+              "bundle_files": 1,
+              "compressed": True,
+              "packages": ["libraries"],
+              "includes": ["winrt.windows.media.control"],
+          }
+          data_files = [
+              ("libraries", [str(path) for path in Path("libraries").rglob("*") if path.is_file()]),
+          ]
+
+          setup(
+              console=[{
+                  "script": "Media-Sync.py",
+                  "icon_resources": [(1, "libraries/Media-Sync.ico")],
+                  "dest_base": "Media-Sync-Debug",
+              }],
+              options={"py2exe": base_options},
+              data_files=data_files,
+              zipfile=None,
+              script_args=["py2exe", "--dist-dir", "dist"],
+          )
+          PY
 
       # -------------------------
       # Upload artifacts
