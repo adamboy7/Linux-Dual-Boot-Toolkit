@@ -5,6 +5,7 @@ import json
 import re
 import platform
 import sys
+from pathlib import Path
 
 from libraries.bluetooth import (
     BluetoothAdapter,
@@ -19,6 +20,15 @@ if platform.system() != "Linux":
     raise ImportError("linux GUI module is only available on Linux platforms.")
 
 ensure_platform_permissions()
+
+ICON_FILENAME = "Bluetooth-Key.ico"
+
+
+def _resolve_icon_path() -> Path:
+    base_dir = getattr(sys, "_MEIPASS", None)
+    if base_dir:
+        return Path(base_dir) / "libraries" / ICON_FILENAME
+    return Path(__file__).resolve().parents[1] / ICON_FILENAME
 
 def _notify_missing_gtk(message: str) -> None:
     print(message, file=sys.stderr)
@@ -53,6 +63,7 @@ class BtKeyGui(Gtk.Window):
         super().__init__(title="Bluetooth Key Sync (Linux)")
         self.set_border_width(10)
         self.set_default_size(480, 200)
+        self._set_window_icon()
 
         # Data
         self.backend = get_bluetooth_backend()
@@ -134,6 +145,15 @@ class BtKeyGui(Gtk.Window):
 
         self.connect("destroy", Gtk.main_quit)
         self.show_all()
+
+    def _set_window_icon(self) -> None:
+        icon_path = _resolve_icon_path()
+        if not icon_path.exists():
+            return
+        try:
+            self.set_icon_from_file(str(icon_path))
+        except Exception:
+            pass
 
     # ----- UI helpers -----
 

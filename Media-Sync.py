@@ -570,6 +570,9 @@ class RelayCore:
         self.on_status_change = lambda: None
         self.on_resume_mode_change = lambda mode: None
 
+    def _log(self, message: str) -> None:
+        print(f"[Media-Sync] {message}")
+
     # ---- public, thread-safe entrypoints ----
 
     def start_in_thread(self):
@@ -630,9 +633,14 @@ class RelayCore:
         self.loop.close()
 
     async def _run(self):
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.sock.bind(("0.0.0.0", self.listen_port))
-        self.sock.setblocking(False)
+        try:
+            self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self.sock.bind(("0.0.0.0", self.listen_port))
+            self.sock.setblocking(False)
+            self._log(f"Socket started on 0.0.0.0:{self.listen_port}.")
+        except OSError as exc:
+            self._log(f"Socket error while starting on 0.0.0.0:{self.listen_port}: {exc}")
+            raise
 
         # start tasks
         rx = asyncio.create_task(self._rx_loop())
@@ -660,8 +668,9 @@ class RelayCore:
                     pass
             try:
                 self.sock.close()
+                self._log("Socket stopped.")
             except Exception:
-                pass
+                self._log("Socket error while stopping.")
 
     def _notify(self):
         try:
@@ -679,7 +688,8 @@ class RelayCore:
             return
         try:
             self.sock.sendto(encode(msg), addr)
-        except OSError:
+        except OSError as exc:
+            self._log(f"Socket send error to {addr[0]}:{addr[1]}: {exc}")
             return
 
     async def _rpc(self, addr: Tuple[str, int], msg: dict, timeout: float = 0.5) -> Optional[dict]:
@@ -749,6 +759,7 @@ class RelayCore:
             except (OSError, RuntimeError):
                 if self._stop_evt.is_set() or not self.sock or self.sock.fileno() == -1:
                     return
+                self._log("Socket receive error; continuing.")
                 continue
 
     async def _handle_connect_request(self, addr, msg):
@@ -768,6 +779,7 @@ class RelayCore:
         self.peer_last_seen = time.time()
         await self._send(addr, {"t": "connect_ack", "id": msg.get("id"), "ok": True, "ts": now_ms()})
         await self._send(addr, {"t": "resume_mode", "mode": self.resume_mode.value, "ts": now_ms()})
+        self._log(f"Client connected from {addr[0]}:{addr[1]}.")
         self._notify()
 
     async def _connect_out(self, ip: str, port: int):
@@ -782,6 +794,7 @@ class RelayCore:
 
         if not resp or not resp.get("ok"):
             # Stay / revert as host
+            self._log(f"Connection attempt to {addr[0]}:{addr[1]} failed.")
             await self._disconnect("connect_failed")
             return
 
@@ -793,6 +806,7 @@ class RelayCore:
         self._auto_connect_enabled = True
         self._ensure_auto_connect_task()
         await self._send(self.peer, {"t": "resume_mode", "mode": self.resume_mode.value, "ts": now_ms()})
+        self._log(f"Connected to host {addr[0]}:{addr[1]}.")
         self._notify()
 
     async def _disconnect(self, why: str):
@@ -802,6 +816,7 @@ class RelayCore:
                 await self._send(self.peer, {"t": "disconnect", "why": why, "ts": now_ms()})
             except Exception:
                 pass
+            self._log(f"Disconnected from {self.peer[0]}:{self.peer[1]} (reason: {why}).")
         self.peer = None
         self.peer_last_seen = 0.0
         should_retry = (
@@ -827,6 +842,7 @@ class RelayCore:
             if self.peer:
                 # if no pong/ping seen for >6s, drop peer
                 if (time.time() - self.peer_last_seen) > 6.0:
+                    self._log(f"Connection to {self.peer[0]}:{self.peer[1]} lost (timeout).")
                     await self._disconnect("timeout")
 
     async def _heartbeat_loop(self):
@@ -858,6 +874,7 @@ class RelayCore:
             if not self._auto_connect_target:
                 return
             ip, port = self._auto_connect_target
+            self._log(f"Retrying connection to {ip}:{port}.")
             await self._connect_out(ip, port)
             if self.peer:
                 await asyncio.sleep(1.0)
@@ -924,11 +941,13 @@ class RelayCore:
         old_sock = self.sock
         self.sock = new_sock
         self.listen_port = port
+        self._log(f"Socket started on 0.0.0.0:{self.listen_port}.")
         if old_sock:
             try:
                 old_sock.close()
+                self._log("Socket stopped.")
             except Exception:
-                pass
+                self._log("Socket error while stopping.")
         self._notify()
 
     async def _toggle_pressed(self, source: str):
