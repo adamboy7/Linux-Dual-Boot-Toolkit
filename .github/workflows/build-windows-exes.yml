@@ -55,13 +55,12 @@ jobs:
             Bluetooth-GUI.py
 
       # -------------------------
-      # Bluetooth GUI - Debug
+      # Bluetooth GUI - Console
       # -------------------------
-      - name: Build Bluetooth GUI EXE (debug, console)
+      - name: Build Bluetooth GUI EXE (console)
         run: |
           pyinstaller `
             --onefile `
-            --debug all `
             --name Bluetooth-GUI-Debug `
             --icon "libraries/Bluetooth-Key.ico" `
             --add-data "libraries;libraries" `
@@ -84,13 +83,12 @@ jobs:
             Media-Sync.py
 
       # -------------------------
-      # Media Sync - Debug
+      # Media Sync - Console
       # -------------------------
-      - name: Build Media Sync EXE (debug, console)
+      - name: Build Media Sync EXE (console)
         run: |
           pyinstaller `
             --onefile `
-            --debug all `
             --name Media-Sync-Debug `
             --icon "libraries/Media-Sync.ico" `
             --add-data "libraries;libraries" `
