@@ -3,8 +3,6 @@ name: Build Windows EXEs
 on:
   workflow_dispatch:
   push:
-    tags:
-      - "v*"
     paths:
       - 'Bluetooth-GUI.py'
       - 'Media-Sync.py'
@@ -21,10 +19,6 @@ jobs:
   build-windows:
     runs-on: windows-latest
 
-    # Needed to create/update Releases + upload assets using GITHUB_TOKEN
-    permissions:
-      contents: write
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -39,19 +33,21 @@ jobs:
           python -m pip install --upgrade pip
           pip install pyinstaller pystray pillow winrt-Windows.Foundation winrt-Windows.Media winrt-Windows.Media.Control
 
-      - name: Build Bluetooth GUI EXE
+      - name: Build Bluetooth GUI EXE (no console)
         run: |
           pyinstaller `
             --onefile `
+            --noconsole `
             --name Bluetooth-GUI `
             --add-data "libraries;libraries" `
             --collect-submodules libraries `
             Bluetooth-GUI.py
 
-      - name: Build Media Sync EXE
+      - name: Build Media Sync EXE (no console)
         run: |
           pyinstaller `
             --onefile `
+            --noconsole `
             --name Media-Sync `
             --add-data "libraries;libraries" `
             --collect-submodules libraries `
@@ -69,12 +65,3 @@ jobs:
         with:
           name: Media-Sync-windows
           path: dist/Media-Sync.exe
-
-      # Only on tag pushes like v1.2.3
-      - name: Publish EXEs to GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            dist/Bluetooth-GUI.exe
-            dist/Media-Sync.exe
