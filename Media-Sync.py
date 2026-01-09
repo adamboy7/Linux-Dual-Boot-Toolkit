@@ -789,10 +789,14 @@ class RelayCore:
         self.role = Role.CLIENT
         self.peer = addr
         self.peer_last_seen = time.time()
+        self._auto_connect_target = addr
+        self._auto_connect_enabled = True
+        self._ensure_auto_connect_task()
         await self._send(self.peer, {"t": "resume_mode", "mode": self.resume_mode.value, "ts": now_ms()})
         self._notify()
 
     async def _disconnect(self, why: str):
+        was_client = self.role == Role.CLIENT
         if self.peer:
             try:
                 await self._send(self.peer, {"t": "disconnect", "why": why, "ts": now_ms()})
@@ -800,8 +804,15 @@ class RelayCore:
                 pass
         self.peer = None
         self.peer_last_seen = 0.0
-        self.role = Role.HOST  # revert to host when disconnected
+        if why == "user":
+            self.role = Role.HOST  # revert to host when manually disconnected
+        elif was_client and self._auto_connect_enabled:
+            self.role = Role.CLIENT  # remain client to allow retry
+        else:
+            self.role = Role.HOST
         self._notify()
+        if self._auto_connect_enabled:
+            self._ensure_auto_connect_task()
 
     async def _peer_timeout_loop(self):
         while True:
