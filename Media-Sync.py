@@ -46,7 +46,7 @@ DEFAULT_PORT = 50123
 _WIN_PROMPTER = None
 
 
-# -------------------- Media control (Windows) --------------------
+# -------------------- Media control (shared) --------------------
 
 class State(str, Enum):
     NONE = "none"       # No controllable session
@@ -66,108 +66,114 @@ class MediaSnapshot:
     title: str = ""
 
 
-class WindowsMediaController:
-    async def snapshot(self) -> MediaSnapshot:
-        mgr = await GSMTCManager.request_async()
-        session = mgr.get_current_session()
-        if session is None:
-            return MediaSnapshot(State.NONE)
+# -------------------- Media control (Windows) --------------------
 
-        # Playback state
-        playback = session.get_playback_info()
-        status = playback.playback_status
+if sys.platform == "win32":
+    class WindowsMediaController:
+        async def snapshot(self) -> MediaSnapshot:
+            mgr = await GSMTCManager.request_async()
+            session = mgr.get_current_session()
+            if session is None:
+                return MediaSnapshot(State.NONE)
 
-        if status == PlaybackStatus.PLAYING:
-            s = State.PLAYING
-        elif status in (PlaybackStatus.PAUSED, PlaybackStatus.STOPPED):
-            s = State.PAUSED
-        else:
-            # UNKNOWN / CHANGING / CLOSED -> treat as paused-ish
-            s = State.PAUSED
+            # Playback state
+            playback = session.get_playback_info()
+            status = playback.playback_status
 
-        # Optional metadata (nice for debugging/UI later)
-        title = ""
-        app = ""
-        try:
-            props = await session.try_get_media_properties_async()
-            if props and props.title:
-                title = props.title
-        except Exception:
-            pass
-        try:
-            app = session.source_app_user_model_id or ""
-        except Exception:
-            pass
+            if status == PlaybackStatus.PLAYING:
+                s = State.PLAYING
+            elif status in (PlaybackStatus.PAUSED, PlaybackStatus.STOPPED):
+                s = State.PAUSED
+            else:
+                # UNKNOWN / CHANGING / CLOSED -> treat as paused-ish
+                s = State.PAUSED
 
-        return MediaSnapshot(s, app=app, title=title)
+            # Optional metadata (nice for debugging/UI later)
+            title = ""
+            app = ""
+            try:
+                props = await session.try_get_media_properties_async()
+                if props and props.title:
+                    title = props.title
+            except Exception:
+                pass
+            try:
+                app = session.source_app_user_model_id or ""
+            except Exception:
+                pass
 
-    async def command(self, cmd: str) -> bool:
-        """
-        cmd in {'play','pause','stop'}
-        """
-        mgr = await GSMTCManager.request_async()
-        session = mgr.get_current_session()
-        if session is None:
+            return MediaSnapshot(s, app=app, title=title)
+
+        async def command(self, cmd: str) -> bool:
+            """
+            cmd in {'play','pause','stop'}
+            """
+            mgr = await GSMTCManager.request_async()
+            session = mgr.get_current_session()
+            if session is None:
+                return False
+            try:
+                if cmd == "play":
+                    return bool(await session.try_play_async())
+                if cmd == "pause":
+                    return bool(await session.try_pause_async())
+                if cmd == "stop":
+                    return bool(await session.try_stop_async())
+            except Exception:
+                return False
             return False
-        try:
-            if cmd == "play":
-                return bool(await session.try_play_async())
-            if cmd == "pause":
-                return bool(await session.try_pause_async())
-            if cmd == "stop":
-                return bool(await session.try_stop_async())
-        except Exception:
-            return False
-        return False
 
 
-class LinuxMediaController:
-    def __init__(self):
-        self._playerctl = shutil.which("playerctl")
+# -------------------- Media control (Linux) --------------------
 
-    def _run_playerctl(self, *args: str) -> Optional[subprocess.CompletedProcess]:
-        if not self._playerctl:
-            return None
-        result = subprocess.run(
-            [self._playerctl, *args],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if result.returncode != 0:
-            return None
-        return result
+if sys.platform != "win32":
+    class LinuxMediaController:
+        def __init__(self):
+            self._playerctl = shutil.which("playerctl")
 
-    async def snapshot(self) -> MediaSnapshot:
-        result = self._run_playerctl("status")
-        if not result:
-            return MediaSnapshot(State.NONE)
+        def _run_playerctl(self, *args: str) -> Optional[subprocess.CompletedProcess]:
+            if not self._playerctl:
+                return None
+            result = subprocess.run(
+                [self._playerctl, *args],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if result.returncode != 0:
+                return None
+            return result
 
-        status = result.stdout.strip().lower()
-        if status == "playing":
-            state = State.PLAYING
-        elif status in ("paused", "stopped"):
-            state = State.PAUSED
-        else:
-            state = State.NONE
+        async def snapshot(self) -> MediaSnapshot:
+            result = self._run_playerctl("status")
+            if not result:
+                return MediaSnapshot(State.NONE)
 
-        app = ""
-        title = ""
-        meta = self._run_playerctl("metadata", "--format", "{{playerName}}||{{title}}")
-        if meta:
-            parts = meta.stdout.strip().split("||", 1)
-            if parts:
-                app = parts[0].strip()
-            if len(parts) > 1:
-                title = parts[1].strip()
+            status = result.stdout.strip().lower()
+            if status == "playing":
+                state = State.PLAYING
+            elif status in ("paused", "stopped"):
+                state = State.PAUSED
+            else:
+                state = State.NONE
 
-        return MediaSnapshot(state, app=app, title=title)
+            app = ""
+            title = ""
+            meta = self._run_playerctl("metadata", "--format", "{{playerName}}||{{title}}")
+            if meta:
+                parts = meta.stdout.strip().split("||", 1)
+                if parts:
+                    app = parts[0].strip()
+                if len(parts) > 1:
+                    title = parts[1].strip()
 
-    async def command(self, cmd: str) -> bool:
-        if cmd not in ("play", "pause", "stop"):
-            return False
-        result = self._run_playerctl(cmd)
-        return result is not None
+            return MediaSnapshot(state, app=app, title=title)
+
+        async def command(self, cmd: str) -> bool:
+            if cmd not in ("play", "pause", "stop"):
+                return False
+            result = self._run_playerctl(cmd)
+            return result is not None
 
 
 def build_media_controller():
@@ -176,7 +182,7 @@ def build_media_controller():
     return LinuxMediaController()
 
 
-# -------------------- Windows media key hook --------------------
+# -------------------- Media key hook (Windows) --------------------
 
 if sys.platform == "win32":
     _user32 = ctypes.windll.user32
@@ -291,6 +297,7 @@ else:
         def stop(self):
             return
 
+# -------------------- Media key hook (Linux) --------------------
 
 if sys.platform != "win32":
     class LinuxMediaKeyListener:
