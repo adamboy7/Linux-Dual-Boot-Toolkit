@@ -35,21 +35,21 @@ jobs:
 
       - name: Build Bluetooth GUI EXE
         run: |
-          pyinstaller \
-            --onefile \
-            --name Bluetooth-GUI \
-            --add-data "libraries;libraries" \
-            --collect-submodules libraries \
+          pyinstaller `
+            --onefile `
+            --name Bluetooth-GUI `
+            --add-data "libraries;libraries" `
+            --collect-submodules libraries `
             Bluetooth-GUI.py
 
       - name: Build Media Sync EXE
         run: |
-          pyinstaller \
-            --onefile \
-            --name Media-Sync \
-            --add-data "libraries;libraries" \
-            --collect-submodules libraries \
-            --hidden-import winrt.windows.media.control \
+          pyinstaller `
+            --onefile `
+            --name Media-Sync `
+            --add-data "libraries;libraries" `
+            --collect-submodules libraries `
+            --hidden-import winrt.windows.media.control `
             Media-Sync.py
 
       - name: Upload Bluetooth GUI artifact
