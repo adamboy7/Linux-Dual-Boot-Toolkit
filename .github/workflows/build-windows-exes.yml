@@ -3,7 +3,6 @@ name: Build Windows EXEs
 on:
   workflow_dispatch:
 
-  # Build + publish to Releases when you push a version tag like v1.2.3
   push:
     tags:
       - "v*"
@@ -13,7 +12,6 @@ on:
       - 'libraries/**'
       - '.github/workflows/build-windows-exes.yml'
 
-  # Build for PR validation (artifacts only)
   pull_request:
     paths:
       - 'Bluetooth-GUI.py'
@@ -25,7 +23,6 @@ jobs:
   build-windows:
     runs-on: windows-latest
 
-    # Required to create/update Releases and upload assets with GITHUB_TOKEN
     permissions:
       contents: write
 
@@ -43,7 +40,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install pyinstaller pystray pillow winrt-Windows.Foundation winrt-Windows.Media winrt-Windows.Media.Control
 
-      - name: Build Bluetooth GUI EXE (no console)
+      # -------------------------
+      # Bluetooth GUI - Release
+      # -------------------------
+      - name: Build Bluetooth GUI EXE (release, no console)
         run: |
           pyinstaller `
             --onefile `
@@ -53,7 +53,23 @@ jobs:
             --collect-submodules libraries `
             Bluetooth-GUI.py
 
-      - name: Build Media Sync EXE (no console)
+      # -------------------------
+      # Bluetooth GUI - Debug
+      # -------------------------
+      - name: Build Bluetooth GUI EXE (debug, console)
+        run: |
+          pyinstaller `
+            --onefile `
+            --debug all `
+            --name Bluetooth-GUI-Debug `
+            --add-data "libraries;libraries" `
+            --collect-submodules libraries `
+            Bluetooth-GUI.py
+
+      # -------------------------
+      # Media Sync - Release
+      # -------------------------
+      - name: Build Media Sync EXE (release, no console)
         run: |
           pyinstaller `
             --onefile `
@@ -64,24 +80,48 @@ jobs:
             --hidden-import winrt.windows.media.control `
             Media-Sync.py
 
-      # Always upload run artifacts (PRs, manual runs, tag builds)
-      - name: Upload Bluetooth GUI artifact
+      # -------------------------
+      # Media Sync - Debug
+      # -------------------------
+      - name: Build Media Sync EXE (debug, console)
+        run: |
+          pyinstaller `
+            --onefile `
+            --debug all `
+            --name Media-Sync-Debug `
+            --add-data "libraries;libraries" `
+            --collect-submodules libraries `
+            --hidden-import winrt.windows.media.control `
+            Media-Sync.py
+
+      # -------------------------
+      # Upload artifacts
+      # -------------------------
+      - name: Upload Bluetooth GUI artifacts
         uses: actions/upload-artifact@v4
         with:
           name: Bluetooth-GUI-windows
-          path: dist/Bluetooth-GUI.exe
+          path: |
+            dist/Bluetooth-GUI.exe
+            dist/Bluetooth-GUI-Debug.exe
 
-      - name: Upload Media Sync artifact
+      - name: Upload Media Sync artifacts
         uses: actions/upload-artifact@v4
         with:
           name: Media-Sync-windows
-          path: dist/Media-Sync.exe
+          path: |
+            dist/Media-Sync.exe
+            dist/Media-Sync-Debug.exe
 
-      # Only on tag pushes: attach EXEs to the GitHub Release for that tag
+      # -------------------------
+      # Publish to GitHub Release (tag builds only)
+      # -------------------------
       - name: Publish EXEs to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: |
             dist/Bluetooth-GUI.exe
+            dist/Bluetooth-GUI-Debug.exe
             dist/Media-Sync.exe
+            dist/Media-Sync-Debug.exe
