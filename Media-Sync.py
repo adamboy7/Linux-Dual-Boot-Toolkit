@@ -804,7 +804,14 @@ class RelayCore:
                 pass
         self.peer = None
         self.peer_last_seen = 0.0
-        if why == "user":
+        should_retry = (
+            self._auto_connect_enabled
+            and self._auto_connect_target
+            and why not in ("user", "listen_port_changed")
+        )
+        if should_retry:
+            self.role = Role.CLIENT  # stay client so auto-connect keeps retrying
+        elif why == "user":
             self.role = Role.HOST  # revert to host when manually disconnected
         elif was_client and self._auto_connect_enabled:
             self.role = Role.CLIENT  # remain client to allow retry
