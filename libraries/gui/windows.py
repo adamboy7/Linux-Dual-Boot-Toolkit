@@ -6,6 +6,7 @@ import sys
 import traceback
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
+from pathlib import Path
 
 from libraries.bluetooth import (
     BluetoothAdapter,
@@ -20,6 +21,14 @@ from libraries.bt_gui_logic import BtKeyRecord, bt_record_from_json_file, bt_rec
 from libraries.permissions import ensure_platform_permissions
 
 SYSTEM_FLAG = "--launched-as-system"
+ICON_FILENAME = "Bluetooth-Key.ico"
+
+
+def _resolve_icon_path() -> Path:
+    base_dir = getattr(sys, "_MEIPASS", None)
+    if base_dir:
+        return Path(base_dir) / "libraries" / ICON_FILENAME
+    return Path(__file__).resolve().parents[1] / ICON_FILENAME
 
 if platform.system() != "Windows":
     raise ImportError("windows GUI module is only available on Windows platforms.")
@@ -32,6 +41,7 @@ class BluetoothKeyManagerApp(tk.Tk):
         # Match Linux naming
         self.title("Bluetooth Key Sync (Windows)")
         self.resizable(False, False)
+        self._set_window_icon()
 
         ensure_platform_permissions(SYSTEM_FLAG)
 
@@ -110,6 +120,15 @@ class BluetoothKeyManagerApp(tk.Tk):
         # Make top-level frame expand if window is resized
         self.columnconfigure(0, weight=1)
         self.rowconfigure(0, weight=1)
+
+    def _set_window_icon(self) -> None:
+        icon_path = _resolve_icon_path()
+        if not icon_path.exists():
+            return
+        try:
+            self.iconbitmap(str(icon_path))
+        except Exception:
+            pass
 
     def set_status(self, text: str):
         self.status_var.set(text)
