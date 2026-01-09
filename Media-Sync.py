@@ -9,6 +9,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 import uuid
 from dataclasses import dataclass
 from enum import Enum
@@ -559,6 +560,9 @@ class RelayCore:
         self.sock: Optional[socket.socket] = None
         self.loop: Optional[asyncio.AbstractEventLoop] = None
         self._stop_evt = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+        self._loop_ready = threading.Event()
+        self._core_failed: Optional[str] = None
         self._auto_connect_enabled = False
         self._auto_connect_task: Optional[asyncio.Task] = None
         self._auto_connect_target: Optional[Tuple[str, int]] = None
@@ -573,12 +577,50 @@ class RelayCore:
     def _log(self, message: str) -> None:
         print(f"[Media-Sync] {message}")
 
+    def _failure_log_path(self) -> str:
+        if sys.platform == "win32":
+            appdata = os.getenv("APPDATA")
+            if appdata:
+                return os.path.join(appdata, f"{APP_NAME}-core-error.log")
+        exe_dir = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else os.path.abspath(os.path.dirname(__file__))
+        return os.path.join(exe_dir, f"{APP_NAME}-core-error.log")
+
+    def _log_thread_exception(self, exc: BaseException) -> Optional[str]:
+        log_path = self._failure_log_path()
+        try:
+            with open(log_path, "a", encoding="utf-8") as handle:
+                handle.write(time.strftime("%Y-%m-%d %H:%M:%S") + " Core thread exception\n")
+                handle.write("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))
+                handle.write("\n")
+            return log_path
+        except Exception:
+            return None
+
+    def _show_thread_failure(self, exc: BaseException, log_path: Optional[str]) -> None:
+        if sys.platform == "win32":
+            try:
+                root = tk.Tk()
+                root.withdraw()
+                details = f"{type(exc).__name__}: {exc}"
+                message = f"{APP_NAME} core failed to start.\n\n{details}"
+                if log_path:
+                    message = f"{message}\n\nDetails logged to:\n{log_path}"
+                messagebox.showerror(APP_NAME, message)
+                root.destroy()
+            except Exception:
+                pass
+
     # ---- public, thread-safe entrypoints ----
 
     def start_in_thread(self):
-        t = threading.Thread(target=self._thread_main, daemon=True)
-        t.start()
-        return t
+        if self._thread and self._thread.is_alive():
+            return self._thread
+        self._stop_evt.clear()
+        self._loop_ready.clear()
+        self._core_failed = None
+        self._thread = threading.Thread(target=self._thread_main)
+        self._thread.start()
+        return self._thread
 
     def stop(self):
         self._stop_evt.set()
@@ -627,12 +669,24 @@ class RelayCore:
     # ---- internal thread/loop ----
 
     def _thread_main(self):
-        self.loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(self.loop)
-        self.loop.run_until_complete(self._run())
-        self.loop.close()
+        try:
+            self.loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self.loop)
+            self.loop.run_until_complete(self._run())
+        except Exception as exc:
+            self._core_failed = f"{type(exc).__name__}: {exc}"
+            log_path = self._log_thread_exception(exc)
+            self._show_thread_failure(exc, log_path)
+            self._notify()
+        finally:
+            if self.loop:
+                self.loop.close()
+                self.loop = None
 
     async def _run(self):
+        if not self._loop_ready.is_set():
+            self._loop_ready.set()
+            self._notify()
         try:
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             self.sock.bind(("0.0.0.0", self.listen_port))
@@ -679,9 +733,12 @@ class RelayCore:
             pass
 
     def status_text(self) -> str:
+        if self._core_failed:
+            return f"Core failed: {self._core_failed}"
+        core_state = "Core started" if self._loop_ready.is_set() else "Core starting…"
         if self.peer:
-            return f"{self.role.value.upper()} connected → {self.peer[0]}:{self.peer[1]}"
-        return f"{self.role.value.upper()} (no peer)"
+            return f"{core_state} · {self.role.value.upper()} connected → {self.peer[0]}:{self.peer[1]}"
+        return f"{core_state} · {self.role.value.upper()} (no peer)"
 
     async def _send(self, addr: Tuple[str, int], msg: dict):
         if not self.sock:
