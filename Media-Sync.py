@@ -54,6 +54,11 @@ class State(str, Enum):
     PLAYING = "playing" # Session playing
 
 
+class ResumeMode(str, Enum):
+    HOST_ONLY = "host_only"
+    BLIND = "blind"
+
+
 @dataclass
 class MediaSnapshot:
     state: State
@@ -447,7 +452,7 @@ def build_media_key_listener(core: "RelayCore", swallow: bool):
 
 # -------------------- Arbitration rules --------------------
 
-def decide_actions(host: State, client: State) -> Tuple[Optional[str], Optional[str]]:
+def decide_actions(host: State, client: State, resume_mode: ResumeMode) -> Tuple[Optional[str], Optional[str]]:
     """
     Returns (host_cmd, client_cmd) for a single "toggle press" arbitration.
 
@@ -462,11 +467,12 @@ def decide_actions(host: State, client: State) -> Tuple[Optional[str], Optional[
       - else none
     """
     if host == State.PLAYING or client == State.PLAYING:
-        if host == State.PLAYING and client == State.PLAYING:
-            return "pause", "pause"
-        if host == State.PLAYING:
-            return "pause", None
-        return None, "pause"
+        return "pause", "pause"
+
+    if resume_mode == ResumeMode.BLIND:
+        if host == State.PAUSED or client == State.PAUSED:
+            return "play", "play"
+        return None, None
 
     if host == State.PAUSED:
         return "play", None
@@ -495,6 +501,7 @@ def load_config() -> dict:
             "peer_ip": "",
             "peer_port": DEFAULT_PORT,
             "swallow_media_keys": True,
+            "resume_mode": ResumeMode.HOST_ONLY.value,
         }
     try:
         with open(p, "r", encoding="utf-8") as f:
@@ -505,6 +512,7 @@ def load_config() -> dict:
             "peer_ip": "",
             "peer_port": DEFAULT_PORT,
             "swallow_media_keys": True,
+            "resume_mode": ResumeMode.HOST_ONLY.value,
         }
 
 
@@ -540,11 +548,12 @@ class RelayCore:
     Runs in an asyncio loop (background thread). Tray callbacks call into this
     using thread-safe methods.
     """
-    def __init__(self, listen_port: int):
+    def __init__(self, listen_port: int, resume_mode: ResumeMode):
         self.listen_port = listen_port
         self.media = build_media_controller()
 
         self.role: Role = Role.HOST
+        self.resume_mode: ResumeMode = resume_mode
         self.peer: Optional[Tuple[str, int]] = None
         self.peer_last_seen: float = 0.0
 
@@ -560,6 +569,7 @@ class RelayCore:
 
         # UI callback hooks (set by tray app)
         self.on_status_change = lambda: None
+        self.on_resume_mode_change = lambda mode: None
 
     # ---- public, thread-safe entrypoints ----
 
@@ -584,6 +594,12 @@ class RelayCore:
     def ui_toggle(self):
         if self.loop:
             self.loop.call_soon_threadsafe(lambda: asyncio.create_task(self._toggle_pressed(source="local")))
+
+    def ui_set_resume_mode(self, resume_mode: ResumeMode):
+        if self.loop:
+            self.loop.call_soon_threadsafe(
+                lambda: asyncio.create_task(self._set_resume_mode(resume_mode, source="local"))
+            )
 
     def start_auto_connect(self, ip: str, port: int):
         self._auto_connect_target = (ip, int(port))
@@ -714,6 +730,8 @@ class RelayCore:
                     await self._handle_get_state(addr, msg)
                 elif mtype == "cmd":
                     await self._handle_cmd(addr, msg)
+                elif mtype == "resume_mode":
+                    await self._handle_resume_mode(addr, msg)
                 elif mtype == "request_toggle":
                     # client asks host to arbitrate
                     if self.role == Role.HOST and self.peer and addr == self.peer:
@@ -744,6 +762,7 @@ class RelayCore:
         self.peer = (addr[0], addr[1])
         self.peer_last_seen = time.time()
         await self._send(addr, {"t": "connect_ack", "id": msg.get("id"), "ok": True, "ts": now_ms()})
+        await self._send(addr, {"t": "resume_mode", "mode": self.resume_mode.value, "ts": now_ms()})
         self._notify()
 
     async def _connect_out(self, ip: str, port: int):
@@ -765,6 +784,7 @@ class RelayCore:
         self.role = Role.CLIENT
         self.peer = addr
         self.peer_last_seen = time.time()
+        await self._send(self.peer, {"t": "resume_mode", "mode": self.resume_mode.value, "ts": now_ms()})
         self._notify()
 
     async def _disconnect(self, why: str):
@@ -839,6 +859,31 @@ class RelayCore:
             ok = await self.media.command(cmd)
         await self._send(addr, {"t": "ack", "id": msg.get("id"), "ts": now_ms(), "ok": ok, "cmd": cmd})
 
+    async def _handle_resume_mode(self, addr, msg):
+        if self.peer and addr != self.peer:
+            return
+        mode_value = msg.get("mode", "")
+        try:
+            mode = ResumeMode(mode_value)
+        except Exception:
+            return
+        await self._apply_resume_mode(mode, notify=True)
+
+    async def _apply_resume_mode(self, resume_mode: ResumeMode, notify: bool):
+        if resume_mode == self.resume_mode:
+            return
+        self.resume_mode = resume_mode
+        if notify:
+            try:
+                self.on_resume_mode_change(resume_mode)
+            except Exception:
+                pass
+
+    async def _set_resume_mode(self, resume_mode: ResumeMode, source: str):
+        await self._apply_resume_mode(resume_mode, notify=True)
+        if self.peer:
+            await self._send(self.peer, {"t": "resume_mode", "mode": resume_mode.value, "ts": now_ms(), "source": source})
+
     async def _toggle_pressed(self, source: str):
         """
         If HOST: run arbitration (query peer state, decide explicit actions).
@@ -867,7 +912,7 @@ class RelayCore:
             except Exception:
                 client_state = State.NONE
 
-        host_cmd, client_cmd = decide_actions(host_snap.state, client_state)
+        host_cmd, client_cmd = decide_actions(host_snap.state, client_state, self.resume_mode)
 
         if host_cmd:
             await self.media.command(host_cmd)
@@ -995,8 +1040,14 @@ class TrayApp:
         self.listen_port = int(self.cfg.get("listen_port", DEFAULT_PORT))
         self._last_saved_state = {}
 
-        self.core = RelayCore(listen_port=self.listen_port)
+        resume_mode_value = self.cfg.get("resume_mode", ResumeMode.HOST_ONLY.value)
+        try:
+            resume_mode = ResumeMode(resume_mode_value)
+        except Exception:
+            resume_mode = ResumeMode.HOST_ONLY
+        self.core = RelayCore(listen_port=self.listen_port, resume_mode=resume_mode)
         self.core.on_status_change = self._refresh_tray
+        self.core.on_resume_mode_change = self._set_resume_mode_from_core
         self.media_key_listener = build_media_key_listener(
             self.core,
             swallow=bool(self.cfg.get("swallow_media_keys", True)),
@@ -1032,6 +1083,23 @@ class TrayApp:
             Item("Stop (both)", self._stop),
             Item("Connect…", self._connect),
             Item("Disconnect", self._disconnect, enabled=lambda item: self.core.peer is not None),
+            Item(
+                "Resume Mode",
+                Menu(
+                    Item(
+                        "Resume host only",
+                        lambda: self._set_resume_mode(ResumeMode.HOST_ONLY),
+                        checked=lambda item: self.core.resume_mode == ResumeMode.HOST_ONLY,
+                        radio=True,
+                    ),
+                    Item(
+                        "Blind resume",
+                        lambda: self._set_resume_mode(ResumeMode.BLIND),
+                        checked=lambda item: self.core.resume_mode == ResumeMode.BLIND,
+                        radio=True,
+                    ),
+                ),
+            ),
             Item(lambda _item: f"Status: {self.core.status_text()}", None, enabled=False),
             Item("Exit", self._exit),
         )
@@ -1069,6 +1137,7 @@ class TrayApp:
             "peer_port": self.cfg.get("peer_port", DEFAULT_PORT),
             "last_role": self.cfg.get("last_role", ""),
             "auto_connect": self.cfg.get("auto_connect", False),
+            "resume_mode": self.cfg.get("resume_mode", ResumeMode.HOST_ONLY.value),
         }
         if state != self._last_saved_state:
             save_config(self.cfg)
@@ -1079,6 +1148,23 @@ class TrayApp:
 
     def _stop(self, icon=None, item=None):
         self.core.ui_stop_all()
+
+    def _set_resume_mode_from_core(self, resume_mode: ResumeMode):
+        def do():
+            self.cfg["resume_mode"] = resume_mode.value
+            save_config(self.cfg)
+            self.icon.menu = self._build_menu()
+        try:
+            q = getattr(self.icon, "_handler_queue", None)
+            if q is not None:
+                q.put(do)
+            else:
+                do()
+        except Exception:
+            pass
+
+    def _set_resume_mode(self, resume_mode: ResumeMode):
+        self.core.ui_set_resume_mode(resume_mode)
 
     def _connect(self, icon=None, item=None):
         ip = prompt_string("Host IP:", self.cfg.get("peer_ip", ""))
