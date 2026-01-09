@@ -38,63 +38,59 @@ jobs:
       - name: Install build dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pyinstaller pystray pillow winrt-Windows.Foundation winrt-Windows.Media winrt-Windows.Media.Control
+          pip install py2exe pystray pillow winrt-Windows.Foundation winrt-Windows.Media winrt-Windows.Media.Control
 
       # -------------------------
       # Bluetooth GUI - Release
       # -------------------------
       - name: Build Bluetooth GUI EXE (release, no console)
         run: |
-          pyinstaller `
-            --onefile `
-            --noconsole `
-            --name Bluetooth-GUI `
-            --icon "libraries/Bluetooth-Key.ico" `
-            --add-data "libraries;libraries" `
-            --collect-submodules libraries `
+          python -m py2exe `
+            --bundle-files 1 `
+            --compressed `
+            --dist-dir dist/bluetooth-gui-release `
+            --windows `
             Bluetooth-GUI.py
+          Copy-Item dist/bluetooth-gui-release/Bluetooth-GUI.exe dist/Bluetooth-GUI.exe
 
       # -------------------------
       # Bluetooth GUI - Console
       # -------------------------
       - name: Build Bluetooth GUI EXE (console)
         run: |
-          pyinstaller `
-            --onefile `
-            --name Bluetooth-GUI-Debug `
-            --icon "libraries/Bluetooth-Key.ico" `
-            --add-data "libraries;libraries" `
-            --collect-submodules libraries `
+          python -m py2exe `
+            --bundle-files 1 `
+            --compressed `
+            --dist-dir dist/bluetooth-gui-debug `
+            --console `
             Bluetooth-GUI.py
+          Copy-Item dist/bluetooth-gui-debug/Bluetooth-GUI.exe dist/Bluetooth-GUI-Debug.exe
 
       # -------------------------
       # Media Sync - Release
       # -------------------------
       - name: Build Media Sync EXE (release, no console)
         run: |
-          pyinstaller `
-            --onefile `
-            --noconsole `
-            --name Media-Sync `
-            --icon "libraries/Media-Sync.ico" `
-            --add-data "libraries;libraries" `
-            --collect-submodules libraries `
-            --hidden-import winrt.windows.media.control `
+          python -m py2exe `
+            --bundle-files 1 `
+            --compressed `
+            --dist-dir dist/media-sync-release `
+            --windows `
             Media-Sync.py
+          Copy-Item dist/media-sync-release/Media-Sync.exe dist/Media-Sync.exe
 
       # -------------------------
       # Media Sync - Console
       # -------------------------
       - name: Build Media Sync EXE (console)
         run: |
-          pyinstaller `
-            --onefile `
-            --name Media-Sync-Debug `
-            --icon "libraries/Media-Sync.ico" `
-            --add-data "libraries;libraries" `
-            --collect-submodules libraries `
-            --hidden-import winrt.windows.media.control `
+          python -m py2exe `
+            --bundle-files 1 `
+            --compressed `
+            --dist-dir dist/media-sync-debug `
+            --console `
             Media-Sync.py
+          Copy-Item dist/media-sync-debug/Media-Sync.exe dist/Media-Sync-Debug.exe
 
       # -------------------------
       # Upload artifacts
