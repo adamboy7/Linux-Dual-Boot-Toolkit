@@ -75,6 +75,7 @@ jobs:
             --onefile `
             --noconsole `
             --name Media-Sync `
+            --icon libraries/Media-Sync.ico `
             --add-data "libraries;libraries" `
             --collect-submodules libraries `
             --hidden-import winrt.windows.media.control `
@@ -89,6 +90,7 @@ jobs:
             --onefile `
             --debug all `
             --name Media-Sync-Debug `
+            --icon libraries/Media-Sync.ico `
             --add-data "libraries;libraries" `
             --collect-submodules libraries `
             --hidden-import winrt.windows.media.control `
