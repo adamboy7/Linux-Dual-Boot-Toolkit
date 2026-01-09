@@ -531,6 +531,11 @@ def now_ms() -> int:
     return int(time.time() * 1000)
 
 
+def log_event(message: str) -> None:
+    timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+    print(f"[{timestamp}] {message}", flush=True)
+
+
 def encode(msg: dict) -> bytes:
     return json.dumps(msg, separators=(",", ":")).encode("utf-8")
 
@@ -633,6 +638,7 @@ class RelayCore:
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.bind(("0.0.0.0", self.listen_port))
         self.sock.setblocking(False)
+        log_event(f"Socket bound to 0.0.0.0:{self.listen_port} (role={self.role.value})")
 
         # start tasks
         rx = asyncio.create_task(self._rx_loop())
@@ -646,6 +652,7 @@ class RelayCore:
             while not self._stop_evt.is_set():
                 await asyncio.sleep(0.2)
         finally:
+            log_event("Stopping relay loop.")
             for task in (rx, hb, gc):
                 task.cancel()
             try:
@@ -662,6 +669,7 @@ class RelayCore:
                 self.sock.close()
             except Exception:
                 pass
+            log_event("Socket closed.")
 
     def _notify(self):
         try:
@@ -680,6 +688,7 @@ class RelayCore:
         try:
             self.sock.sendto(encode(msg), addr)
         except OSError:
+            log_event(f"Socket send error to {addr[0]}:{addr[1]}.")
             return
 
     async def _rpc(self, addr: Tuple[str, int], msg: dict, timeout: float = 0.5) -> Optional[dict]:
@@ -749,16 +758,19 @@ class RelayCore:
             except (OSError, RuntimeError):
                 if self._stop_evt.is_set() or not self.sock or self.sock.fileno() == -1:
                     return
+                log_event("Socket receive error; continuing.")
                 continue
 
     async def _handle_connect_request(self, addr, msg):
         # If we are connected as a CLIENT, we don't accept inbound connect (by design).
         if self.role == Role.CLIENT:
+            log_event(f"Rejected connect request from {addr[0]}:{addr[1]} (already client).")
             await self._send(addr, {"t": "connect_ack", "id": msg.get("id"), "ok": False, "reason": "busy_client", "ts": now_ms()})
             return
 
         # If we already have a peer, refuse new ones (simple policy).
         if self.peer and addr != self.peer:
+            log_event(f"Rejected connect request from {addr[0]}:{addr[1]} (already connected).")
             await self._send(addr, {"t": "connect_ack", "id": msg.get("id"), "ok": False, "reason": "already_connected", "ts": now_ms()})
             return
 
@@ -766,12 +778,14 @@ class RelayCore:
         self.role = Role.HOST
         self.peer = (addr[0], addr[1])
         self.peer_last_seen = time.time()
+        log_event(f"Client connected from {addr[0]}:{addr[1]}.")
         await self._send(addr, {"t": "connect_ack", "id": msg.get("id"), "ok": True, "ts": now_ms()})
         await self._send(addr, {"t": "resume_mode", "mode": self.resume_mode.value, "ts": now_ms()})
         self._notify()
 
     async def _connect_out(self, ip: str, port: int):
         addr = (ip, int(port))
+        log_event(f"Attempting connect to {addr[0]}:{addr[1]}...")
 
         # Send request FIRST — do not mark connected yet
         resp = await self._rpc(
@@ -782,6 +796,7 @@ class RelayCore:
 
         if not resp or not resp.get("ok"):
             # Stay / revert as host
+            log_event(f"Connect failed to {addr[0]}:{addr[1]}.")
             await self._disconnect("connect_failed")
             return
 
@@ -789,6 +804,7 @@ class RelayCore:
         self.role = Role.CLIENT
         self.peer = addr
         self.peer_last_seen = time.time()
+        log_event(f"Connected to host {addr[0]}:{addr[1]}.")
         self._auto_connect_target = addr
         self._auto_connect_enabled = True
         self._ensure_auto_connect_task()
@@ -802,6 +818,9 @@ class RelayCore:
                 await self._send(self.peer, {"t": "disconnect", "why": why, "ts": now_ms()})
             except Exception:
                 pass
+            log_event(f"Disconnected from {self.peer[0]}:{self.peer[1]} (reason={why}).")
+        else:
+            log_event(f"Disconnect requested with no peer (reason={why}).")
         self.peer = None
         self.peer_last_seen = 0.0
         should_retry = (
@@ -827,6 +846,7 @@ class RelayCore:
             if self.peer:
                 # if no pong/ping seen for >6s, drop peer
                 if (time.time() - self.peer_last_seen) > 6.0:
+                    log_event(f"Peer timed out at {self.peer[0]}:{self.peer[1]}.")
                     await self._disconnect("timeout")
 
     async def _heartbeat_loop(self):
@@ -858,6 +878,7 @@ class RelayCore:
             if not self._auto_connect_target:
                 return
             ip, port = self._auto_connect_target
+            log_event(f"Auto-connect retry to {ip}:{port}...")
             await self._connect_out(ip, port)
             if self.peer:
                 await asyncio.sleep(1.0)
@@ -918,6 +939,7 @@ class RelayCore:
             new_sock.bind(("0.0.0.0", port))
         except OSError:
             new_sock.close()
+            log_event(f"Failed to bind new listen port {port}.")
             return
         new_sock.setblocking(False)
 
@@ -929,6 +951,7 @@ class RelayCore:
                 old_sock.close()
             except Exception:
                 pass
+        log_event(f"Listen port updated to {port}.")
         self._notify()
 
     async def _toggle_pressed(self, source: str):
