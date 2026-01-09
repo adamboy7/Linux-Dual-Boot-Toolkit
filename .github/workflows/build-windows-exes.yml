@@ -47,7 +47,8 @@ jobs:
         run: |
           @'
           from pathlib import Path
-          from setuptools import setup
+          from distutils.core import setup
+          import py2exe
 
           base_options = {
               "bundle_files": 1,
@@ -78,7 +79,8 @@ jobs:
         run: |
           @'
           from pathlib import Path
-          from setuptools import setup
+          from distutils.core import setup
+          import py2exe
 
           base_options = {
               "bundle_files": 1,
@@ -109,7 +111,8 @@ jobs:
         run: |
           @'
           from pathlib import Path
-          from setuptools import setup
+          from distutils.core import setup
+          import py2exe
 
           base_options = {
               "bundle_files": 1,
@@ -141,7 +144,8 @@ jobs:
         run: |
           @'
           from pathlib import Path
-          from setuptools import setup
+          from distutils.core import setup
+          import py2exe
 
           base_options = {
               "bundle_files": 1,
