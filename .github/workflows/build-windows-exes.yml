@@ -45,7 +45,7 @@ jobs:
       # -------------------------
       - name: Build Bluetooth GUI EXE (release, no console)
         run: |
-          python - <<'PY'
+          @'
           from pathlib import Path
           from setuptools import setup
 
@@ -69,14 +69,14 @@ jobs:
               zipfile=None,
               script_args=["py2exe", "--dist-dir", "dist"],
           )
-          PY
+          '@ | python -
 
       # -------------------------
       # Bluetooth GUI - Console
       # -------------------------
       - name: Build Bluetooth GUI EXE (console)
         run: |
-          python - <<'PY'
+          @'
           from pathlib import Path
           from setuptools import setup
 
@@ -100,14 +100,14 @@ jobs:
               zipfile=None,
               script_args=["py2exe", "--dist-dir", "dist"],
           )
-          PY
+          '@ | python -
 
       # -------------------------
       # Media Sync - Release
       # -------------------------
       - name: Build Media Sync EXE (release, no console)
         run: |
-          python - <<'PY'
+          @'
           from pathlib import Path
           from setuptools import setup
 
@@ -132,14 +132,14 @@ jobs:
               zipfile=None,
               script_args=["py2exe", "--dist-dir", "dist"],
           )
-          PY
+          '@ | python -
 
       # -------------------------
       # Media Sync - Console
       # -------------------------
       - name: Build Media Sync EXE (console)
         run: |
-          python - <<'PY'
+          @'
           from pathlib import Path
           from setuptools import setup
 
@@ -164,7 +164,7 @@ jobs:
               zipfile=None,
               script_args=["py2exe", "--dist-dir", "dist"],
           )
-          PY
+          '@ | python -
 
       # -------------------------
       # Upload artifacts
