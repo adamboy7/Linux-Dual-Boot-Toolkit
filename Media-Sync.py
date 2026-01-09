@@ -1,6 +1,7 @@
 import asyncio
 import json
 import importlib.util
+import ipaddress
 import os
 import shutil
 import socket
@@ -550,6 +551,9 @@ class RelayCore:
         self.sock: Optional[socket.socket] = None
         self.loop: Optional[asyncio.AbstractEventLoop] = None
         self._stop_evt = threading.Event()
+        self._auto_connect_enabled = False
+        self._auto_connect_task: Optional[asyncio.Task] = None
+        self._auto_connect_target: Optional[Tuple[str, int]] = None
 
         # pending RPCs: id -> Future
         self.pending = {}
@@ -581,6 +585,17 @@ class RelayCore:
         if self.loop:
             self.loop.call_soon_threadsafe(lambda: asyncio.create_task(self._toggle_pressed(source="local")))
 
+    def start_auto_connect(self, ip: str, port: int):
+        self._auto_connect_target = (ip, int(port))
+        self._auto_connect_enabled = True
+        if self.loop:
+            self.loop.call_soon_threadsafe(self._ensure_auto_connect_task)
+
+    def disable_auto_connect(self):
+        self._auto_connect_enabled = False
+        if self.loop:
+            self.loop.call_soon_threadsafe(self._cancel_auto_connect_task)
+
     def ui_stop_all(self):
         if self.loop:
             self.loop.call_soon_threadsafe(lambda: asyncio.create_task(self._stop_pressed(source="local")))
@@ -604,6 +619,7 @@ class RelayCore:
         gc = asyncio.create_task(self._peer_timeout_loop())
 
         self._notify()
+        self._ensure_auto_connect_task()
 
         try:
             while not self._stop_evt.is_set():
@@ -615,6 +631,12 @@ class RelayCore:
                 await asyncio.gather(rx, hb, gc, return_exceptions=True)
             except Exception:
                 pass
+            if self._auto_connect_task:
+                self._auto_connect_task.cancel()
+                try:
+                    await self._auto_connect_task
+                except Exception:
+                    pass
             try:
                 self.sock.close()
             except Exception:
@@ -772,6 +794,32 @@ class RelayCore:
                     await self._send(self.peer, {"t": "ping", "ts": now_ms()})
                 except Exception:
                     pass
+
+    def _cancel_auto_connect_task(self):
+        if self._auto_connect_task:
+            self._auto_connect_task.cancel()
+            self._auto_connect_task = None
+
+    def _ensure_auto_connect_task(self):
+        if not self._auto_connect_enabled or not self._auto_connect_target:
+            return
+        if self._auto_connect_task and not self._auto_connect_task.done():
+            return
+        self._auto_connect_task = asyncio.create_task(self._auto_connect_loop())
+
+    async def _auto_connect_loop(self):
+        while self._auto_connect_enabled and not self._stop_evt.is_set():
+            if self.peer:
+                await asyncio.sleep(1.0)
+                continue
+            if not self._auto_connect_target:
+                return
+            ip, port = self._auto_connect_target
+            await self._connect_out(ip, port)
+            if self.peer:
+                await asyncio.sleep(1.0)
+            else:
+                await asyncio.sleep(30.0)
 
     async def _handle_get_state(self, addr, msg):
         snap = await self.media.snapshot()
@@ -961,6 +1009,23 @@ class TrayApp:
 
         self.icon = pystray.Icon(APP_NAME, make_icon(Role.HOST, False), APP_NAME, menu=self._build_menu())
 
+    @staticmethod
+    def _is_valid_ip(ip: str) -> bool:
+        try:
+            ipaddress.ip_address(ip)
+            return True
+        except ValueError:
+            return False
+
+    def _should_auto_connect(self) -> bool:
+        ip = self.cfg.get("peer_ip", "")
+        return (
+            self.cfg.get("auto_connect")
+            and self.cfg.get("last_role") == Role.CLIENT.value
+            and ip
+            and self._is_valid_ip(ip)
+        )
+
     def _build_menu(self):
         return Menu(
             Item("Toggle (arb)", self._toggle),
@@ -1033,6 +1098,7 @@ class TrayApp:
     def _disconnect(self, icon=None, item=None):
         self.cfg["auto_connect"] = False
         save_config(self.cfg)
+        self.core.disable_auto_connect()
         self.core.ui_disconnect()
 
     def _exit(self, icon=None, item=None):
@@ -1046,12 +1112,8 @@ class TrayApp:
         # Start core networking
         self.core.start_in_thread()
         self.media_key_listener.start()
-        if (
-            self.cfg.get("auto_connect")
-            and self.cfg.get("last_role") == Role.CLIENT.value
-            and self.cfg.get("peer_ip")
-        ):
-            self.core.ui_connect(
+        if self._should_auto_connect():
+            self.core.start_auto_connect(
                 self.cfg.get("peer_ip"),
                 int(self.cfg.get("peer_port", DEFAULT_PORT)),
             )
