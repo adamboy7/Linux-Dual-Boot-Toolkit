@@ -466,18 +466,17 @@ def decide_actions(host: State, client: State, resume_mode: ResumeMode) -> Tuple
       - else if client paused -> play client
       - else none
     """
-    if host == State.PLAYING or client == State.PLAYING:
-        return "pause", "pause"
-
     if resume_mode == ResumeMode.BLIND:
+        if host == State.PLAYING or client == State.PLAYING:
+            return "pause", "pause"
         if host == State.PAUSED or client == State.PAUSED:
             return "play", "play"
         return None, None
 
+    if host == State.PLAYING or client == State.PLAYING:
+        return "pause", "pause"
     if host == State.PAUSED:
         return "play", None
-    if client == State.PAUSED:
-        return None, "play"
     return None, None
 
 
@@ -599,6 +598,12 @@ class RelayCore:
         if self.loop:
             self.loop.call_soon_threadsafe(
                 lambda: asyncio.create_task(self._set_resume_mode(resume_mode, source="local"))
+            )
+
+    def ui_set_listen_port(self, port: int):
+        if self.loop:
+            self.loop.call_soon_threadsafe(
+                lambda: asyncio.create_task(self._set_listen_port(int(port)))
             )
 
     def start_auto_connect(self, ip: str, port: int):
@@ -884,6 +889,30 @@ class RelayCore:
         if self.peer:
             await self._send(self.peer, {"t": "resume_mode", "mode": resume_mode.value, "ts": now_ms(), "source": source})
 
+    async def _set_listen_port(self, port: int):
+        if port == self.listen_port:
+            return
+        if self.role == Role.HOST and self.peer:
+            await self._disconnect("listen_port_changed")
+
+        new_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            new_sock.bind(("0.0.0.0", port))
+        except OSError:
+            new_sock.close()
+            return
+        new_sock.setblocking(False)
+
+        old_sock = self.sock
+        self.sock = new_sock
+        self.listen_port = port
+        if old_sock:
+            try:
+                old_sock.close()
+            except Exception:
+                pass
+        self._notify()
+
     async def _toggle_pressed(self, source: str):
         """
         If HOST: run arbitration (query peer state, decide explicit actions).
@@ -1079,9 +1108,10 @@ class TrayApp:
 
     def _build_menu(self):
         return Menu(
-            Item("Toggle (arb)", self._toggle),
-            Item("Stop (both)", self._stop),
+            Item("Toggle", self._toggle),
+            Item("Stop", self._stop),
             Item("Connect…", self._connect),
+            Item("Listening Port…", self._configure_listen_port),
             Item("Disconnect", self._disconnect, enabled=lambda item: self.core.peer is not None),
             Item(
                 "Resume Mode",
@@ -1165,6 +1195,18 @@ class TrayApp:
 
     def _set_resume_mode(self, resume_mode: ResumeMode):
         self.core.ui_set_resume_mode(resume_mode)
+
+    def _configure_listen_port(self, icon=None, item=None):
+        port = prompt_int("Listen Port:", int(self.cfg.get("listen_port", DEFAULT_PORT)))
+        if not port:
+            return
+        port = int(port)
+        if port == self.listen_port:
+            return
+        self.listen_port = port
+        self.cfg["listen_port"] = port
+        save_config(self.cfg)
+        self.core.ui_set_listen_port(port)
 
     def _connect(self, icon=None, item=None):
         ip = prompt_string("Host IP:", self.cfg.get("peer_ip", ""))
