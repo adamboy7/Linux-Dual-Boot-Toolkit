@@ -19,6 +19,9 @@ from pystray import MenuItem as Item, Menu as Menu
 from PIL import Image, ImageDraw
 
 if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+if sys.platform == "win32":
     import queue
     import tkinter as tk
     from tkinter import simpledialog, messagebox
