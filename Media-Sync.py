@@ -1024,9 +1024,14 @@ class RelayCore:
     async def _set_resume_mode(self, resume_mode: ResumeMode, source: str):
         await self._apply_resume_mode(resume_mode, notify=True)
         if self.peer:
-        # Resume mode is host-authoritative; client does not push it upstream.
-        # await self._send(self.peer, {"t": "resume_mode", "mode": resume_mode.value, "ts": now_ms(), "source": source})
-            await self._send_policy_to_peer(source=source)
+            # Resume mode is a shared setting:
+            # - If we're CLIENT, inform the host so its arbitration matches our selection.
+            # - If we're HOST, broadcast our mode to the client.
+            if self.role == Role.CLIENT:
+                await self._send(self.peer, {"t": "resume_mode", "mode": resume_mode.value, "ts": now_ms(), "source": source})
+            else:
+                await self._send_policy_to_peer(source=source)
+
 
     async def _set_ignore_client(self, enabled: bool, source: str):
         # Ignore client is controlled by the HOST only.
