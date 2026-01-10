@@ -476,10 +476,17 @@ def decide_actions(host: State, client: State) -> Tuple[Optional[str], Optional[
       - else if client paused -> play client
       - else none
     """
-    if host == State.PLAYING or client == State.PLAYING:
+    # NOTE: Keep in sync with docstring rules (unit-test-friendly).
+    if host == State.PLAYING and client == State.PLAYING:
         return "pause", "pause"
+    if host == State.PLAYING:
+        return "pause", None
+    if client == State.PLAYING:
+        return None, "pause"
     if host == State.PAUSED:
         return "play", None
+    if client == State.PAUSED:
+        return None, "play"
     return None, None
 
 
