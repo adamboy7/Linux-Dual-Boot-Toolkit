@@ -504,6 +504,7 @@ def load_config() -> dict:
             "peer_port": DEFAULT_PORT,
             "swallow_media_keys": True,
             "resume_mode": ResumeMode.HOST_ONLY.value,
+            "bidirectional": True,
         }
     try:
         with open(p, "r", encoding="utf-8") as f:
@@ -515,6 +516,7 @@ def load_config() -> dict:
             "peer_port": DEFAULT_PORT,
             "swallow_media_keys": True,
             "resume_mode": ResumeMode.HOST_ONLY.value,
+            "bidirectional": True,
         }
 
 
@@ -550,12 +552,13 @@ class RelayCore:
     Runs in an asyncio loop (background thread). Tray callbacks call into this
     using thread-safe methods.
     """
-    def __init__(self, listen_port: int, resume_mode: ResumeMode):
+    def __init__(self, listen_port: int, resume_mode: ResumeMode, bidirectional: bool):
         self.listen_port = listen_port
         self.media = build_media_controller()
 
         self.role: Role = Role.HOST
         self.resume_mode: ResumeMode = resume_mode
+        self.bidirectional: bool = bidirectional
         self.peer: Optional[Tuple[str, int]] = None
         self.peer_last_seen: float = 0.0
 
@@ -574,6 +577,7 @@ class RelayCore:
         # UI callback hooks (set by tray app)
         self.on_status_change = lambda: None
         self.on_resume_mode_change = lambda mode: None
+        self.on_bidirectional_change = lambda enabled: None
 
     def _log(self, message: str) -> None:
         print(f"[Media-Sync] {message}")
@@ -612,6 +616,12 @@ class RelayCore:
         if self.loop:
             self.loop.call_soon_threadsafe(
                 lambda: asyncio.create_task(self._set_listen_port(int(port)))
+            )
+
+    def ui_set_bidirectional(self, enabled: bool):
+        if self.loop:
+            self.loop.call_soon_threadsafe(
+                lambda: asyncio.create_task(self._set_bidirectional(bool(enabled), source="local"))
             )
 
     def start_auto_connect(self, ip: str, port: int):
@@ -767,12 +777,14 @@ class RelayCore:
                     await self._handle_cmd(addr, msg)
                 elif mtype == "resume_mode":
                     await self._handle_resume_mode(addr, msg)
+                elif mtype == "bidirectional":
+                    await self._handle_bidirectional(addr, msg)
                 elif mtype == "request_toggle":
                     # client asks host to arbitrate
-                    if self.role == Role.HOST and self.peer and addr == self.peer:
+                    if self.role == Role.HOST and self.peer and addr == self.peer and self.bidirectional:
                         await self._toggle_pressed(source="peer")
                 elif mtype == "request_stop":
-                    if self.role == Role.HOST and self.peer and addr == self.peer:
+                    if self.role == Role.HOST and self.peer and addr == self.peer and self.bidirectional:
                         await self._stop_pressed(source="peer")
             except asyncio.CancelledError:
                 return
@@ -799,6 +811,7 @@ class RelayCore:
         self.peer_last_seen = time.time()
         await self._send(addr, {"t": "connect_ack", "id": msg.get("id"), "ok": True, "ts": now_ms()})
         await self._send(addr, {"t": "resume_mode", "mode": self.resume_mode.value, "ts": now_ms()})
+        await self._send(addr, {"t": "bidirectional", "enabled": self.bidirectional, "ts": now_ms()})
         self._log(f"Client connected from {addr[0]}:{addr[1]}.")
         self._notify()
 
@@ -915,6 +928,9 @@ class RelayCore:
         })
 
     async def _handle_cmd(self, addr, msg):
+        if self.role == Role.HOST and self.peer and addr == self.peer and not self.bidirectional:
+            await self._send(addr, {"t": "ack", "id": msg.get("id"), "ts": now_ms(), "ok": False, "cmd": msg.get("cmd")})
+            return
         cmd = msg.get("cmd")
         ok = False
         if cmd == "toggle":
@@ -933,6 +949,14 @@ class RelayCore:
             return
         await self._apply_resume_mode(mode, notify=True)
 
+    async def _handle_bidirectional(self, addr, msg):
+        if self.peer and addr != self.peer:
+            return
+        enabled = msg.get("enabled")
+        if not isinstance(enabled, bool):
+            return
+        await self._apply_bidirectional(enabled, notify=True)
+
     async def _apply_resume_mode(self, resume_mode: ResumeMode, notify: bool):
         if resume_mode == self.resume_mode:
             return
@@ -943,10 +967,25 @@ class RelayCore:
             except Exception:
                 pass
 
+    async def _apply_bidirectional(self, enabled: bool, notify: bool):
+        if enabled == self.bidirectional:
+            return
+        self.bidirectional = enabled
+        if notify:
+            try:
+                self.on_bidirectional_change(enabled)
+            except Exception:
+                pass
+
     async def _set_resume_mode(self, resume_mode: ResumeMode, source: str):
         await self._apply_resume_mode(resume_mode, notify=True)
         if self.peer:
             await self._send(self.peer, {"t": "resume_mode", "mode": resume_mode.value, "ts": now_ms(), "source": source})
+
+    async def _set_bidirectional(self, enabled: bool, source: str):
+        await self._apply_bidirectional(enabled, notify=True)
+        if self.peer and self.role == Role.HOST:
+            await self._send(self.peer, {"t": "bidirectional", "enabled": enabled, "ts": now_ms(), "source": source})
 
     async def _set_listen_port(self, port: int):
         if port == self.listen_port:
@@ -995,9 +1034,11 @@ class RelayCore:
         if self.role == Role.CLIENT:
             if self.resume_mode == ResumeMode.BLIND:
                 await self._toggle_local()
-                await self._send(self.peer, {"t": "cmd", "cmd": "toggle", "ts": now_ms(), "source": source})
+                if self.bidirectional:
+                    await self._send(self.peer, {"t": "cmd", "cmd": "toggle", "ts": now_ms(), "source": source})
                 return
-            await self._send(self.peer, {"t": "request_toggle", "ts": now_ms(), "source": source})
+            if self.bidirectional:
+                await self._send(self.peer, {"t": "request_toggle", "ts": now_ms(), "source": source})
             return
 
         if self.resume_mode == ResumeMode.BLIND:
@@ -1034,9 +1075,11 @@ class RelayCore:
         if self.role == Role.CLIENT:
             if self.resume_mode == ResumeMode.BLIND:
                 await self.media.command("stop")
-                await self._send(self.peer, {"t": "cmd", "cmd": "stop", "ts": now_ms(), "source": source})
+                if self.bidirectional:
+                    await self._send(self.peer, {"t": "cmd", "cmd": "stop", "ts": now_ms(), "source": source})
                 return
-            await self._send(self.peer, {"t": "request_stop", "ts": now_ms(), "source": source})
+            if self.bidirectional:
+                await self._send(self.peer, {"t": "request_stop", "ts": now_ms(), "source": source})
             return
 
         # HOST: stop both directly
@@ -1283,9 +1326,15 @@ class TrayApp:
             resume_mode = ResumeMode(resume_mode_value)
         except Exception:
             resume_mode = ResumeMode.HOST_ONLY
-        self.core = RelayCore(listen_port=self.listen_port, resume_mode=resume_mode)
+        bidirectional = bool(self.cfg.get("bidirectional", True))
+        self.core = RelayCore(
+            listen_port=self.listen_port,
+            resume_mode=resume_mode,
+            bidirectional=bidirectional,
+        )
         self.core.on_status_change = self._refresh_tray
         self.core.on_resume_mode_change = self._set_resume_mode_from_core
+        self.core.on_bidirectional_change = self._set_bidirectional_from_core
         self.media_key_listener = build_media_key_listener(
             self.core,
             swallow=bool(self.cfg.get("swallow_media_keys", True)),
@@ -1328,6 +1377,16 @@ class TrayApp:
             Item("Connect…", self._connect),
             Item("Listening Port…", self._configure_listen_port),
             Item("Disconnect", self._disconnect, enabled=lambda item: self.core.peer is not None),
+        ]
+        if self.core.role == Role.HOST:
+            items.append(
+                Item(
+                    "Bi-Directional",
+                    self._toggle_bidirectional,
+                    checked=lambda item: self.core.bidirectional,
+                )
+            )
+        items += [
             Item(
                 "Resume Mode",
                 Menu(
@@ -1406,6 +1465,7 @@ class TrayApp:
             "last_role": self.cfg.get("last_role", ""),
             "auto_connect": self.cfg.get("auto_connect", False),
             "resume_mode": self.cfg.get("resume_mode", ResumeMode.HOST_ONLY.value),
+            "bidirectional": self.cfg.get("bidirectional", True),
         }
         if state != self._last_saved_state:
             save_config(self.cfg)
@@ -1433,6 +1493,23 @@ class TrayApp:
 
     def _set_resume_mode(self, resume_mode: ResumeMode):
         self.core.ui_set_resume_mode(resume_mode)
+
+    def _set_bidirectional_from_core(self, enabled: bool):
+        def do():
+            self.cfg["bidirectional"] = bool(enabled)
+            save_config(self.cfg)
+            self.icon.menu = self._build_menu()
+        try:
+            q = getattr(self.icon, "_handler_queue", None)
+            if q is not None:
+                q.put(do)
+            else:
+                do()
+        except Exception:
+            pass
+
+    def _toggle_bidirectional(self, icon=None, item=None):
+        self.core.ui_set_bidirectional(not self.core.bidirectional)
 
     def _configure_listen_port(self, icon=None, item=None):
         port = prompt_int("Listen Port:", int(self.cfg.get("listen_port", DEFAULT_PORT)))
