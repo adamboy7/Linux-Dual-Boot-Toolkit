@@ -963,7 +963,7 @@ class RelayCore:
     async def _toggle_pressed(self, source: str):
         """
         If HOST: run arbitration (query peer state, decide explicit actions).
-        If CLIENT: send request_toggle to host.
+        If CLIENT: send request_toggle to host unless in blind mode (then relay local intent).
         """
         if not self.peer:
             # no peer: just toggle locally by play/pause based on local state
@@ -975,6 +975,17 @@ class RelayCore:
             return
 
         if self.role == Role.CLIENT:
+            if self.resume_mode == ResumeMode.BLIND:
+                snap = await self.media.snapshot()
+                cmd = None
+                if snap.state == State.PLAYING:
+                    cmd = "pause"
+                elif snap.state == State.PAUSED:
+                    cmd = "play"
+                if cmd:
+                    await self.media.command(cmd)
+                    await self._send(self.peer, {"t": "cmd", "cmd": cmd, "ts": now_ms(), "source": source})
+                return
             await self._send(self.peer, {"t": "request_toggle", "ts": now_ms(), "source": source})
             return
 
@@ -1005,6 +1016,10 @@ class RelayCore:
             return
 
         if self.role == Role.CLIENT:
+            if self.resume_mode == ResumeMode.BLIND:
+                await self.media.command("stop")
+                await self._send(self.peer, {"t": "cmd", "cmd": "stop", "ts": now_ms(), "source": source})
+                return
             await self._send(self.peer, {"t": "request_stop", "ts": now_ms(), "source": source})
             return
 
