@@ -72,11 +72,10 @@ jobs:
       # -------------------------
       # Media Sync - Release
       # -------------------------
-      - name: Build Media Sync EXE (release, no console)
+      - name: Build Media Sync EXE (release, console)
         run: |
           pyinstaller `
             --onefile `
-            --noconsole `
             --name Media-Sync `
             --icon "libraries/Media-Sync.ico" `
             --add-data "libraries;libraries" `
@@ -108,13 +107,13 @@ jobs:
           path: |
             dist/Bluetooth-GUI.exe
 
-      # - name: Upload Media Sync artifacts
-      #   uses: actions/upload-artifact@v4
-      #   with:
-      #     name: Media-Sync-windows
-      #     path: |
-      #       dist/Media-Sync.exe
-      #       dist/Media-Sync-Debug.exe
+      - name: Upload Media Sync artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Media-Sync-windows
+          path: |
+            dist/Media-Sync.exe
+            dist/Media-Sync-Debug.exe
 
       # -------------------------
       # Publish to GitHub Release (tag builds only)
