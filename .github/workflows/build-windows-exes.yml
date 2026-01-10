@@ -75,7 +75,12 @@ jobs:
           import shutil
           import sysconfig
 
-          python_dll = Path(sys.base_prefix) / sysconfig.get_config_var("LDLIBRARY")
+          dll_name = sysconfig.get_config_var("LDLIBRARY") or f"python{sysconfig.get_config_var('py_version_nodot')}.dll"
+          dll_candidates = [
+              Path(sys.base_prefix) / dll_name,
+              Path(sys.base_prefix) / "DLLs" / dll_name,
+          ]
+          python_dll = next(path for path in dll_candidates if path.exists())
           shutil.copy2(python_dll, Path("dist") / python_dll.name)
           '@ | python -
 
@@ -114,7 +119,12 @@ jobs:
           import shutil
           import sysconfig
 
-          python_dll = Path(sys.base_prefix) / sysconfig.get_config_var("LDLIBRARY")
+          dll_name = sysconfig.get_config_var("LDLIBRARY") or f"python{sysconfig.get_config_var('py_version_nodot')}.dll"
+          dll_candidates = [
+              Path(sys.base_prefix) / dll_name,
+              Path(sys.base_prefix) / "DLLs" / dll_name,
+          ]
+          python_dll = next(path for path in dll_candidates if path.exists())
           shutil.copy2(python_dll, Path("dist") / python_dll.name)
           '@ | python -
 
@@ -153,7 +163,12 @@ jobs:
           import shutil
           import sysconfig
 
-          python_dll = Path(sys.base_prefix) / sysconfig.get_config_var("LDLIBRARY")
+          dll_name = sysconfig.get_config_var("LDLIBRARY") or f"python{sysconfig.get_config_var('py_version_nodot')}.dll"
+          dll_candidates = [
+              Path(sys.base_prefix) / dll_name,
+              Path(sys.base_prefix) / "DLLs" / dll_name,
+          ]
+          python_dll = next(path for path in dll_candidates if path.exists())
           shutil.copy2(python_dll, Path("dist") / python_dll.name)
           '@ | python -
 
@@ -192,7 +207,12 @@ jobs:
           import shutil
           import sysconfig
 
-          python_dll = Path(sys.base_prefix) / sysconfig.get_config_var("LDLIBRARY")
+          dll_name = sysconfig.get_config_var("LDLIBRARY") or f"python{sysconfig.get_config_var('py_version_nodot')}.dll"
+          dll_candidates = [
+              Path(sys.base_prefix) / dll_name,
+              Path(sys.base_prefix) / "DLLs" / dll_name,
+          ]
+          python_dll = next(path for path in dll_candidates if path.exists())
           shutil.copy2(python_dll, Path("dist") / python_dll.name)
           '@ | python -
 
