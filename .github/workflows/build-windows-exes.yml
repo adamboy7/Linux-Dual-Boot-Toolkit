@@ -71,6 +71,11 @@ jobs:
               zipfile=None,
               script_args=["py2exe", "--dist-dir", "dist"],
           )
+          import shutil
+          import sysconfig
+
+          python_dll = Path(sys.base_prefix) / sysconfig.get_config_var("LDLIBRARY")
+          shutil.copy2(python_dll, Path("dist") / python_dll.name)
           '@ | python -
 
       # -------------------------
@@ -104,6 +109,11 @@ jobs:
               zipfile=None,
               script_args=["py2exe", "--dist-dir", "dist"],
           )
+          import shutil
+          import sysconfig
+
+          python_dll = Path(sys.base_prefix) / sysconfig.get_config_var("LDLIBRARY")
+          shutil.copy2(python_dll, Path("dist") / python_dll.name)
           '@ | python -
 
       # -------------------------
@@ -137,6 +147,11 @@ jobs:
               zipfile=None,
               script_args=["py2exe", "--dist-dir", "dist"],
           )
+          import shutil
+          import sysconfig
+
+          python_dll = Path(sys.base_prefix) / sysconfig.get_config_var("LDLIBRARY")
+          shutil.copy2(python_dll, Path("dist") / python_dll.name)
           '@ | python -
 
       # -------------------------
@@ -170,6 +185,11 @@ jobs:
               zipfile=None,
               script_args=["py2exe", "--dist-dir", "dist"],
           )
+          import shutil
+          import sysconfig
+
+          python_dll = Path(sys.base_prefix) / sysconfig.get_config_var("LDLIBRARY")
+          shutil.copy2(python_dll, Path("dist") / python_dll.name)
           '@ | python -
 
       # -------------------------
