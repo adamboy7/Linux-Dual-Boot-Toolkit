@@ -1122,6 +1122,18 @@ def make_icon(role: Role, connected: bool) -> Image.Image:
     return img
 
 
+def _app_icon_path() -> str:
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(script_dir, "libraries", "Media-Sync.ico")
+
+
+def _load_app_icon() -> Image.Image:
+    try:
+        return Image.open(_app_icon_path()).convert("RGBA")
+    except Exception:
+        return make_icon(Role.HOST, False)
+
+
 def _windows_startup_dir() -> str:
     appdata = os.getenv("APPDATA")
     if not appdata:
@@ -1200,6 +1212,7 @@ class TrayApp:
         self.cfg = load_config()
         self.listen_port = int(self.cfg.get("listen_port", DEFAULT_PORT))
         self._last_saved_state = {}
+        self._app_icon = _load_app_icon()
 
         resume_mode_value = self.cfg.get("resume_mode", ResumeMode.HOST_ONLY.value)
         try:
@@ -1219,7 +1232,7 @@ class TrayApp:
             if _WIN_PROMPTER is None:
                 _WIN_PROMPTER = WinPromptThread()
 
-        self.icon = pystray.Icon(APP_NAME, make_icon(Role.HOST, False), APP_NAME, menu=self._build_menu())
+        self.icon = pystray.Icon(APP_NAME, self._app_icon, APP_NAME, menu=self._build_menu())
 
     @staticmethod
     def _is_valid_ip(ip: str) -> bool:
@@ -1272,8 +1285,7 @@ class TrayApp:
     def _refresh_tray(self):
         # Called from core thread; marshal to tray thread
         def do():
-            connected = self.core.peer is not None
-            self.icon.icon = make_icon(self.core.role, connected)
+            self.icon.icon = self._app_icon
             self.icon.menu = self._build_menu()
             self.icon.title = f"{APP_NAME} - {self.core.status_text()}"
             self._persist_state()
@@ -1373,6 +1385,9 @@ class TrayApp:
 
     def _add_to_startup(self, icon=None, item=None):
         if sys.platform != "win32":
+            return
+        confirm = messagebox.askyesno(APP_NAME, "Add MediaRelay to startup?")
+        if not confirm:
             return
         try:
             shortcut_path, _vbs_path = _ensure_startup_shortcut()
