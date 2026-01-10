@@ -20,13 +20,12 @@ use std::sync::OnceLock;
 #[cfg(windows)]
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 #[cfg(windows)]
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    KBDLLHOOKSTRUCT, VK_MEDIA_PLAY_PAUSE, VK_MEDIA_STOP,
-};
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{VK_MEDIA_PLAY_PAUSE, VK_MEDIA_STOP};
 #[cfg(windows)]
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, DispatchMessageW, GetMessageW, LoadIconW, SetWindowsHookExW,
-    TranslateMessage, IDI_APPLICATION, MSG, WH_KEYBOARD_LL, WM_KEYDOWN, WM_SYSKEYDOWN,
+    TranslateMessage, IDI_APPLICATION, KBDLLHOOKSTRUCT, MSG, WH_KEYBOARD_LL, WM_KEYDOWN,
+    WM_SYSKEYDOWN,
 };
 
 const APP_NAME: &str = "MediaRelay";
@@ -1050,7 +1049,7 @@ fn start_media_key_listener(tx: mpsc::UnboundedSender<UiCommand>) -> thread::Joi
                 return;
             }
 
-            let mut msg = MSG::default();
+            let mut msg: MSG = std::mem::zeroed();
             while GetMessageW(&mut msg, 0, 0, 0) > 0 {
                 TranslateMessage(&msg);
                 DispatchMessageW(&msg);
