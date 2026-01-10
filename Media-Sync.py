@@ -926,7 +926,13 @@ class RelayCore:
 
     async def _handle_cmd(self, addr, msg):
         cmd = msg.get("cmd")
-        if self.role == Role.HOST and not self.bidirectional:
+        # Commands are executed only on the receiving side.
+        # Policy:
+        # - The HOST never executes inbound 'cmd' messages from the peer. The
+        #   client must use request_toggle/request_stop so the host can apply
+        #   its gating rules (bi-directional off, blind mode, etc.).
+        # - The CLIENT may execute 'cmd' messages coming from its host.
+        if self.role == Role.HOST:
             await self._send(addr, {"t": "ack", "id": msg.get("id"), "ts": now_ms(), "ok": False, "cmd": cmd})
             return
         ok = False
@@ -937,7 +943,13 @@ class RelayCore:
         await self._send(addr, {"t": "ack", "id": msg.get("id"), "ts": now_ms(), "ok": ok, "cmd": cmd})
 
     async def _handle_resume_mode(self, addr, msg):
+        # Resume mode is HOST-authoritative.
+        # - If we are CLIENT, we accept resume_mode updates from our host.
+        # - If we are HOST, we ignore any resume_mode coming from the peer so the
+        #   client cannot affect host behavior/settings.
         if self.peer and addr != self.peer:
+            return
+        if self.role == Role.HOST:
             return
         mode_value = msg.get("mode", "")
         try:
@@ -967,6 +979,12 @@ class RelayCore:
                 pass
 
     async def _set_resume_mode(self, resume_mode: ResumeMode, source: str):
+        # Resume mode is controlled by the HOST only.
+        # If we're a CLIENT, ignore local attempts to change it.
+        if self.role == Role.CLIENT:
+            self._log("Ignoring local resume mode change (host-controlled).")
+            return
+
         await self._apply_resume_mode(resume_mode, notify=True)
         if self.peer:
             await self._send(self.peer, {"t": "resume_mode", "mode": resume_mode.value, "ts": now_ms(), "source": source})
@@ -1382,12 +1400,14 @@ class TrayApp:
                         lambda: self._set_resume_mode(ResumeMode.HOST_ONLY),
                         checked=lambda item: self.core.resume_mode == ResumeMode.HOST_ONLY,
                         radio=True,
+                        enabled=lambda item: self.core.role == Role.HOST,
                     ),
                     Item(
                         "Blind resume",
                         lambda: self._set_resume_mode(ResumeMode.BLIND),
                         checked=lambda item: self.core.resume_mode == ResumeMode.BLIND,
                         radio=True,
+                        enabled=lambda item: self.core.role == Role.HOST,
                     ),
                 ),
             ),
