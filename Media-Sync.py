@@ -570,6 +570,10 @@ class RelayCore:
         self._auto_connect_target: Optional[Tuple[str, int]] = None
         self._last_connect_attempt: Optional[Tuple[str, int]] = None
         self._last_connect_attempt_ts: float = 0.0
+        self._playback_watch_task: Optional[asyncio.Task] = None
+        self._last_playback_state: Optional[State] = None
+        self._expected_playback_state: Optional[State] = None
+        self._expected_playback_ts: float = 0.0
 
         # pending RPCs: id -> Future
         self.pending = {}
@@ -661,6 +665,7 @@ class RelayCore:
         rx = asyncio.create_task(self._rx_loop())
         hb = asyncio.create_task(self._heartbeat_loop())
         gc = asyncio.create_task(self._peer_timeout_loop())
+        self._playback_watch_task = asyncio.create_task(self._playback_watch_loop())
 
         self._notify()
         self._ensure_auto_connect_task()
@@ -669,10 +674,12 @@ class RelayCore:
             while not self._stop_evt.is_set():
                 await asyncio.sleep(0.2)
         finally:
-            for task in (rx, hb, gc):
+            for task in (rx, hb, gc, self._playback_watch_task):
+                if not task:
+                    continue
                 task.cancel()
             try:
-                await asyncio.gather(rx, hb, gc, return_exceptions=True)
+                await asyncio.gather(rx, hb, gc, self._playback_watch_task, return_exceptions=True)
             except Exception:
                 pass
             if self._auto_connect_task:
@@ -692,6 +699,29 @@ class RelayCore:
             self.on_status_change()
         except Exception:
             pass
+
+    def _note_expected_playback_state(self, state: Optional[State]):
+        if state is None:
+            return
+        self._expected_playback_state = state
+        self._expected_playback_ts = time.time()
+
+    def _is_expected_playback_state(self, state: State) -> bool:
+        if self._expected_playback_state is None or state != self._expected_playback_state:
+            return False
+        if (time.time() - self._expected_playback_ts) > 1.5:
+            return False
+        return True
+
+    async def _issue_media_command(self, cmd: str) -> bool:
+        expected = None
+        if cmd == "play":
+            expected = State.PLAYING
+        elif cmd in ("pause", "stop"):
+            expected = State.PAUSED
+        if expected:
+            self._note_expected_playback_state(expected)
+        return await self.media.command(cmd)
 
     def status_text(self) -> str:
         if self.peer:
@@ -933,7 +963,7 @@ class RelayCore:
         if cmd == "toggle":
             ok = await self._toggle_local()
         elif cmd in ("play", "pause", "stop"):
-            ok = await self.media.command(cmd)
+            ok = await self._issue_media_command(cmd)
         await self._send(addr, {"t": "ack", "id": msg.get("id"), "ts": now_ms(), "ok": ok, "cmd": cmd})
 
     async def _handle_resume_mode(self, addr, msg):
@@ -1003,9 +1033,9 @@ class RelayCore:
     async def _toggle_local(self) -> bool:
         snap = await self.media.snapshot()
         if snap.state == State.PLAYING:
-            return await self.media.command("pause")
+            return await self._issue_media_command("pause")
         if snap.state == State.PAUSED:
-            return await self.media.command("play")
+            return await self._issue_media_command("play")
         return False
 
     async def _toggle_pressed(self, source: str):
@@ -1044,7 +1074,7 @@ class RelayCore:
         host_cmd, client_cmd = decide_actions(host_snap.state, client_state)
 
         if host_cmd:
-            await self.media.command(host_cmd)
+            await self._issue_media_command(host_cmd)
         if client_cmd:
             await self._send(self.peer, {"t": "cmd", "cmd": client_cmd, "ts": now_ms()})
 
@@ -1054,20 +1084,49 @@ class RelayCore:
         If CLIENT: request host stop (so host can stop both).
         """
         if not self.peer:
-            await self.media.command("stop")
+            await self._issue_media_command("stop")
             return
 
         if self.role == Role.CLIENT:
             if self.resume_mode == ResumeMode.BLIND:
-                await self.media.command("stop")
+                await self._issue_media_command("stop")
                 await self._send(self.peer, {"t": "cmd", "cmd": "stop", "ts": now_ms(), "source": source})
                 return
             await self._send(self.peer, {"t": "request_stop", "ts": now_ms(), "source": source})
             return
 
         # HOST: stop both directly
-        await self.media.command("stop")
+        await self._issue_media_command("stop")
         await self._send(self.peer, {"t": "cmd", "cmd": "stop", "ts": now_ms()})
+
+    async def _playback_watch_loop(self):
+        while True:
+            await asyncio.sleep(0.4)
+            snap = await self.media.snapshot()
+            if snap.state not in (State.PLAYING, State.PAUSED):
+                self._last_playback_state = snap.state
+                continue
+            if self._last_playback_state is None:
+                self._last_playback_state = snap.state
+                continue
+            if snap.state == self._last_playback_state:
+                continue
+            if self._is_expected_playback_state(snap.state):
+                self._expected_playback_state = None
+                self._last_playback_state = snap.state
+                continue
+
+            previous_state = self._last_playback_state
+            self._log(
+                f"Detected unexpected playback change ({previous_state.value} -> {snap.state.value}). "
+                "Reverting and relaying."
+            )
+            if previous_state == State.PLAYING:
+                await self._issue_media_command("play")
+            elif previous_state == State.PAUSED:
+                await self._issue_media_command("pause")
+            self._last_playback_state = previous_state
+            await self._toggle_pressed(source="watcher")
 
 
 # -------------------- Tray UI --------------------
