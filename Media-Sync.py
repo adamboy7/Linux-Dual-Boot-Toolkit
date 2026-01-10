@@ -1122,11 +1122,97 @@ def make_icon(role: Role, connected: bool) -> Image.Image:
     return img
 
 
+def _app_icon_path() -> str:
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(script_dir, "libraries", "Media-Sync.ico")
+
+
+def _load_app_icon() -> Image.Image:
+    try:
+        return Image.open(_app_icon_path()).convert("RGBA")
+    except Exception:
+        return make_icon(Role.HOST, False)
+
+
+def _windows_startup_dir() -> str:
+    appdata = os.getenv("APPDATA")
+    if not appdata:
+        raise RuntimeError("APPDATA is not set; cannot locate Startup folder.")
+    return os.path.join(appdata, "Microsoft", "Windows", "Start Menu", "Programs", "Startup")
+
+
+def _windows_pythonw_path() -> str:
+    if sys.executable.lower().endswith("pythonw.exe"):
+        return sys.executable
+    candidate = os.path.join(sys.exec_prefix, "pythonw.exe")
+    if os.path.exists(candidate):
+        return candidate
+    candidate = sys.executable.replace("python.exe", "pythonw.exe")
+    if os.path.exists(candidate):
+        return candidate
+    raise FileNotFoundError("pythonw.exe not found for Startup shortcut.")
+
+
+def _vbs_escape(value: str) -> str:
+    return value.replace('"', '""')
+
+
+def _ps_quote(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _ensure_startup_shortcut() -> Tuple[str, str]:
+    if sys.platform != "win32":
+        raise RuntimeError("Startup shortcut is only supported on Windows.")
+    startup_dir = _windows_startup_dir()
+    os.makedirs(startup_dir, exist_ok=True)
+
+    script_path = os.path.abspath(__file__)
+    script_dir = os.path.dirname(script_path)
+    pythonw_path = _windows_pythonw_path()
+    icon_path = os.path.join(script_dir, "libraries", "Media-Sync.ico")
+    if not os.path.exists(icon_path):
+        raise FileNotFoundError(f"Icon not found: {icon_path}")
+
+    shortcut_path = os.path.join(startup_dir, f"{APP_NAME}.lnk")
+    vbs_path = os.path.join(startup_dir, f"{APP_NAME}.vbs")
+
+    for path in (shortcut_path, vbs_path):
+        if os.path.exists(path):
+            os.remove(path)
+
+    vbs_body = (
+        'Set shell = CreateObject("WScript.Shell")\n'
+        f'shell.CurrentDirectory = "{_vbs_escape(script_dir)}"\n'
+        f'shell.Run """" & "{_vbs_escape(pythonw_path)}" & """ """ & "{_vbs_escape(script_path)}" & """", 0, False\n'
+    )
+    with open(vbs_path, "w", encoding="utf-8") as handle:
+        handle.write(vbs_body)
+
+    wscript_path = os.path.join(os.getenv("WINDIR", "C:\\Windows"), "System32", "wscript.exe")
+    args_value = f'"{vbs_path}"'
+    ps_script = (
+        "$WshShell = New-Object -ComObject WScript.Shell;"
+        f"$Shortcut = $WshShell.CreateShortcut({_ps_quote(shortcut_path)});"
+        f"$Shortcut.TargetPath = {_ps_quote(wscript_path)};"
+        f"$Shortcut.Arguments = {_ps_quote(args_value)};"
+        f"$Shortcut.WorkingDirectory = {_ps_quote(script_dir)};"
+        f"$Shortcut.IconLocation = {_ps_quote(icon_path + ',0')};"
+        "$Shortcut.Save();"
+    )
+    subprocess.run(
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_script],
+        check=True,
+    )
+    return shortcut_path, vbs_path
+
+
 class TrayApp:
     def __init__(self):
         self.cfg = load_config()
         self.listen_port = int(self.cfg.get("listen_port", DEFAULT_PORT))
         self._last_saved_state = {}
+        self._app_icon = _load_app_icon()
 
         resume_mode_value = self.cfg.get("resume_mode", ResumeMode.HOST_ONLY.value)
         try:
@@ -1146,7 +1232,7 @@ class TrayApp:
             if _WIN_PROMPTER is None:
                 _WIN_PROMPTER = WinPromptThread()
 
-        self.icon = pystray.Icon(APP_NAME, make_icon(Role.HOST, False), APP_NAME, menu=self._build_menu())
+        self.icon = pystray.Icon(APP_NAME, self._app_icon, APP_NAME, menu=self._build_menu())
 
     @staticmethod
     def _is_valid_ip(ip: str) -> bool:
@@ -1166,7 +1252,7 @@ class TrayApp:
         )
 
     def _build_menu(self):
-        return Menu(
+        items = [
             Item("Toggle", self._toggle),
             Item("Stop", self._stop),
             Item("Connect…", self._connect),
@@ -1190,14 +1276,16 @@ class TrayApp:
                 ),
             ),
             Item(lambda _item: f"Status: {self.core.status_text()}", None, enabled=False),
-            Item("Exit", self._exit),
-        )
+        ]
+        if sys.platform == "win32":
+            items.append(Item("Add to startup", self._add_to_startup))
+        items.append(Item("Exit", self._exit))
+        return Menu(*items)
 
     def _refresh_tray(self):
         # Called from core thread; marshal to tray thread
         def do():
-            connected = self.core.peer is not None
-            self.icon.icon = make_icon(self.core.role, connected)
+            self.icon.icon = self._app_icon
             self.icon.menu = self._build_menu()
             self.icon.title = f"{APP_NAME} - {self.core.status_text()}"
             self._persist_state()
@@ -1294,6 +1382,18 @@ class TrayApp:
         self.icon.stop()
         if _WIN_PROMPTER is not None:
             _WIN_PROMPTER.stop()
+
+    def _add_to_startup(self, icon=None, item=None):
+        if sys.platform != "win32":
+            return
+        confirm = messagebox.askyesno(APP_NAME, "Add MediaRelay to startup?")
+        if not confirm:
+            return
+        try:
+            shortcut_path, _vbs_path = _ensure_startup_shortcut()
+            messagebox.showinfo(APP_NAME, f"Startup shortcut created:\n{shortcut_path}")
+        except Exception as exc:
+            messagebox.showerror(APP_NAME, f"Failed to add startup shortcut:\n{exc}")
 
     def run(self):
         # Start core networking
