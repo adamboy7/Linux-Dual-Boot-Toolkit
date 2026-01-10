@@ -13,11 +13,21 @@ use tokio::sync::{Mutex, RwLock, mpsc, oneshot};
 use tokio::time::timeout;
 use uuid::Uuid;
 
-use rdev::{Event, EventType, Key};
 use tray_item::{IconSource, TrayItem};
 
 #[cfg(windows)]
-use windows_sys::Win32::UI::WindowsAndMessaging::{IDI_APPLICATION, LoadIconW};
+use std::sync::OnceLock;
+#[cfg(windows)]
+use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+#[cfg(windows)]
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+    KBDLLHOOKSTRUCT, VK_MEDIA_PLAY_PAUSE, VK_MEDIA_STOP,
+};
+#[cfg(windows)]
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    CallNextHookEx, DispatchMessageW, GetMessageW, LoadIconW, SetWindowsHookExW,
+    TranslateMessage, IDI_APPLICATION, MSG, WH_KEYBOARD_LL, WM_KEYDOWN, WM_SYSKEYDOWN,
+};
 
 const APP_NAME: &str = "MediaRelay";
 const DEFAULT_PORT: u16 = 50123;
@@ -1002,25 +1012,57 @@ fn start_tray(tx: mpsc::UnboundedSender<UiCommand>) -> thread::JoinHandle<()> {
     })
 }
 
+#[cfg(windows)]
 fn start_media_key_listener(tx: mpsc::UnboundedSender<UiCommand>) -> thread::JoinHandle<()> {
-    thread::spawn(move || {
-        let callback = move |event: Event| {
-            if let EventType::KeyPress(key) = event.event_type {
-                match key {
-                    Key::PlayPause => {
-                        let _ = tx.send(UiCommand::Toggle);
+    static SENDER: OnceLock<mpsc::UnboundedSender<UiCommand>> = OnceLock::new();
+    static mut HOOK: isize = 0;
+
+    unsafe extern "system" fn hook_proc(code: i32, w_param: usize, l_param: isize) -> isize {
+        if code == 0 && (w_param == WM_KEYDOWN as usize || w_param == WM_SYSKEYDOWN as usize) {
+            let info = &*(l_param as *const KBDLLHOOKSTRUCT);
+            let sender = SENDER.get();
+            if let Some(sender) = sender {
+                match info.vkCode as u32 {
+                    VK_MEDIA_PLAY_PAUSE => {
+                        let _ = sender.send(UiCommand::Toggle);
                     }
-                    Key::Stop => {
-                        let _ = tx.send(UiCommand::Stop);
+                    VK_MEDIA_STOP => {
+                        let _ = sender.send(UiCommand::Stop);
                     }
                     _ => {}
                 }
             }
-        };
-
-        if let Err(err) = rdev::listen(callback) {
-            eprintln!("[Media-Sync] Media key listener failed: {:?}", err);
         }
+        CallNextHookEx(HOOK, code, w_param, l_param)
+    }
+
+    thread::spawn(move || {
+        if SENDER.set(tx).is_err() {
+            eprintln!("[Media-Sync] Media key listener already initialized.");
+            return;
+        }
+
+        unsafe {
+            let module = GetModuleHandleW(std::ptr::null());
+            HOOK = SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_proc), module, 0);
+            if HOOK == 0 {
+                eprintln!("[Media-Sync] Media key hook failed to install.");
+                return;
+            }
+
+            let mut msg = MSG::default();
+            while GetMessageW(&mut msg, 0, 0, 0) > 0 {
+                TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+        }
+    })
+}
+
+#[cfg(not(windows))]
+fn start_media_key_listener(_tx: mpsc::UnboundedSender<UiCommand>) -> thread::JoinHandle<()> {
+    thread::spawn(|| {
+        eprintln!("[Media-Sync] Media key listener is not available on this platform.");
     })
 }
 
