@@ -905,7 +905,14 @@ class RelayCore:
     async def _handle_cmd(self, addr, msg):
         cmd = msg.get("cmd")
         ok = False
-        if cmd in ("play", "pause", "stop"):
+        ignore_play = (
+            self.role == Role.CLIENT
+            and self.resume_mode == ResumeMode.HOST_ONLY
+            and cmd == "play"
+        )
+        if ignore_play:
+            ok = False
+        elif cmd in ("play", "pause", "stop"):
             ok = await self.media.command(cmd)
         await self._send(addr, {"t": "ack", "id": msg.get("id"), "ts": now_ms(), "ok": ok, "cmd": cmd})
 

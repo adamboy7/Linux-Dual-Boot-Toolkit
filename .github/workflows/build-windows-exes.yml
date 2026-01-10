@@ -8,13 +8,17 @@ on:
       - "v*"
     paths:
       - 'Bluetooth-GUI.py'
+      - 'Media-Sync.py'
       - 'libraries/**'
+      - 'media-sync-rs/**'
       - '.github/workflows/build-windows-exes.yml'
 
   pull_request:
     paths:
       - 'Bluetooth-GUI.py'
+      - 'Media-Sync.py'
       - 'libraries/**'
+      - 'media-sync-rs/**'
       - '.github/workflows/build-windows-exes.yml'
 
 jobs:
@@ -32,6 +36,9 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Install build dependencies
         run: |
@@ -53,6 +60,13 @@ jobs:
             Bluetooth-GUI.py
 
       # -------------------------
+      # Media Sync (Rust)
+      # -------------------------
+      - name: Build Media Sync EXE (Rust)
+        run: |
+          cargo build --release --manifest-path media-sync-rs/Cargo.toml
+
+      # -------------------------
       # Upload artifacts
       # -------------------------
       - name: Upload Bluetooth GUI artifacts
@@ -61,6 +75,13 @@ jobs:
           name: Bluetooth-GUI-windows
           path: |
             dist/Bluetooth-GUI.exe
+
+      - name: Upload Media Sync artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Media-Sync-windows
+          path: |
+            media-sync-rs/target/release/media-sync.exe
 
       # -------------------------
       # Publish to GitHub Release (tag builds only)
@@ -71,3 +92,4 @@ jobs:
         with:
           files: |
             dist/Bluetooth-GUI.exe
+            media-sync-rs/target/release/media-sync.exe
