@@ -8,14 +8,12 @@ on:
       - "v*"
     paths:
       - 'Bluetooth-GUI.py'
-      - 'Media-Sync.py'
       - 'libraries/**'
       - '.github/workflows/build-windows-exes.yml'
 
   pull_request:
     paths:
       - 'Bluetooth-GUI.py'
-      - 'Media-Sync.py'
       - 'libraries/**'
       - '.github/workflows/build-windows-exes.yml'
 
@@ -55,48 +53,6 @@ jobs:
             Bluetooth-GUI.py
 
       # -------------------------
-      # Bluetooth GUI - Console
-      # -------------------------
-      - name: Build Bluetooth GUI EXE (console)
-        run: |
-          pyinstaller `
-            --onefile `
-            --name Bluetooth-GUI-Debug `
-            --icon "libraries/Bluetooth-Key.ico" `
-            --add-data "libraries;libraries" `
-            --collect-submodules libraries `
-            Bluetooth-GUI.py
-
-      # -------------------------
-      # Media Sync - Release
-      # -------------------------
-      - name: Build Media Sync EXE (release, no console)
-        run: |
-          pyinstaller `
-            --onefile `
-            --noconsole `
-            --name Media-Sync `
-            --icon "libraries/Media-Sync.ico" `
-            --add-data "libraries;libraries" `
-            --collect-submodules libraries `
-            --hidden-import winrt.windows.media.control `
-            Media-Sync.py
-
-      # -------------------------
-      # Media Sync - Console
-      # -------------------------
-      - name: Build Media Sync EXE (console)
-        run: |
-          pyinstaller `
-            --onefile `
-            --name Media-Sync-Debug `
-            --icon "libraries/Media-Sync.ico" `
-            --add-data "libraries;libraries" `
-            --collect-submodules libraries `
-            --hidden-import winrt.windows.media.control `
-            Media-Sync.py
-
-      # -------------------------
       # Upload artifacts
       # -------------------------
       - name: Upload Bluetooth GUI artifacts
@@ -105,15 +61,6 @@ jobs:
           name: Bluetooth-GUI-windows
           path: |
             dist/Bluetooth-GUI.exe
-            dist/Bluetooth-GUI-Debug.exe
-
-      - name: Upload Media Sync artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: Media-Sync-windows
-          path: |
-            dist/Media-Sync.exe
-            dist/Media-Sync-Debug.exe
 
       # -------------------------
       # Publish to GitHub Release (tag builds only)
@@ -124,6 +71,3 @@ jobs:
         with:
           files: |
             dist/Bluetooth-GUI.exe
-            dist/Bluetooth-GUI-Debug.exe
-            dist/Media-Sync.exe
-            dist/Media-Sync-Debug.exe
