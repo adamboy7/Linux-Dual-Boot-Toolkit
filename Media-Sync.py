@@ -925,10 +925,10 @@ class RelayCore:
         })
 
     async def _handle_cmd(self, addr, msg):
-        if self.role == Role.HOST and not self.bidirectional:
-            await self._send(addr, {"t": "ack", "id": msg.get("id"), "ts": now_ms(), "ok": False, "cmd": msg.get("cmd")})
-            return
         cmd = msg.get("cmd")
+        if self.role == Role.HOST and not self.bidirectional:
+            await self._send(addr, {"t": "ack", "id": msg.get("id"), "ts": now_ms(), "ok": False, "cmd": cmd})
+            return
         ok = False
         if cmd == "toggle":
             ok = await self._toggle_local()
@@ -1029,6 +1029,10 @@ class RelayCore:
         if self.resume_mode == ResumeMode.BLIND:
             await self._toggle_local()
             await self._send(self.peer, {"t": "cmd", "cmd": "toggle", "ts": now_ms(), "source": source})
+            return
+
+        if not self.bidirectional:
+            await self._toggle_local()
             return
 
         # HOST arbitration:
