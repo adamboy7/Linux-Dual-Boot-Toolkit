@@ -1037,6 +1037,12 @@ class WinPromptThread:
 
     def _run(self):
         self._root = tk.Tk()
+        icon_path = _app_icon_path()
+        if os.path.exists(icon_path):
+            try:
+                self._root.iconbitmap(icon_path)
+            except Exception:
+                pass
         self._root.withdraw()
         self._ready.set()
         self._root.after(50, self._process_queue)
@@ -1073,6 +1079,12 @@ def prompt_string(prompt: str, initial: str = "") -> Optional[str]:
         return simpledialog.askstring(APP_NAME, prompt, initialvalue=initial)
 
     dialog = Gtk.Dialog(title=APP_NAME)
+    icon_path = _app_icon_path()
+    if os.path.exists(icon_path):
+        try:
+            dialog.set_icon_from_file(icon_path)
+        except Exception:
+            pass
     dialog.add_buttons(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL, Gtk.STOCK_OK, Gtk.ResponseType.OK)
     dialog.set_default_response(Gtk.ResponseType.OK)
     box = dialog.get_content_area()
@@ -1212,7 +1224,6 @@ class TrayApp:
         self.cfg = load_config()
         self.listen_port = int(self.cfg.get("listen_port", DEFAULT_PORT))
         self._last_saved_state = {}
-        self._app_icon = _load_app_icon()
 
         resume_mode_value = self.cfg.get("resume_mode", ResumeMode.HOST_ONLY.value)
         try:
@@ -1232,7 +1243,10 @@ class TrayApp:
             if _WIN_PROMPTER is None:
                 _WIN_PROMPTER = WinPromptThread()
 
-        self.icon = pystray.Icon(APP_NAME, self._app_icon, APP_NAME, menu=self._build_menu())
+        self.icon = pystray.Icon(APP_NAME, self._tray_icon(), APP_NAME, menu=self._build_menu())
+
+    def _tray_icon(self) -> Image.Image:
+        return make_icon(self.core.role, self.core.peer is not None)
 
     @staticmethod
     def _is_valid_ip(ip: str) -> bool:
@@ -1285,7 +1299,7 @@ class TrayApp:
     def _refresh_tray(self):
         # Called from core thread; marshal to tray thread
         def do():
-            self.icon.icon = self._app_icon
+            self.icon.icon = self._tray_icon()
             self.icon.menu = self._build_menu()
             self.icon.title = f"{APP_NAME} - {self.core.status_text()}"
             self._persist_state()
