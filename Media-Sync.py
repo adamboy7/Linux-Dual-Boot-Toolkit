@@ -1272,6 +1272,10 @@ class TrayApp:
         self.cfg = load_config()
         self.listen_port = int(self.cfg.get("listen_port", DEFAULT_PORT))
         self._last_saved_state = {}
+        self._tray_state_lock = threading.Lock()
+        self._last_tray_state: Optional[Tuple[Role, bool]] = None
+        self._tray_watchdog_stop = threading.Event()
+        self._tray_watchdog_thread: Optional[threading.Thread] = None
 
         resume_mode_value = self.cfg.get("resume_mode", ResumeMode.HOST_ONLY.value)
         try:
@@ -1295,6 +1299,9 @@ class TrayApp:
 
     def _tray_icon(self) -> Image.Image:
         return make_icon(self.core.role, self.core.peer is not None)
+
+    def _desired_tray_state(self) -> Tuple[Role, bool]:
+        return (self.core.role, self.core.peer is not None)
 
     @staticmethod
     def _is_valid_ip(ip: str) -> bool:
@@ -1347,6 +1354,8 @@ class TrayApp:
     def _refresh_tray(self):
         # Called from core thread; marshal to tray thread
         def do():
+            with self._tray_state_lock:
+                self._last_tray_state = self._desired_tray_state()
             self.icon.icon = self._tray_icon()
             self.icon.menu = self._build_menu()
             self.icon.title = f"{APP_NAME} - {self.core.status_text()}"
@@ -1362,6 +1371,25 @@ class TrayApp:
         except Exception:
             # Last resort: swallow (but at least we tried)
             pass
+
+    def _start_tray_watchdog(self, interval_s: float = 2.0) -> None:
+        if self._tray_watchdog_thread and self._tray_watchdog_thread.is_alive():
+            return
+
+        def run_watchdog():
+            while not self._tray_watchdog_stop.wait(interval_s):
+                with self._tray_state_lock:
+                    current_state = self._last_tray_state
+                if current_state != self._desired_tray_state():
+                    self._refresh_tray()
+
+        self._tray_watchdog_thread = threading.Thread(target=run_watchdog, daemon=True)
+        self._tray_watchdog_thread.start()
+
+    def _stop_tray_watchdog(self) -> None:
+        self._tray_watchdog_stop.set()
+        if self._tray_watchdog_thread:
+            self._tray_watchdog_thread.join(timeout=1.0)
 
     def _persist_state(self):
         if self.core.peer:
@@ -1441,6 +1469,7 @@ class TrayApp:
     def _exit(self, icon=None, item=None):
         self.core.stop()
         self.media_key_listener.stop()
+        self._stop_tray_watchdog()
         self.icon.stop()
         if _WIN_PROMPTER is not None:
             _WIN_PROMPTER.stop()
@@ -1466,8 +1495,12 @@ class TrayApp:
                 self.cfg.get("peer_ip"),
                 int(self.cfg.get("peer_port", DEFAULT_PORT)),
             )
+        self._start_tray_watchdog()
         # Run tray
-        self.icon.run()
+        try:
+            self.icon.run()
+        finally:
+            self._stop_tray_watchdog()
 
 
 if __name__ == "__main__":
