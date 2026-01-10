@@ -59,6 +59,7 @@ class State(str, Enum):
 
 class ResumeMode(str, Enum):
     HOST_ONLY = "host_only"
+    CLIENT_ONLY = "client_only"
     BLIND = "blind"
 
 
@@ -462,24 +463,40 @@ def build_media_key_listener(core: "RelayCore", swallow: bool):
 
 # -------------------- Arbitration rules --------------------
 
-def decide_actions(host: State, client: State) -> Tuple[Optional[str], Optional[str]]:
+def decide_actions(
+    host: State,
+    client: State,
+    resume_mode: ResumeMode,
+) -> Tuple[Optional[str], Optional[str]]:
     """
     Returns (host_cmd, client_cmd) for a single "toggle press" arbitration.
 
     Your rules (deterministic):
     - If either is PLAYING -> pause intent
-      - both playing -> pause both
+      - both playing -> pause both (or prefer client in client-only mode)
       - host playing -> pause host only
-      - else client playing -> pause client (prioritize client)
+      - else client playing -> pause client
     - Else -> play intent
-      - if host paused -> play host
+      - both paused -> resume host (or client in client-only mode)
+      - host paused -> play host
       - else if client paused -> play client
-      - else none
     """
     if host == State.PLAYING or client == State.PLAYING:
-        return "pause", "pause"
+        if host == State.PLAYING and client == State.PLAYING:
+            if resume_mode == ResumeMode.CLIENT_ONLY:
+                return "pause", None
+            return "pause", "pause"
+        if host == State.PLAYING:
+            return "pause", None
+        return None, "pause"
+    if host == State.PAUSED and client == State.PAUSED:
+        if resume_mode == ResumeMode.CLIENT_ONLY:
+            return None, "play"
+        return "play", None
     if host == State.PAUSED:
         return "play", None
+    if client == State.PAUSED:
+        return None, "play"
     return None, None
 
 
@@ -504,11 +521,16 @@ def load_config() -> dict:
             "peer_port": DEFAULT_PORT,
             "swallow_media_keys": True,
             "resume_mode": ResumeMode.HOST_ONLY.value,
-            "bidirectional": True,
+            "ignore_client": False,
         }
     try:
         with open(p, "r", encoding="utf-8") as f:
-            return json.load(f)
+            cfg = json.load(f)
+        if "ignore_client" not in cfg and "bidirectional" in cfg:
+            cfg["ignore_client"] = not bool(cfg.get("bidirectional"))
+        if "bidirectional" in cfg:
+            cfg.pop("bidirectional", None)
+        return cfg
     except Exception:
         return {
             "listen_port": DEFAULT_PORT,
@@ -516,7 +538,7 @@ def load_config() -> dict:
             "peer_port": DEFAULT_PORT,
             "swallow_media_keys": True,
             "resume_mode": ResumeMode.HOST_ONLY.value,
-            "bidirectional": True,
+            "ignore_client": False,
         }
 
 
@@ -552,13 +574,13 @@ class RelayCore:
     Runs in an asyncio loop (background thread). Tray callbacks call into this
     using thread-safe methods.
     """
-    def __init__(self, listen_port: int, resume_mode: ResumeMode, bidirectional: bool):
+    def __init__(self, listen_port: int, resume_mode: ResumeMode, ignore_client: bool):
         self.listen_port = listen_port
         self.media = build_media_controller()
 
         self.role: Role = Role.HOST
         self.resume_mode: ResumeMode = resume_mode
-        self.bidirectional: bool = bidirectional
+        self.ignore_client: bool = ignore_client
         self.peer: Optional[Tuple[str, int]] = None
         self.peer_last_seen: float = 0.0
 
@@ -577,7 +599,7 @@ class RelayCore:
         # UI callback hooks (set by tray app)
         self.on_status_change = lambda: None
         self.on_resume_mode_change = lambda mode: None
-        self.on_bidirectional_change = lambda enabled: None
+        self.on_ignore_client_change = lambda enabled: None
 
     def _log(self, message: str) -> None:
         print(f"[Media-Sync] {message}")
@@ -618,10 +640,10 @@ class RelayCore:
                 lambda: asyncio.create_task(self._set_listen_port(int(port)))
             )
 
-    def ui_set_bidirectional(self, enabled: bool):
+    def ui_set_ignore_client(self, enabled: bool):
         if self.loop:
             self.loop.call_soon_threadsafe(
-                lambda: asyncio.create_task(self._set_bidirectional(bool(enabled), source="local"))
+                lambda: asyncio.create_task(self._set_ignore_client(bool(enabled), source="local"))
             )
 
     def start_auto_connect(self, ip: str, port: int):
@@ -700,7 +722,7 @@ class RelayCore:
 
 
     async def _send_policy_to_peer(self, source: str = "core"):
-        """Send host-authoritative policy (resume_mode + bidirectional) to the peer."""
+        """Send host-authoritative policy (resume_mode + ignore_client) to the peer."""
         if not self.peer:
             return
         if self.role != Role.HOST:
@@ -709,7 +731,7 @@ class RelayCore:
             "t": "policy",
             "ts": now_ms(),
             "resume_mode": self.resume_mode.value,
-            "bidirectional": bool(self.bidirectional),
+            "ignore_client": bool(self.ignore_client),
             "source": source,
         })
     async def _send(self, addr: Tuple[str, int], msg: dict):
@@ -796,10 +818,10 @@ class RelayCore:
                     await self._handle_policy(addr, msg)
                 elif mtype == "request_toggle":
                     # client asks host to arbitrate
-                    if self.role == Role.HOST and self.peer and addr == self.peer and self.bidirectional:
+                    if self.role == Role.HOST and self.peer and addr == self.peer and not self.ignore_client:
                         await self._toggle_pressed(source="peer")
                 elif mtype == "request_stop":
-                    if self.role == Role.HOST and self.peer and addr == self.peer and self.bidirectional:
+                    if self.role == Role.HOST and self.peer and addr == self.peer and not self.ignore_client:
                         await self._stop_pressed(source="peer")
             except asyncio.CancelledError:
                 return
@@ -812,10 +834,10 @@ class RelayCore:
     async def _handle_connect_request(self, addr, msg):
         # If we are connected as a CLIENT, we don't accept inbound connect (by design).
         if self.role == Role.CLIENT:
-            # If the host has bidirectional OFF, the client must never send
-            # commands that affect the host. Client actions remain local-only.
-            if not self.bidirectional:
-                await self._toggle_local()
+            # If the host is ignoring the client, client actions remain local-only.
+            if self.ignore_client:
+                if self.resume_mode == ResumeMode.BLIND:
+                    await self._toggle_local()
                 return
 
             await self._send(addr, {"t": "connect_ack", "id": msg.get("id"), "ok": False, "reason": "busy_client", "ts": now_ms()})
@@ -951,7 +973,7 @@ class RelayCore:
 
     async def _handle_cmd(self, addr, msg):
         cmd = msg.get("cmd")
-        if self.role == Role.HOST and not self.bidirectional:
+        if self.role == Role.HOST and self.ignore_client:
             await self._send(addr, {"t": "ack", "id": msg.get("id"), "ts": now_ms(), "ok": False, "cmd": cmd})
             return
         ok = False
@@ -973,7 +995,7 @@ class RelayCore:
 
 
     async def _handle_policy(self, addr, msg):
-        # Policy is HOST-authoritative (resume_mode + bidirectional).
+        # Policy is HOST-authoritative (resume_mode + ignore_client).
         # - If we are CLIENT, accept policy updates from our host.
         # - If we are HOST, ignore policy coming from the peer.
         if self.peer and addr != self.peer:
@@ -989,10 +1011,10 @@ class RelayCore:
             except Exception:
                 pass
 
-        if "bidirectional" in msg:
+        if "ignore_client" in msg:
             try:
-                enabled = bool(msg.get("bidirectional"))
-                await self._apply_bidirectional(enabled, notify=True)
+                enabled = bool(msg.get("ignore_client"))
+                await self._apply_ignore_client(enabled, notify=True)
             except Exception:
                 pass
     async def _apply_resume_mode(self, resume_mode: ResumeMode, notify: bool):
@@ -1005,13 +1027,13 @@ class RelayCore:
             except Exception:
                 pass
 
-    async def _apply_bidirectional(self, enabled: bool, notify: bool):
-        if enabled == self.bidirectional:
+    async def _apply_ignore_client(self, enabled: bool, notify: bool):
+        if enabled == self.ignore_client:
             return
-        self.bidirectional = enabled
+        self.ignore_client = enabled
         if notify:
             try:
-                self.on_bidirectional_change(enabled)
+                self.on_ignore_client_change(enabled)
             except Exception:
                 pass
 
@@ -1022,12 +1044,12 @@ class RelayCore:
         # await self._send(self.peer, {"t": "resume_mode", "mode": resume_mode.value, "ts": now_ms(), "source": source})
             await self._send_policy_to_peer(source=source)
 
-    async def _set_bidirectional(self, enabled: bool, source: str):
-        # Bidirectional is controlled by the HOST only.
+    async def _set_ignore_client(self, enabled: bool, source: str):
+        # Ignore client is controlled by the HOST only.
         if self.role == Role.CLIENT:
-            self._log("Ignoring local bidirectional change (host-controlled).")
+            self._log("Ignoring local ignore-client change (host-controlled).")
             return
-        await self._apply_bidirectional(bool(enabled), notify=True)
+        await self._apply_ignore_client(bool(enabled), notify=True)
         await self._send_policy_to_peer(source=source)
 
     async def _set_listen_port(self, port: int):
@@ -1067,7 +1089,8 @@ class RelayCore:
     async def _toggle_pressed(self, source: str):
         """
         If HOST: run arbitration (query peer state, decide explicit actions).
-        If CLIENT: send request_toggle to host unless in blind mode (then relay local intent).
+        If CLIENT: send request_toggle to host unless in blind mode (then relay local intent),
+        or ignore-client is enabled (then stay local-only in blind mode).
         """
         if not self.peer:
             # no peer: just toggle locally by play/pause based on local state
@@ -1075,6 +1098,10 @@ class RelayCore:
             return
 
         if self.role == Role.CLIENT:
+            if self.ignore_client:
+                if self.resume_mode == ResumeMode.BLIND:
+                    await self._toggle_local()
+                return
             if self.resume_mode == ResumeMode.BLIND:
                 await self._toggle_local()
                 await self._send(self.peer, {"t": "cmd", "cmd": "toggle", "ts": now_ms(), "source": source})
@@ -1087,10 +1114,6 @@ class RelayCore:
             await self._send(self.peer, {"t": "cmd", "cmd": "toggle", "ts": now_ms(), "source": source})
             return
 
-        if not self.bidirectional:
-            await self._toggle_local()
-            return
-
         # HOST arbitration:
         host_snap = await self.media.snapshot()
         client_state = State.NONE
@@ -1101,7 +1124,7 @@ class RelayCore:
             except Exception:
                 client_state = State.NONE
 
-        host_cmd, client_cmd = decide_actions(host_snap.state, client_state)
+        host_cmd, client_cmd = decide_actions(host_snap.state, client_state, self.resume_mode)
 
         if host_cmd:
             await self.media.command(host_cmd)
@@ -1118,10 +1141,10 @@ class RelayCore:
             return
 
         if self.role == Role.CLIENT:
-            # If the host has bidirectional OFF, the client must never send
-            # commands that affect the host. Stop remains local-only.
-            if not self.bidirectional:
-                await self.media.command("stop")
+            # If the host is ignoring the client, keep client controls local-only in blind mode.
+            if self.ignore_client:
+                if self.resume_mode == ResumeMode.BLIND:
+                    await self.media.command("stop")
                 return
 
             if self.resume_mode == ResumeMode.BLIND:
@@ -1375,15 +1398,15 @@ class TrayApp:
             resume_mode = ResumeMode(resume_mode_value)
         except Exception:
             resume_mode = ResumeMode.HOST_ONLY
-        bidirectional = bool(self.cfg.get("bidirectional", True))
+        ignore_client = bool(self.cfg.get("ignore_client", False))
         self.core = RelayCore(
             listen_port=self.listen_port,
             resume_mode=resume_mode,
-            bidirectional=bidirectional,
+            ignore_client=ignore_client,
         )
         self.core.on_status_change = self._refresh_tray
         self.core.on_resume_mode_change = self._set_resume_mode_from_core
-        self.core.on_bidirectional_change = self._set_bidirectional_from_core
+        self.core.on_ignore_client_change = self._set_ignore_client_from_core
         self.media_key_listener = build_media_key_listener(
             self.core,
             swallow=bool(self.cfg.get("swallow_media_keys", True)),
@@ -1430,9 +1453,9 @@ class TrayApp:
         if self.core.role == Role.HOST:
             items.append(
                 Item(
-                    "Bi-Directional",
-                    self._toggle_bidirectional,
-                    checked=lambda item: self.core.bidirectional,
+                    "Ignore Client",
+                    self._toggle_ignore_client,
+                    checked=lambda item: self.core.ignore_client,
                 )
             )
         items += [
@@ -1446,7 +1469,13 @@ class TrayApp:
                         radio=True,
                     ),
                     Item(
-                        "Blind resume",
+                        "Resume client only",
+                        lambda: self._set_resume_mode(ResumeMode.CLIENT_ONLY),
+                        checked=lambda item: self.core.resume_mode == ResumeMode.CLIENT_ONLY,
+                        radio=True,
+                    ),
+                    Item(
+                        "Blind relay",
                         lambda: self._set_resume_mode(ResumeMode.BLIND),
                         checked=lambda item: self.core.resume_mode == ResumeMode.BLIND,
                         radio=True,
@@ -1514,7 +1543,7 @@ class TrayApp:
             "last_role": self.cfg.get("last_role", ""),
             "auto_connect": self.cfg.get("auto_connect", False),
             "resume_mode": self.cfg.get("resume_mode", ResumeMode.HOST_ONLY.value),
-            "bidirectional": self.cfg.get("bidirectional", True),
+            "ignore_client": self.cfg.get("ignore_client", False),
         }
         if state != self._last_saved_state:
             save_config(self.cfg)
@@ -1543,9 +1572,9 @@ class TrayApp:
     def _set_resume_mode(self, resume_mode: ResumeMode):
         self.core.ui_set_resume_mode(resume_mode)
 
-    def _set_bidirectional_from_core(self, enabled: bool):
+    def _set_ignore_client_from_core(self, enabled: bool):
         def do():
-            self.cfg["bidirectional"] = bool(enabled)
+            self.cfg["ignore_client"] = bool(enabled)
             save_config(self.cfg)
             self.icon.menu = self._build_menu()
         try:
@@ -1557,8 +1586,8 @@ class TrayApp:
         except Exception:
             pass
 
-    def _toggle_bidirectional(self, icon=None, item=None):
-        self.core.ui_set_bidirectional(not self.core.bidirectional)
+    def _toggle_ignore_client(self, icon=None, item=None):
+        self.core.ui_set_ignore_client(not self.core.ignore_client)
 
     def _configure_listen_port(self, icon=None, item=None):
         port = prompt_int("Listen Port:", int(self.cfg.get("listen_port", DEFAULT_PORT)))
