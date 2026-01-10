@@ -3,7 +3,8 @@
 ## Repository layout
 - `Bluetooth-GUI.py`: Cross-platform entry point that launches the Linux or Windows Bluetooth GUI for exporting/importing link keys. Windows version uses Tkinter.
 - `Steam-Symlink-Helper.py`: GUI/CLI helper to mirror a Windows Steam library into Linux via symlinks.
-- `Media-Sync-Windows.py`: Windows-only Media Sync utility for smart multi-PC media control.
+- `Media-Sync-Windows.py`: Windows-only Media Sync utility for smart multi-PC media control (tray-based).
+- `Media-Sync-Windows-Single.py`: Windows-only Media Sync utility that runs in a single thread (console-based).
 - `Media-Sync-Linux.py`: Linux-only Media Sync utility for smart multi-PC media control.
 - `libraries/`: Shared logic for Bluetooth parsing, permissions, backup handling, and GUI helpers.
 
@@ -49,6 +50,8 @@ python3 Steam-Symlink-Helper.py \
 
 ## Media Playback Sync Tool
 `Media-Sync-Windows.py` and `Media-Sync-Linux.py` are system tray tools that control playback for two PC's at once, KVM style. One PC is host, the other client. If media is playing on one or more PC's, it automatically pauses. If either PC has paused media it plays. If both PC's have paused media, the tool can be configured to resume host only or both. Remembers the last connected host and auto re-connects unless manually disconnected. On Windows, use `pythonw.exe` to run without the console window, or rename to .pyw.
+
+`Media-Sync-Windows-Single.py` provides a single-threaded, console-based variant for Windows that reuses the same networking and arbitration logic without spawning background threads.
 
 
 ## Usage tips

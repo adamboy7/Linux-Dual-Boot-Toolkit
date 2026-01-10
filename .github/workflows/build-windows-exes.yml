@@ -9,6 +9,7 @@ on:
     paths:
       - 'Bluetooth-GUI.py'
       - 'Media-Sync-Windows.py'
+      - 'Media-Sync-Windows-Single.py'
       - 'Media-Sync-Linux.py'
       - 'libraries/**'
       - '.github/workflows/build-windows-exes.yml'
@@ -17,6 +18,7 @@ on:
     paths:
       - 'Bluetooth-GUI.py'
       - 'Media-Sync-Windows.py'
+      - 'Media-Sync-Windows-Single.py'
       - 'Media-Sync-Linux.py'
       - 'libraries/**'
       - '.github/workflows/build-windows-exes.yml'
@@ -81,7 +83,7 @@ jobs:
             --add-data "libraries;libraries" `
             --collect-submodules libraries `
             --hidden-import winrt.windows.media.control `
-            Media-Sync-Windows.py
+            Media-Sync-Windows-Single.py
 
       # -------------------------
       # Media Sync - Console
@@ -95,7 +97,7 @@ jobs:
             --add-data "libraries;libraries" `
             --collect-submodules libraries `
             --hidden-import winrt.windows.media.control `
-            Media-Sync-Windows.py
+            Media-Sync-Windows-Single.py
 
       # -------------------------
       # Upload artifacts
