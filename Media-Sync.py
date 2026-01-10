@@ -1055,7 +1055,7 @@ class WinPromptThread:
             except queue.Empty:
                 break
             prompt, initial, result, done = task
-            value = simpledialog.askstring(APP_NAME, prompt, initialvalue=initial, parent=self._root)
+            value = _ask_string_windows(prompt, initial, parent=self._root)
             result["value"] = value
             done.set()
         self._root.after(50, self._process_queue)
@@ -1076,7 +1076,7 @@ def prompt_string(prompt: str, initial: str = "") -> Optional[str]:
     if sys.platform == "win32":
         if _WIN_PROMPTER is not None:
             return _WIN_PROMPTER.ask_string(prompt, initial)
-        return simpledialog.askstring(APP_NAME, prompt, initialvalue=initial)
+        return _ask_string_windows(prompt, initial)
 
     dialog = Gtk.Dialog(title=APP_NAME)
     icon_path = _app_icon_path()
@@ -1112,6 +1112,35 @@ def prompt_int(prompt: str, initial: int) -> Optional[int]:
         return int(value)
     except ValueError:
         return None
+
+
+class _IconQueryString(simpledialog._QueryString):
+    def __init__(self, title: str, prompt: str, icon_path: str, **kwargs):
+        self._icon_path = icon_path
+        super().__init__(title, prompt, **kwargs)
+
+    def body(self, master):
+        if self._icon_path and os.path.exists(self._icon_path):
+            try:
+                self.iconbitmap(self._icon_path)
+            except Exception:
+                pass
+        return super().body(master)
+
+
+def _ask_string_windows(prompt: str, initial: str, parent: Optional["tk.Misc"] = None) -> Optional[str]:
+    icon_path = _app_icon_path()
+    try:
+        dialog = _IconQueryString(
+            APP_NAME,
+            prompt,
+            icon_path=icon_path,
+            initialvalue=initial,
+            parent=parent,
+        )
+        return dialog.result
+    except Exception:
+        return simpledialog.askstring(APP_NAME, prompt, initialvalue=initial, parent=parent)
 
 
 def make_icon(role: Role, connected: bool) -> Image.Image:
