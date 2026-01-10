@@ -462,7 +462,7 @@ def build_media_key_listener(core: "RelayCore", swallow: bool):
 
 # -------------------- Arbitration rules --------------------
 
-def decide_actions(host: State, client: State, resume_mode: ResumeMode) -> Tuple[Optional[str], Optional[str]]:
+def decide_actions(host: State, client: State) -> Tuple[Optional[str], Optional[str]]:
     """
     Returns (host_cmd, client_cmd) for a single "toggle press" arbitration.
 
@@ -476,13 +476,6 @@ def decide_actions(host: State, client: State, resume_mode: ResumeMode) -> Tuple
       - else if client paused -> play client
       - else none
     """
-    if resume_mode == ResumeMode.BLIND:
-        if host == State.PAUSED or client == State.PAUSED:
-            return "play", "play"
-        if host == State.PLAYING or client == State.PLAYING:
-            return "pause", "pause"
-        return None, None
-
     if host == State.PLAYING or client == State.PLAYING:
         return "pause", "pause"
     if host == State.PAUSED:
@@ -905,7 +898,9 @@ class RelayCore:
     async def _handle_cmd(self, addr, msg):
         cmd = msg.get("cmd")
         ok = False
-        if cmd in ("play", "pause", "stop"):
+        if cmd == "toggle":
+            ok = await self._toggle_local()
+        elif cmd in ("play", "pause", "stop"):
             ok = await self.media.command(cmd)
         await self._send(addr, {"t": "ack", "id": msg.get("id"), "ts": now_ms(), "ok": ok, "cmd": cmd})
 
@@ -960,6 +955,14 @@ class RelayCore:
                 self._log("Socket error while stopping.")
         self._notify()
 
+    async def _toggle_local(self) -> bool:
+        snap = await self.media.snapshot()
+        if snap.state == State.PLAYING:
+            return await self.media.command("pause")
+        if snap.state == State.PAUSED:
+            return await self.media.command("play")
+        return False
+
     async def _toggle_pressed(self, source: str):
         """
         If HOST: run arbitration (query peer state, decide explicit actions).
@@ -967,26 +970,20 @@ class RelayCore:
         """
         if not self.peer:
             # no peer: just toggle locally by play/pause based on local state
-            snap = await self.media.snapshot()
-            if snap.state == State.PLAYING:
-                await self.media.command("pause")
-            elif snap.state == State.PAUSED:
-                await self.media.command("play")
+            await self._toggle_local()
             return
 
         if self.role == Role.CLIENT:
             if self.resume_mode == ResumeMode.BLIND:
-                snap = await self.media.snapshot()
-                cmd = None
-                if snap.state == State.PLAYING:
-                    cmd = "pause"
-                elif snap.state == State.PAUSED:
-                    cmd = "play"
-                if cmd:
-                    await self.media.command(cmd)
-                    await self._send(self.peer, {"t": "cmd", "cmd": cmd, "ts": now_ms(), "source": source})
+                await self._toggle_local()
+                await self._send(self.peer, {"t": "cmd", "cmd": "toggle", "ts": now_ms(), "source": source})
                 return
             await self._send(self.peer, {"t": "request_toggle", "ts": now_ms(), "source": source})
+            return
+
+        if self.resume_mode == ResumeMode.BLIND:
+            await self._toggle_local()
+            await self._send(self.peer, {"t": "cmd", "cmd": "toggle", "ts": now_ms(), "source": source})
             return
 
         # HOST arbitration:
@@ -999,7 +996,7 @@ class RelayCore:
             except Exception:
                 client_state = State.NONE
 
-        host_cmd, client_cmd = decide_actions(host_snap.state, client_state, self.resume_mode)
+        host_cmd, client_cmd = decide_actions(host_snap.state, client_state)
 
         if host_cmd:
             await self.media.command(host_cmd)
