@@ -1090,7 +1090,7 @@ class RelayCore:
         """
         If HOST: run arbitration (query peer state, decide explicit actions).
         If CLIENT: send request_toggle to host unless in blind mode (then relay local intent),
-        or ignore-client is enabled (then stay local-only in blind mode).
+        or ignore-client is enabled (then stay local-only).
         """
         if not self.peer:
             # no peer: just toggle locally by play/pause based on local state
@@ -1099,8 +1099,7 @@ class RelayCore:
 
         if self.role == Role.CLIENT:
             if self.ignore_client:
-                if self.resume_mode == ResumeMode.BLIND:
-                    await self._toggle_local()
+                await self._toggle_local()
                 return
             if self.resume_mode == ResumeMode.BLIND:
                 await self._toggle_local()
@@ -1141,10 +1140,9 @@ class RelayCore:
             return
 
         if self.role == Role.CLIENT:
-            # If the host is ignoring the client, keep client controls local-only in blind mode.
+            # If the host is ignoring the client, keep client controls local-only.
             if self.ignore_client:
-                if self.resume_mode == ResumeMode.BLIND:
-                    await self.media.command("stop")
+                await self.media.command("stop")
                 return
 
             if self.resume_mode == ResumeMode.BLIND:
