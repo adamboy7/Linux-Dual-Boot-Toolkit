@@ -1089,7 +1089,7 @@ class RelayCore:
     async def _toggle_pressed(self, source: str):
         """
         If HOST: run arbitration (query peer state, decide explicit actions).
-        If CLIENT: send request_toggle to host unless in client-only or blind mode (then stay local-only),
+        If CLIENT: send request_toggle to host unless in blind mode (then relay local intent),
         or ignore-client is enabled (then stay local-only).
         """
         if not self.peer:
@@ -1099,9 +1099,6 @@ class RelayCore:
 
         if self.role == Role.CLIENT:
             if self.ignore_client:
-                await self._toggle_local()
-                return
-            if self.resume_mode == ResumeMode.CLIENT_ONLY:
                 await self._toggle_local()
                 return
             if self.resume_mode == ResumeMode.BLIND:
