@@ -477,10 +477,10 @@ def decide_actions(host: State, client: State, resume_mode: ResumeMode) -> Tuple
       - else none
     """
     if resume_mode == ResumeMode.BLIND:
-        if host == State.PLAYING or client == State.PLAYING:
-            return "pause", "pause"
         if host == State.PAUSED or client == State.PAUSED:
             return "play", "play"
+        if host == State.PLAYING or client == State.PLAYING:
+            return "pause", "pause"
         return None, None
 
     if host == State.PLAYING or client == State.PLAYING:
