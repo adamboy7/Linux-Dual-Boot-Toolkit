@@ -502,7 +502,14 @@ impl App {
 
     async fn handle_cmd(&self, addr: SocketAddr, msg: WireMessage) -> Result<()> {
         let cmd = msg.cmd.clone().unwrap_or_default();
-        let ok = if matches!(cmd.as_str(), "play" | "pause" | "stop") {
+        let state = self.state.read().await;
+        let ignore_play = state.role == Role::Client
+            && state.resume_mode == ResumeMode::HostOnly
+            && cmd == "play";
+        drop(state);
+        let ok = if ignore_play {
+            false
+        } else if matches!(cmd.as_str(), "play" | "pause" | "stop") {
             self.media.command(&cmd).unwrap_or(false)
         } else {
             false
