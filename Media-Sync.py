@@ -1235,9 +1235,10 @@ def _ensure_startup_shortcut() -> Tuple[str, str]:
         raise FileNotFoundError(f"Icon not found: {icon_path}")
 
     shortcut_path = os.path.join(startup_dir, f"{APP_NAME}.lnk")
-    vbs_path = os.path.join(startup_dir, f"{APP_NAME}.vbs")
+    vbs_path = os.path.join(script_dir, f"{APP_NAME}.vbs")
+    legacy_vbs_path = os.path.join(startup_dir, f"{APP_NAME}.vbs")
 
-    for path in (shortcut_path, vbs_path):
+    for path in (shortcut_path, vbs_path, legacy_vbs_path):
         if os.path.exists(path):
             os.remove(path)
 
