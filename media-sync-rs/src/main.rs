@@ -5,12 +5,19 @@ use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::thread;
 use std::time::{Duration, Instant};
 use tokio::io::AsyncBufReadExt;
 use tokio::net::UdpSocket;
-use tokio::sync::{Mutex, RwLock, oneshot};
+use tokio::sync::{Mutex, RwLock, mpsc, oneshot};
 use tokio::time::timeout;
 use uuid::Uuid;
+
+use rdev::{Event, EventType, Key};
+use tray_item::{IconSource, TrayItem};
+
+#[cfg(windows)]
+use windows_sys::Win32::UI::WindowsAndMessaging::{IDI_APPLICATION, LoadIconW};
 
 const APP_NAME: &str = "MediaRelay";
 const DEFAULT_PORT: u16 = 50123;
@@ -742,6 +749,39 @@ impl App {
         Ok(())
     }
 
+    async fn set_resume_mode(&self, mode: ResumeMode) -> Result<()> {
+        let mut state = self.state.write().await;
+        if state.resume_mode == mode {
+            return Ok(());
+        }
+        state.resume_mode = mode;
+        let peer = state.peer;
+        drop(state);
+
+        if let Some(peer) = peer {
+            let _ = self
+                .send(
+                    peer,
+                    &WireMessage {
+                        t: "resume_mode".to_string(),
+                        id: None,
+                        ts: Some(now_ms()),
+                        ok: None,
+                        reason: None,
+                        cmd: None,
+                        mode: Some(mode.to_string()),
+                        state: None,
+                        app: None,
+                        title: None,
+                        source: None,
+                    },
+                )
+                .await;
+        }
+        println!("[Media-Sync] Resume mode set to {:?}", mode);
+        Ok(())
+    }
+
     async fn stop_all(&self) -> Result<()> {
         let state = self.state.read().await;
         let peer = state.peer;
@@ -889,6 +929,101 @@ impl App {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+enum UiCommand {
+    Toggle,
+    Stop,
+    Connect,
+    Disconnect,
+    ResumeMode(ResumeMode),
+    Quit,
+}
+
+#[cfg(windows)]
+fn tray_icon_source() -> IconSource {
+    let icon = unsafe { LoadIconW(0, IDI_APPLICATION) };
+    IconSource::RawIcon(icon)
+}
+
+#[cfg(not(windows))]
+fn tray_icon_source() -> IconSource {
+    IconSource::Resource("media-playback-start")
+}
+
+fn start_tray(tx: mpsc::UnboundedSender<UiCommand>) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        let icon = tray_icon_source();
+        let mut tray = match TrayItem::new(APP_NAME, icon) {
+            Ok(tray) => tray,
+            Err(err) => {
+                eprintln!("[Media-Sync] Tray init failed: {:?}", err);
+                return;
+            }
+        };
+
+        let tx_toggle = tx.clone();
+        let _ = tray.add_menu_item("Toggle", move || {
+            let _ = tx_toggle.send(UiCommand::Toggle);
+        });
+
+        let tx_stop = tx.clone();
+        let _ = tray.add_menu_item("Stop", move || {
+            let _ = tx_stop.send(UiCommand::Stop);
+        });
+
+        let tx_connect = tx.clone();
+        let _ = tray.add_menu_item("Connect (last peer)", move || {
+            let _ = tx_connect.send(UiCommand::Connect);
+        });
+
+        let tx_disconnect = tx.clone();
+        let _ = tray.add_menu_item("Disconnect", move || {
+            let _ = tx_disconnect.send(UiCommand::Disconnect);
+        });
+
+        let tx_host = tx.clone();
+        let _ = tray.add_menu_item("Resume: host only", move || {
+            let _ = tx_host.send(UiCommand::ResumeMode(ResumeMode::HostOnly));
+        });
+
+        let tx_blind = tx.clone();
+        let _ = tray.add_menu_item("Resume: blind", move || {
+            let _ = tx_blind.send(UiCommand::ResumeMode(ResumeMode::Blind));
+        });
+
+        let tx_quit = tx.clone();
+        let _ = tray.add_menu_item("Quit", move || {
+            let _ = tx_quit.send(UiCommand::Quit);
+        });
+
+        loop {
+            thread::park();
+        }
+    })
+}
+
+fn start_media_key_listener(tx: mpsc::UnboundedSender<UiCommand>) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        let callback = move |event: Event| {
+            if let EventType::KeyPress(key) = event.event_type {
+                match key {
+                    Key::PlayPause => {
+                        let _ = tx.send(UiCommand::Toggle);
+                    }
+                    Key::Stop => {
+                        let _ = tx.send(UiCommand::Stop);
+                    }
+                    _ => {}
+                }
+            }
+        };
+
+        if let Err(err) = rdev::listen(callback) {
+            eprintln!("[Media-Sync] Media key listener failed: {:?}", err);
+        }
+    })
+}
+
 fn decide_actions(host: State, client: State, resume_mode: ResumeMode) -> (Option<&'static str>, Option<&'static str>) {
     if resume_mode == ResumeMode::Blind {
         if host == State::Playing || client == State::Playing {
@@ -998,6 +1133,7 @@ async fn main() -> Result<()> {
     let state = Arc::new(RwLock::new(RuntimeState::new(config.resume_mode)));
 
     let pending = Arc::new(Mutex::new(PendingMap::new()));
+    let config = Arc::new(Mutex::new(config));
     let app = Arc::new(App {
         socket: Arc::new(socket),
         media,
@@ -1005,16 +1141,19 @@ async fn main() -> Result<()> {
         pending: pending.clone(),
     });
 
-    if config.auto_connect {
-        if let Some(ip) = config.peer_ip {
-            let addr = SocketAddr::new(ip, config.peer_port);
-            {
-                let mut st = state.write().await;
-                st.auto_connect_enabled = true;
-                st.auto_connect_target = Some(addr);
-                st.role = Role::Client;
+    {
+        let cfg = config.lock().await;
+        if cfg.auto_connect {
+            if let Some(ip) = cfg.peer_ip {
+                let addr = SocketAddr::new(ip, cfg.peer_port);
+                {
+                    let mut st = state.write().await;
+                    st.auto_connect_enabled = true;
+                    st.auto_connect_target = Some(addr);
+                    st.role = Role::Client;
+                }
+                let _ = app.connect_out(addr).await;
             }
-            let _ = app.connect_out(addr).await;
         }
     }
 
@@ -1031,6 +1170,50 @@ async fn main() -> Result<()> {
     let app_clone = app.clone();
     tokio::spawn(async move {
         let _ = app_clone.auto_connect_loop().await;
+    });
+
+    let (ui_tx, mut ui_rx) = mpsc::unbounded_channel();
+    let _tray_handle = start_tray(ui_tx.clone());
+    let _media_key_handle = start_media_key_listener(ui_tx.clone());
+
+    let app_clone = app.clone();
+    let config_clone = config.clone();
+    tokio::spawn(async move {
+        while let Some(cmd) = ui_rx.recv().await {
+            match cmd {
+                UiCommand::Toggle => {
+                    let _ = app_clone.toggle_pressed("ui").await;
+                }
+                UiCommand::Stop => {
+                    let _ = app_clone.stop_all().await;
+                }
+                UiCommand::Connect => {
+                    let cfg = config_clone.lock().await;
+                    if let Some(ip) = cfg.peer_ip {
+                        let addr = SocketAddr::new(ip, cfg.peer_port);
+                        drop(cfg);
+                        let _ = app_clone.connect_out(addr).await;
+                    } else {
+                        eprintln!("[Media-Sync] No peer configured for auto-connect");
+                    }
+                }
+                UiCommand::Disconnect => {
+                    let _ = app_clone.disconnect("user").await;
+                }
+                UiCommand::ResumeMode(mode) => {
+                    {
+                        let mut cfg = config_clone.lock().await;
+                        cfg.resume_mode = mode;
+                        let _ = save_config(&cfg);
+                    }
+                    let _ = app_clone.set_resume_mode(mode).await;
+                }
+                UiCommand::Quit => {
+                    let _ = app_clone.disconnect("user").await;
+                    std::process::exit(0);
+                }
+            }
+        }
     });
 
     let app_clone = app.clone();
