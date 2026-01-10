@@ -1021,11 +1021,11 @@ fn start_media_key_listener(tx: mpsc::UnboundedSender<UiCommand>) -> thread::Joi
             let info = &*(l_param as *const KBDLLHOOKSTRUCT);
             let sender = SENDER.get();
             if let Some(sender) = sender {
-                match info.vkCode as u32 {
-                    VK_MEDIA_PLAY_PAUSE => {
+                match info.vkCode {
+                    code if code == u32::from(VK_MEDIA_PLAY_PAUSE) => {
                         let _ = sender.send(UiCommand::Toggle);
                     }
-                    VK_MEDIA_STOP => {
+                    code if code == u32::from(VK_MEDIA_STOP) => {
                         let _ = sender.send(UiCommand::Stop);
                     }
                     _ => {}
