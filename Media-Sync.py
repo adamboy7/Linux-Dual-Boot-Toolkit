@@ -565,6 +565,8 @@ class RelayCore:
         self._auto_connect_enabled = False
         self._auto_connect_task: Optional[asyncio.Task] = None
         self._auto_connect_target: Optional[Tuple[str, int]] = None
+        self._last_connect_attempt: Optional[Tuple[str, int]] = None
+        self._last_connect_attempt_ts: float = 0.0
 
         # pending RPCs: id -> Future
         self.pending = {}
@@ -734,7 +736,22 @@ class RelayCore:
                     await self._handle_connect_request(addr, msg)
                 elif mtype == "connect_ack":
                     # client receives this as part of connect_out flow (rpc handles it)
-                    pass
+                    if (
+                        msg.get("ok")
+                        and not self.peer
+                        and self._last_connect_attempt
+                        and addr == self._last_connect_attempt
+                        and (time.time() - self._last_connect_attempt_ts) < 5.0
+                    ):
+                        self.role = Role.CLIENT
+                        self.peer = addr
+                        self.peer_last_seen = time.time()
+                        self._auto_connect_target = addr
+                        self._auto_connect_enabled = True
+                        self._ensure_auto_connect_task()
+                        await self._send(self.peer, {"t": "resume_mode", "mode": self.resume_mode.value, "ts": now_ms()})
+                        self._log(f"Connected to host {addr[0]}:{addr[1]} (late ack).")
+                        self._notify()
                 elif mtype == "disconnect":
                     # peer asked to disconnect
                     if self.peer and addr == self.peer:
@@ -787,6 +804,8 @@ class RelayCore:
 
     async def _connect_out(self, ip: str, port: int):
         addr = (ip, int(port))
+        self._last_connect_attempt = addr
+        self._last_connect_attempt_ts = time.time()
 
         # Send request FIRST — do not mark connected yet
         resp = await self._rpc(
