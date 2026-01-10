@@ -1,11 +1,10 @@
 import asyncio
-import json
-import importlib.util
+import ctypes
 import ipaddress
+import json
 import os
-import shutil
+import queue
 import socket
-import subprocess
 import sys
 import threading
 import time
@@ -13,41 +12,27 @@ import uuid
 from dataclasses import dataclass
 from enum import Enum
 from typing import Optional, Tuple
+import tkinter as tk
+from tkinter import simpledialog
+from ctypes import wintypes
 
 import pystray
 from pystray import MenuItem as Item, Menu as Menu
 from PIL import Image, ImageDraw
+from winrt.windows.media.control import (
+    GlobalSystemMediaTransportControlsSessionManager as GSMTCManager,
+    GlobalSystemMediaTransportControlsSessionPlaybackStatus as PlaybackStatus,
+)
 
-if sys.platform == "win32":
-    import queue
-    import tkinter as tk
-    from tkinter import simpledialog, messagebox
-    import ctypes
-    from ctypes import wintypes
-else:
-    import gi
-    gi.require_version("Gtk", "3.0")
-    from gi.repository import Gtk
-    from libraries.permissions.linux import ensure_root_linux
-
-EVDEV_AVAILABLE = importlib.util.find_spec("evdev") is not None
-if EVDEV_AVAILABLE:
-    import evdev
-
-if sys.platform == "win32":
-    # WinRT GSMTC
-    from winrt.windows.media.control import (
-        GlobalSystemMediaTransportControlsSessionManager as GSMTCManager,
-        GlobalSystemMediaTransportControlsSessionPlaybackStatus as PlaybackStatus,
-    )
+if sys.platform != "win32":
+    raise SystemExit("Media-Sync-Windows requires Windows.")
 
 APP_NAME = "MediaRelay"
 DEFAULT_PORT = 50123
 _WIN_PROMPTER = None
 
 # Force selector loop on Windows (more reliable for UDP + sock_recvfrom)
-if sys.platform == "win32":
-    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 # -------------------- Media control (shared) --------------------
 
@@ -71,393 +56,174 @@ class MediaSnapshot:
 
 # -------------------- Media control (Windows) --------------------
 
-if sys.platform == "win32":
-    class WindowsMediaController:
-        async def snapshot(self) -> MediaSnapshot:
-            mgr = await GSMTCManager.request_async()
-            session = mgr.get_current_session()
-            if session is None:
-                return MediaSnapshot(State.NONE)
+class WindowsMediaController:
+    async def snapshot(self) -> MediaSnapshot:
+        mgr = await GSMTCManager.request_async()
+        session = mgr.get_current_session()
+        if session is None:
+            return MediaSnapshot(State.NONE)
 
-            # Playback state
-            playback = session.get_playback_info()
-            status = playback.playback_status
+        # Playback state
+        playback = session.get_playback_info()
+        status = playback.playback_status
 
-            if status == PlaybackStatus.PLAYING:
-                s = State.PLAYING
-            elif status in (PlaybackStatus.PAUSED, PlaybackStatus.STOPPED):
-                s = State.PAUSED
-            else:
-                # UNKNOWN / CHANGING / CLOSED -> treat as paused-ish
-                s = State.PAUSED
+        if status == PlaybackStatus.PLAYING:
+            s = State.PLAYING
+        elif status in (PlaybackStatus.PAUSED, PlaybackStatus.STOPPED):
+            s = State.PAUSED
+        else:
+            # UNKNOWN / CHANGING / CLOSED -> treat as paused-ish
+            s = State.PAUSED
 
-            # Optional metadata (nice for debugging/UI later)
-            title = ""
-            app = ""
-            try:
-                props = await session.try_get_media_properties_async()
-                if props and props.title:
-                    title = props.title
-            except Exception:
-                pass
-            try:
-                app = session.source_app_user_model_id or ""
-            except Exception:
-                pass
+        # Optional metadata (nice for debugging/UI later)
+        title = ""
+        app = ""
+        try:
+            props = await session.try_get_media_properties_async()
+            if props and props.title:
+                title = props.title
+        except Exception:
+            pass
+        try:
+            app = session.source_app_user_model_id or ""
+        except Exception:
+            pass
 
-            return MediaSnapshot(s, app=app, title=title)
+        return MediaSnapshot(s, app=app, title=title)
 
-        async def command(self, cmd: str) -> bool:
-            """
-            cmd in {'play','pause','stop'}
-            """
-            mgr = await GSMTCManager.request_async()
-            session = mgr.get_current_session()
-            if session is None:
-                return False
-            try:
-                if cmd == "play":
-                    return bool(await session.try_play_async())
-                if cmd == "pause":
-                    return bool(await session.try_pause_async())
-                if cmd == "stop":
-                    return bool(await session.try_stop_async())
-            except Exception:
-                return False
+    async def command(self, cmd: str) -> bool:
+        """
+        cmd in {'play','pause','stop'}
+        """
+        mgr = await GSMTCManager.request_async()
+        session = mgr.get_current_session()
+        if session is None:
             return False
-
-
-# -------------------- Media control (Linux) --------------------
-
-if sys.platform != "win32":
-    class LinuxMediaController:
-        def __init__(self):
-            self._playerctl = shutil.which("playerctl")
-
-        def _run_playerctl(self, *args: str) -> Optional[subprocess.CompletedProcess]:
-            if not self._playerctl:
-                return None
-            result = subprocess.run(
-                [self._playerctl, *args],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            if result.returncode != 0:
-                return None
-            return result
-
-        async def snapshot(self) -> MediaSnapshot:
-            result = self._run_playerctl("status")
-            if not result:
-                return MediaSnapshot(State.NONE)
-
-            status = result.stdout.strip().lower()
-            if status == "playing":
-                state = State.PLAYING
-            elif status in ("paused", "stopped"):
-                state = State.PAUSED
-            else:
-                state = State.NONE
-
-            app = ""
-            title = ""
-            meta = self._run_playerctl("metadata", "--format", "{{playerName}}||{{title}}")
-            if meta:
-                parts = meta.stdout.strip().split("||", 1)
-                if parts:
-                    app = parts[0].strip()
-                if len(parts) > 1:
-                    title = parts[1].strip()
-
-            return MediaSnapshot(state, app=app, title=title)
-
-        async def command(self, cmd: str) -> bool:
-            if cmd not in ("play", "pause", "stop"):
-                return False
-            result = self._run_playerctl(cmd)
-            return result is not None
+        try:
+            if cmd == "play":
+                return bool(await session.try_play_async())
+            if cmd == "pause":
+                return bool(await session.try_pause_async())
+            if cmd == "stop":
+                return bool(await session.try_stop_async())
+        except Exception:
+            return False
+        return False
 
 
 def build_media_controller():
-    if sys.platform == "win32":
-        return WindowsMediaController()
-    return LinuxMediaController()
+    return WindowsMediaController()
 
 
 # -------------------- Media key hook (Windows) --------------------
 
-if sys.platform == "win32":
-    _user32 = ctypes.windll.user32
-    _kernel32 = ctypes.windll.kernel32
-    if not hasattr(wintypes, "ULONG_PTR"):
-        wintypes.ULONG_PTR = ctypes.c_ulonglong if ctypes.sizeof(ctypes.c_void_p) == 8 else ctypes.c_ulong
+_user32 = ctypes.windll.user32
+_kernel32 = ctypes.windll.kernel32
+if not hasattr(wintypes, "ULONG_PTR"):
+    wintypes.ULONG_PTR = ctypes.c_ulonglong if ctypes.sizeof(ctypes.c_void_p) == 8 else ctypes.c_ulong
 
-    WH_KEYBOARD_LL = 13
-    WM_KEYDOWN = 0x0100
-    WM_SYSKEYDOWN = 0x0104
-    WM_QUIT = 0x0012
-    VK_MEDIA_NEXT_TRACK = 0xB0
-    VK_MEDIA_PREV_TRACK = 0xB1
-    VK_MEDIA_STOP = 0xB2
-    VK_MEDIA_PLAY_PAUSE = 0xB3
+WH_KEYBOARD_LL = 13
+WM_KEYDOWN = 0x0100
+WM_SYSKEYDOWN = 0x0104
+WM_QUIT = 0x0012
+VK_MEDIA_NEXT_TRACK = 0xB0
+VK_MEDIA_PREV_TRACK = 0xB1
+VK_MEDIA_STOP = 0xB2
+VK_MEDIA_PLAY_PAUSE = 0xB3
 
-    _user32.CallNextHookEx.argtypes = (
-        wintypes.HHOOK,
-        ctypes.c_int,
-        wintypes.WPARAM,
-        wintypes.LPARAM,
-    )
-    _user32.CallNextHookEx.restype = ctypes.c_long
-
-    class KBDLLHOOKSTRUCT(ctypes.Structure):
-        _fields_ = [
-            ("vkCode", wintypes.DWORD),
-            ("scanCode", wintypes.DWORD),
-            ("flags", wintypes.DWORD),
-            ("time", wintypes.DWORD),
-            ("dwExtraInfo", wintypes.ULONG_PTR),
-        ]
-
-    LowLevelKeyboardProc = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM)
+_user32.CallNextHookEx.argtypes = (
+    wintypes.HHOOK,
+    ctypes.c_int,
+    wintypes.WPARAM,
+    wintypes.LPARAM,
+)
+_user32.CallNextHookEx.restype = ctypes.c_long
 
 
-    class WindowsMediaKeyListener:
-        def __init__(self, core: "RelayCore", swallow: bool = True):
-            self._core = core
-            self._swallow = swallow
-            self._thread = None
+class KBDLLHOOKSTRUCT(ctypes.Structure):
+    _fields_ = [
+        ("vkCode", wintypes.DWORD),
+        ("scanCode", wintypes.DWORD),
+        ("flags", wintypes.DWORD),
+        ("time", wintypes.DWORD),
+        ("dwExtraInfo", wintypes.ULONG_PTR),
+    ]
+
+
+LowLevelKeyboardProc = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM)
+
+
+class WindowsMediaKeyListener:
+    def __init__(self, core: "RelayCore", swallow: bool = True):
+        self._core = core
+        self._swallow = swallow
+        self._thread = None
+        self._hook = None
+        self._callback = None
+        self._thread_id = None
+        self._ready = threading.Event()
+        self._stop_evt = threading.Event()
+
+    def start(self):
+        if self._thread and self._thread.is_alive():
+            return
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+        self._ready.wait(timeout=2.0)
+
+    def stop(self):
+        self._stop_evt.set()
+        if self._thread_id:
+            _user32.PostThreadMessageW(self._thread_id, WM_QUIT, 0, 0)
+        if self._thread:
+            self._thread.join(timeout=2.0)
+
+    def _handle_vk(self, vk_code: int) -> bool:
+        if vk_code == VK_MEDIA_PLAY_PAUSE:
+            self._core.ui_toggle()
+            return True
+        if vk_code == VK_MEDIA_STOP:
+            self._core.ui_stop_all()
+            return True
+        return False
+
+    def _run(self):
+        self._thread_id = _kernel32.GetCurrentThreadId()
+
+        def hook_proc(n_code, w_param, l_param):
+            if n_code == 0 and w_param in (WM_KEYDOWN, WM_SYSKEYDOWN):
+                info = ctypes.cast(l_param, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents
+                if self._handle_vk(int(info.vkCode)):
+                    if self._swallow:
+                        return 1
+            return _user32.CallNextHookEx(
+                self._hook,
+                n_code,
+                wintypes.WPARAM(w_param),
+                wintypes.LPARAM(l_param),
+            )
+
+        self._callback = LowLevelKeyboardProc(hook_proc)
+        self._hook = _user32.SetWindowsHookExW(WH_KEYBOARD_LL, self._callback, None, 0)
+        self._ready.set()
+
+        msg = wintypes.MSG()
+        while not self._stop_evt.is_set():
+            result = _user32.GetMessageW(ctypes.byref(msg), 0, 0, 0)
+            if result == 0:
+                break
+            if result == -1:
+                break
+            _user32.TranslateMessage(ctypes.byref(msg))
+            _user32.DispatchMessageW(ctypes.byref(msg))
+
+        if self._hook:
+            _user32.UnhookWindowsHookEx(self._hook)
             self._hook = None
-            self._callback = None
-            self._thread_id = None
-            self._ready = threading.Event()
-            self._stop_evt = threading.Event()
-
-        def start(self):
-            if self._thread and self._thread.is_alive():
-                return
-            self._thread = threading.Thread(target=self._run, daemon=True)
-            self._thread.start()
-            self._ready.wait(timeout=2.0)
-
-        def stop(self):
-            self._stop_evt.set()
-            if self._thread_id:
-                _user32.PostThreadMessageW(self._thread_id, WM_QUIT, 0, 0)
-            if self._thread:
-                self._thread.join(timeout=2.0)
-
-        def _handle_vk(self, vk_code: int) -> bool:
-            if vk_code == VK_MEDIA_PLAY_PAUSE:
-                self._core.ui_toggle()
-                return True
-            if vk_code == VK_MEDIA_STOP:
-                self._core.ui_stop_all()
-                return True
-            return False
-
-        def _run(self):
-            self._thread_id = _kernel32.GetCurrentThreadId()
-
-            def hook_proc(n_code, w_param, l_param):
-                if n_code == 0 and w_param in (WM_KEYDOWN, WM_SYSKEYDOWN):
-                    info = ctypes.cast(l_param, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents
-                    if self._handle_vk(int(info.vkCode)):
-                        if self._swallow:
-                            return 1
-                return _user32.CallNextHookEx(
-                    self._hook,
-                    n_code,
-                    wintypes.WPARAM(w_param),
-                    wintypes.LPARAM(l_param),
-                )
-
-            self._callback = LowLevelKeyboardProc(hook_proc)
-            self._hook = _user32.SetWindowsHookExW(WH_KEYBOARD_LL, self._callback, None, 0)
-            self._ready.set()
-
-            msg = wintypes.MSG()
-            while not self._stop_evt.is_set():
-                result = _user32.GetMessageW(ctypes.byref(msg), 0, 0, 0)
-                if result == 0:
-                    break
-                if result == -1:
-                    break
-                _user32.TranslateMessage(ctypes.byref(msg))
-                _user32.DispatchMessageW(ctypes.byref(msg))
-
-            if self._hook:
-                _user32.UnhookWindowsHookEx(self._hook)
-                self._hook = None
-else:
-    class WindowsMediaKeyListener:
-        def __init__(self, core: "RelayCore", swallow: bool = True):
-            self._core = core
-
-        def start(self):
-            return
-
-        def stop(self):
-            return
-
-# -------------------- Media key hook (Linux) --------------------
-
-if sys.platform != "win32":
-    class LinuxMediaKeyListener:
-        def __init__(self, core: "RelayCore", swallow: bool = True):
-            self._core = core
-            self._swallow = swallow
-            self._thread = None
-            self._stop_evt = threading.Event()
-            self._devices = []
-            self._uinputs = {}
-
-        def start(self):
-            if not EVDEV_AVAILABLE:
-                return
-            if self._swallow:
-                ensure_root_linux()
-            if self._thread and self._thread.is_alive():
-                return
-            self._thread = threading.Thread(target=self._run, daemon=True)
-            self._thread.start()
-
-        def stop(self):
-            self._stop_evt.set()
-            if self._thread:
-                self._thread.join(timeout=2.0)
-            for dev in self._devices:
-                try:
-                    dev.ungrab()
-                except Exception:
-                    pass
-                try:
-                    dev.close()
-                except Exception:
-                    pass
-            for ui in self._uinputs.values():
-                try:
-                    ui.close()
-                except Exception:
-                    pass
-            self._devices = []
-            self._uinputs = {}
-
-        def _handle_key(self, key_code: int) -> bool:
-            if key_code == evdev.ecodes.KEY_PLAYPAUSE:
-                self._core.ui_toggle()
-                return True
-            if key_code == evdev.ecodes.KEY_STOPCD:
-                self._core.ui_stop_all()
-                return True
-            return False
-
-        def _find_devices(self):
-            devices = []
-            for path in evdev.list_devices():
-                try:
-                    dev = evdev.InputDevice(path)
-                except Exception:
-                    continue
-                try:
-                    caps = dev.capabilities().get(evdev.ecodes.EV_KEY, [])
-                except Exception:
-                    dev.close()
-                    continue
-                if evdev.ecodes.KEY_PLAYPAUSE in caps or evdev.ecodes.KEY_STOPCD in caps:
-                    devices.append(dev)
-                else:
-                    dev.close()
-            return devices
-
-        def _setup_devices(self):
-            if not self._swallow:
-                return
-            for dev in self._devices:
-                try:
-                    dev.grab()
-                except Exception:
-                    pass
-                try:
-                    self._uinputs[dev.path] = evdev.UInput.from_device(
-                        dev,
-                        name=f"{dev.name} (MediaRelay)",
-                    )
-                except Exception:
-                    pass
-
-        def _teardown_device(self, dev):
-            try:
-                dev.ungrab()
-            except Exception:
-                pass
-            try:
-                dev.close()
-            except Exception:
-                pass
-            ui = self._uinputs.pop(dev.path, None)
-            if ui:
-                try:
-                    ui.close()
-                except Exception:
-                    pass
-
-        def _forward_event(self, dev, event):
-            ui = self._uinputs.get(dev.path)
-            if not ui:
-                return
-            try:
-                if event.type == evdev.ecodes.EV_SYN and event.code == evdev.ecodes.SYN_REPORT:
-                    ui.syn()
-                else:
-                    ui.write_event(event)
-            except Exception:
-                pass
-
-        def _run(self):
-            self._devices = self._find_devices()
-            self._setup_devices()
-
-            while not self._stop_evt.is_set():
-                if not self._devices:
-                    time.sleep(1.0)
-                    self._devices = self._find_devices()
-                    self._setup_devices()
-                    continue
-
-                rlist, _, _ = evdev.util.select(self._devices, [], [], 0.5)
-                for dev in rlist:
-                    try:
-                        for event in dev.read():
-                            swallow_event = False
-                            if event.type == evdev.ecodes.EV_KEY:
-                                if event.code in (evdev.ecodes.KEY_PLAYPAUSE, evdev.ecodes.KEY_STOPCD):
-                                    if event.value == 1:
-                                        self._handle_key(event.code)
-                                    if self._swallow:
-                                        swallow_event = True
-                            if self._swallow and not swallow_event:
-                                self._forward_event(dev, event)
-                    except OSError:
-                        self._teardown_device(dev)
-                        if dev in self._devices:
-                            self._devices.remove(dev)
-else:
-    class LinuxMediaKeyListener:
-        def __init__(self, core: "RelayCore", swallow: bool = True):
-            self._core = core
-
-        def start(self):
-            return
-
-        def stop(self):
-            return
 
 
 def build_media_key_listener(core: "RelayCore", swallow: bool):
-    if sys.platform == "win32":
-        return WindowsMediaKeyListener(core, swallow=swallow)
-    return LinuxMediaKeyListener(core, swallow=swallow)
+    return WindowsMediaKeyListener(core, swallow=swallow)
 
 
 # -------------------- Arbitration rules --------------------
@@ -1055,29 +821,9 @@ class WinPromptThread:
 
 
 def prompt_string(prompt: str, initial: str = "") -> Optional[str]:
-    if sys.platform == "win32":
-        if _WIN_PROMPTER is not None:
-            return _WIN_PROMPTER.ask_string(prompt, initial)
-        return simpledialog.askstring(APP_NAME, prompt, initialvalue=initial)
-
-    dialog = Gtk.Dialog(title=APP_NAME)
-    dialog.add_buttons(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL, Gtk.STOCK_OK, Gtk.ResponseType.OK)
-    dialog.set_default_response(Gtk.ResponseType.OK)
-    box = dialog.get_content_area()
-    label = Gtk.Label(label=prompt)
-    label.set_halign(Gtk.Align.START)
-    entry = Gtk.Entry()
-    entry.set_text(initial)
-    entry.set_activates_default(True)
-    box.add(label)
-    box.add(entry)
-    dialog.show_all()
-    response = dialog.run()
-    value = entry.get_text().strip()
-    dialog.destroy()
-    if response != Gtk.ResponseType.OK or not value:
-        return None
-    return value
+    if _WIN_PROMPTER is not None:
+        return _WIN_PROMPTER.ask_string(prompt, initial)
+    return simpledialog.askstring(APP_NAME, prompt, initialvalue=initial)
 
 
 def prompt_int(prompt: str, initial: int) -> Optional[int]:
@@ -1129,10 +875,9 @@ class TrayApp:
             swallow=bool(self.cfg.get("swallow_media_keys", True)),
         )
 
-        if sys.platform == "win32":
-            global _WIN_PROMPTER
-            if _WIN_PROMPTER is None:
-                _WIN_PROMPTER = WinPromptThread()
+        global _WIN_PROMPTER
+        if _WIN_PROMPTER is None:
+            _WIN_PROMPTER = WinPromptThread()
 
         self.icon = pystray.Icon(APP_NAME, make_icon(Role.HOST, False), APP_NAME, menu=self._build_menu())
 
