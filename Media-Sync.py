@@ -698,6 +698,20 @@ class RelayCore:
             return f"{self.role.value.upper()} connected → {self.peer[0]}:{self.peer[1]}"
         return f"{self.role.value.upper()} (no peer)"
 
+
+    async def _send_policy_to_peer(self, source: str = "core"):
+        """Send host-authoritative policy (resume_mode + bidirectional) to the peer."""
+        if not self.peer:
+            return
+        if self.role != Role.HOST:
+            return
+        await self._send(self.peer, {
+            "t": "policy",
+            "ts": now_ms(),
+            "resume_mode": self.resume_mode.value,
+            "bidirectional": bool(self.bidirectional),
+            "source": source,
+        })
     async def _send(self, addr: Tuple[str, int], msg: dict):
         if not self.sock:
             return
@@ -759,7 +773,8 @@ class RelayCore:
                         self._auto_connect_target = addr
                         self._auto_connect_enabled = True
                         self._ensure_auto_connect_task()
-                        await self._send(self.peer, {"t": "resume_mode", "mode": self.resume_mode.value, "ts": now_ms()})
+        # Resume mode is host-authoritative; client does not push it upstream.
+        # await self._send(self.peer, {"t": "resume_mode", "mode": self.resume_mode.value, "ts": now_ms()})
                         self._log(f"Connected to host {addr[0]}:{addr[1]} (late ack).")
                         self._notify()
                 elif mtype == "disconnect":
@@ -777,6 +792,8 @@ class RelayCore:
                     await self._handle_cmd(addr, msg)
                 elif mtype == "resume_mode":
                     await self._handle_resume_mode(addr, msg)
+                elif mtype == "policy":
+                    await self._handle_policy(addr, msg)
                 elif mtype == "request_toggle":
                     # client asks host to arbitrate
                     if self.role == Role.HOST and self.peer and addr == self.peer and self.bidirectional:
@@ -795,6 +812,12 @@ class RelayCore:
     async def _handle_connect_request(self, addr, msg):
         # If we are connected as a CLIENT, we don't accept inbound connect (by design).
         if self.role == Role.CLIENT:
+            # If the host has bidirectional OFF, the client must never send
+            # commands that affect the host. Client actions remain local-only.
+            if not self.bidirectional:
+                await self._toggle_local()
+                return
+
             await self._send(addr, {"t": "connect_ack", "id": msg.get("id"), "ok": False, "reason": "busy_client", "ts": now_ms()})
             return
 
@@ -809,6 +832,7 @@ class RelayCore:
         self.peer_last_seen = time.time()
         await self._send(addr, {"t": "connect_ack", "id": msg.get("id"), "ok": True, "ts": now_ms()})
         await self._send(addr, {"t": "resume_mode", "mode": self.resume_mode.value, "ts": now_ms()})
+        await self._send_policy_to_peer(source="connect")
         self._log(f"Client connected from {addr[0]}:{addr[1]}.")
         self._notify()
 
@@ -837,7 +861,8 @@ class RelayCore:
         self._auto_connect_target = addr
         self._auto_connect_enabled = True
         self._ensure_auto_connect_task()
-        await self._send(self.peer, {"t": "resume_mode", "mode": self.resume_mode.value, "ts": now_ms()})
+        # Resume mode is host-authoritative; client does not push it upstream.
+        # await self._send(self.peer, {"t": "resume_mode", "mode": self.resume_mode.value, "ts": now_ms()})
         self._log(f"Connected to host {addr[0]}:{addr[1]}.")
         self._notify()
 
@@ -926,13 +951,7 @@ class RelayCore:
 
     async def _handle_cmd(self, addr, msg):
         cmd = msg.get("cmd")
-        # Commands are executed only on the receiving side.
-        # Policy:
-        # - The HOST never executes inbound 'cmd' messages from the peer. The
-        #   client must use request_toggle/request_stop so the host can apply
-        #   its gating rules (bi-directional off, blind mode, etc.).
-        # - The CLIENT may execute 'cmd' messages coming from its host.
-        if self.role == Role.HOST:
+        if self.role == Role.HOST and not self.bidirectional:
             await self._send(addr, {"t": "ack", "id": msg.get("id"), "ts": now_ms(), "ok": False, "cmd": cmd})
             return
         ok = False
@@ -943,13 +962,7 @@ class RelayCore:
         await self._send(addr, {"t": "ack", "id": msg.get("id"), "ts": now_ms(), "ok": ok, "cmd": cmd})
 
     async def _handle_resume_mode(self, addr, msg):
-        # Resume mode is HOST-authoritative.
-        # - If we are CLIENT, we accept resume_mode updates from our host.
-        # - If we are HOST, we ignore any resume_mode coming from the peer so the
-        #   client cannot affect host behavior/settings.
         if self.peer and addr != self.peer:
-            return
-        if self.role == Role.HOST:
             return
         mode_value = msg.get("mode", "")
         try:
@@ -958,6 +971,30 @@ class RelayCore:
             return
         await self._apply_resume_mode(mode, notify=True)
 
+
+    async def _handle_policy(self, addr, msg):
+        # Policy is HOST-authoritative (resume_mode + bidirectional).
+        # - If we are CLIENT, accept policy updates from our host.
+        # - If we are HOST, ignore policy coming from the peer.
+        if self.peer and addr != self.peer:
+            return
+        if self.role == Role.HOST:
+            return
+
+        mode_value = msg.get("resume_mode", "")
+        if mode_value:
+            try:
+                mode = ResumeMode(mode_value)
+                await self._apply_resume_mode(mode, notify=True)
+            except Exception:
+                pass
+
+        if "bidirectional" in msg:
+            try:
+                enabled = bool(msg.get("bidirectional"))
+                await self._apply_bidirectional(enabled, notify=True)
+            except Exception:
+                pass
     async def _apply_resume_mode(self, resume_mode: ResumeMode, notify: bool):
         if resume_mode == self.resume_mode:
             return
@@ -979,18 +1016,19 @@ class RelayCore:
                 pass
 
     async def _set_resume_mode(self, resume_mode: ResumeMode, source: str):
-        # Resume mode is controlled by the HOST only.
-        # If we're a CLIENT, ignore local attempts to change it.
-        if self.role == Role.CLIENT:
-            self._log("Ignoring local resume mode change (host-controlled).")
-            return
-
         await self._apply_resume_mode(resume_mode, notify=True)
         if self.peer:
-            await self._send(self.peer, {"t": "resume_mode", "mode": resume_mode.value, "ts": now_ms(), "source": source})
+        # Resume mode is host-authoritative; client does not push it upstream.
+        # await self._send(self.peer, {"t": "resume_mode", "mode": resume_mode.value, "ts": now_ms(), "source": source})
+            await self._send_policy_to_peer(source=source)
 
     async def _set_bidirectional(self, enabled: bool, source: str):
-        await self._apply_bidirectional(enabled, notify=True)
+        # Bidirectional is controlled by the HOST only.
+        if self.role == Role.CLIENT:
+            self._log("Ignoring local bidirectional change (host-controlled).")
+            return
+        await self._apply_bidirectional(bool(enabled), notify=True)
+        await self._send_policy_to_peer(source=source)
 
     async def _set_listen_port(self, port: int):
         if port == self.listen_port:
@@ -1080,6 +1118,12 @@ class RelayCore:
             return
 
         if self.role == Role.CLIENT:
+            # If the host has bidirectional OFF, the client must never send
+            # commands that affect the host. Stop remains local-only.
+            if not self.bidirectional:
+                await self.media.command("stop")
+                return
+
             if self.resume_mode == ResumeMode.BLIND:
                 await self.media.command("stop")
                 await self._send(self.peer, {"t": "cmd", "cmd": "stop", "ts": now_ms(), "source": source})
@@ -1400,14 +1444,12 @@ class TrayApp:
                         lambda: self._set_resume_mode(ResumeMode.HOST_ONLY),
                         checked=lambda item: self.core.resume_mode == ResumeMode.HOST_ONLY,
                         radio=True,
-                        enabled=lambda item: self.core.role == Role.HOST,
                     ),
                     Item(
                         "Blind resume",
                         lambda: self._set_resume_mode(ResumeMode.BLIND),
                         checked=lambda item: self.core.resume_mode == ResumeMode.BLIND,
                         radio=True,
-                        enabled=lambda item: self.core.role == Role.HOST,
                     ),
                 ),
             ),
