@@ -51,8 +51,9 @@ jobs:
           import py2exe
 
           base_options = {
-              "bundle_files": 1,
+              "bundle_files": 3,
               "compressed": True,
+              "includes": ["ctypes", "_ctypes", "tkinter", "_tkinter"],
               "packages": ["libraries"],
           }
           data_files = [
@@ -83,8 +84,9 @@ jobs:
           import py2exe
 
           base_options = {
-              "bundle_files": 1,
+              "bundle_files": 3,
               "compressed": True,
+              "includes": ["ctypes", "_ctypes", "tkinter", "_tkinter"],
               "packages": ["libraries"],
           }
           data_files = [
@@ -115,10 +117,10 @@ jobs:
           import py2exe
 
           base_options = {
-              "bundle_files": 1,
+              "bundle_files": 3,
               "compressed": True,
               "packages": ["libraries"],
-              "includes": ["winrt.windows.media.control"],
+              "includes": ["ctypes", "_ctypes", "tkinter", "_tkinter", "winrt.windows.media.control"],
           }
           data_files = [
               ("libraries", [str(path) for path in Path("libraries").rglob("*") if path.is_file()]),
@@ -148,10 +150,10 @@ jobs:
           import py2exe
 
           base_options = {
-              "bundle_files": 1,
+              "bundle_files": 3,
               "compressed": True,
               "packages": ["libraries"],
-              "includes": ["winrt.windows.media.control"],
+              "includes": ["ctypes", "_ctypes", "tkinter", "_tkinter", "winrt.windows.media.control"],
           }
           data_files = [
               ("libraries", [str(path) for path in Path("libraries").rglob("*") if path.is_file()]),
