@@ -1122,6 +1122,79 @@ def make_icon(role: Role, connected: bool) -> Image.Image:
     return img
 
 
+def _windows_startup_dir() -> str:
+    appdata = os.getenv("APPDATA")
+    if not appdata:
+        raise RuntimeError("APPDATA is not set; cannot locate Startup folder.")
+    return os.path.join(appdata, "Microsoft", "Windows", "Start Menu", "Programs", "Startup")
+
+
+def _windows_pythonw_path() -> str:
+    if sys.executable.lower().endswith("pythonw.exe"):
+        return sys.executable
+    candidate = os.path.join(sys.exec_prefix, "pythonw.exe")
+    if os.path.exists(candidate):
+        return candidate
+    candidate = sys.executable.replace("python.exe", "pythonw.exe")
+    if os.path.exists(candidate):
+        return candidate
+    raise FileNotFoundError("pythonw.exe not found for Startup shortcut.")
+
+
+def _vbs_escape(value: str) -> str:
+    return value.replace('"', '""')
+
+
+def _ps_quote(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _ensure_startup_shortcut() -> Tuple[str, str]:
+    if sys.platform != "win32":
+        raise RuntimeError("Startup shortcut is only supported on Windows.")
+    startup_dir = _windows_startup_dir()
+    os.makedirs(startup_dir, exist_ok=True)
+
+    script_path = os.path.abspath(__file__)
+    script_dir = os.path.dirname(script_path)
+    pythonw_path = _windows_pythonw_path()
+    icon_path = os.path.join(script_dir, "libraries", "Media-Sync.ico")
+    if not os.path.exists(icon_path):
+        raise FileNotFoundError(f"Icon not found: {icon_path}")
+
+    shortcut_path = os.path.join(startup_dir, f"{APP_NAME}.lnk")
+    vbs_path = os.path.join(startup_dir, f"{APP_NAME}.vbs")
+
+    for path in (shortcut_path, vbs_path):
+        if os.path.exists(path):
+            os.remove(path)
+
+    vbs_body = (
+        'Set shell = CreateObject("WScript.Shell")\n'
+        f'shell.CurrentDirectory = "{_vbs_escape(script_dir)}"\n'
+        f'shell.Run """" & "{_vbs_escape(pythonw_path)}" & """ """ & "{_vbs_escape(script_path)}" & """", 0, False\n'
+    )
+    with open(vbs_path, "w", encoding="utf-8") as handle:
+        handle.write(vbs_body)
+
+    wscript_path = os.path.join(os.getenv("WINDIR", "C:\\Windows"), "System32", "wscript.exe")
+    args_value = f'"{vbs_path}"'
+    ps_script = (
+        "$WshShell = New-Object -ComObject WScript.Shell;"
+        f"$Shortcut = $WshShell.CreateShortcut({_ps_quote(shortcut_path)});"
+        f"$Shortcut.TargetPath = {_ps_quote(wscript_path)};"
+        f"$Shortcut.Arguments = {_ps_quote(args_value)};"
+        f"$Shortcut.WorkingDirectory = {_ps_quote(script_dir)};"
+        f"$Shortcut.IconLocation = {_ps_quote(icon_path + ',0')};"
+        "$Shortcut.Save();"
+    )
+    subprocess.run(
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_script],
+        check=True,
+    )
+    return shortcut_path, vbs_path
+
+
 class TrayApp:
     def __init__(self):
         self.cfg = load_config()
@@ -1166,7 +1239,7 @@ class TrayApp:
         )
 
     def _build_menu(self):
-        return Menu(
+        items = [
             Item("Toggle", self._toggle),
             Item("Stop", self._stop),
             Item("Connect…", self._connect),
@@ -1190,8 +1263,11 @@ class TrayApp:
                 ),
             ),
             Item(lambda _item: f"Status: {self.core.status_text()}", None, enabled=False),
-            Item("Exit", self._exit),
-        )
+        ]
+        if sys.platform == "win32":
+            items.append(Item("Add to startup", self._add_to_startup))
+        items.append(Item("Exit", self._exit))
+        return Menu(*items)
 
     def _refresh_tray(self):
         # Called from core thread; marshal to tray thread
@@ -1294,6 +1370,15 @@ class TrayApp:
         self.icon.stop()
         if _WIN_PROMPTER is not None:
             _WIN_PROMPTER.stop()
+
+    def _add_to_startup(self, icon=None, item=None):
+        if sys.platform != "win32":
+            return
+        try:
+            shortcut_path, _vbs_path = _ensure_startup_shortcut()
+            messagebox.showinfo(APP_NAME, f"Startup shortcut created:\n{shortcut_path}")
+        except Exception as exc:
+            messagebox.showerror(APP_NAME, f"Failed to add startup shortcut:\n{exc}")
 
     def run(self):
         # Start core networking
