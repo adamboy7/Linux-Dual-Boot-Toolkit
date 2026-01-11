@@ -816,7 +816,12 @@ class RelayCore:
                 elif mtype == "request_toggle":
                     # client asks host to arbitrate
                     if self.role == Role.HOST and self.peer and addr == self.peer and not self.ignore_client:
-                        await self._toggle_pressed(source="peer")
+                        hint = None
+                        try:
+                            hint = State(msg.get("state", "none"))
+                        except Exception:
+                            hint = None
+                        await self._toggle_pressed(source="peer", client_state_hint=hint)
                 elif mtype == "request_stop":
                     if self.role == Role.HOST and self.peer and addr == self.peer and not self.ignore_client:
                         await self._stop_pressed(source="peer")
@@ -1075,7 +1080,7 @@ class RelayCore:
             return await self.media.command("play")
         return False
 
-    async def _toggle_pressed(self, source: str):
+    async def _toggle_pressed(self, source: str, client_state_hint: Optional[State] = None):
         """
         If HOST: run arbitration (query peer state, decide explicit actions).
         If CLIENT: send request_toggle to host unless in blind mode (then relay local intent),
@@ -1090,7 +1095,13 @@ class RelayCore:
                 await self._toggle_local()
                 await self._send(self.peer, {"t": "cmd", "cmd": "toggle", "ts": now_ms(), "source": source})
                 return
-            await self._send(self.peer, {"t": "request_toggle", "ts": now_ms(), "source": source})
+            snap = await self.media.snapshot()
+            await self._send(self.peer, {
+                "t": "request_toggle",
+                "ts": now_ms(),
+                "source": source,
+                "state": snap.state.value,
+            })
             return
 
         if self.resume_mode == ResumeMode.BLIND:
@@ -1107,6 +1118,8 @@ class RelayCore:
                 client_state = State(resp.get("state", "none"))
             except Exception:
                 client_state = State.NONE
+        if client_state == State.NONE and client_state_hint and client_state_hint != State.NONE:
+            client_state = client_state_hint
 
         host_cmd, client_cmd = decide_actions(host_snap.state, client_state, self.resume_mode)
 
