@@ -472,8 +472,8 @@ def decide_actions(
     Returns (host_cmd, client_cmd) for a single "toggle press" arbitration.
 
     Your rules (deterministic):
-    - If either is PLAYING -> pause intent
-      - both playing -> pause both (or prefer client in client-only mode)
+    - If either is PLAYING -> pause intent (pause any playing side)
+      - both playing -> pause both
       - host playing -> pause host only
       - else client playing -> pause client
     - Else -> play intent
@@ -483,8 +483,6 @@ def decide_actions(
     """
     if host == State.PLAYING or client == State.PLAYING:
         if host == State.PLAYING and client == State.PLAYING:
-            if resume_mode == ResumeMode.CLIENT_ONLY:
-                return "pause", None
             return "pause", "pause"
         if host == State.PLAYING:
             return "pause", None
@@ -722,7 +720,7 @@ class RelayCore:
 
 
     async def _send_policy_to_peer(self, source: str = "core"):
-        """Send host-authoritative policy (resume_mode + ignore_client) to the peer."""
+        """Send host-authoritative policy (resume_mode) to the peer."""
         if not self.peer:
             return
         if self.role != Role.HOST:
@@ -731,7 +729,6 @@ class RelayCore:
             "t": "policy",
             "ts": now_ms(),
             "resume_mode": self.resume_mode.value,
-            "ignore_client": bool(self.ignore_client),
             "source": source,
         })
     async def _send(self, addr: Tuple[str, int], msg: dict):
@@ -819,7 +816,12 @@ class RelayCore:
                 elif mtype == "request_toggle":
                     # client asks host to arbitrate
                     if self.role == Role.HOST and self.peer and addr == self.peer and not self.ignore_client:
-                        await self._toggle_pressed(source="peer")
+                        hint = None
+                        try:
+                            hint = State(msg.get("state", "none"))
+                        except Exception:
+                            hint = None
+                        await self._toggle_pressed(source="peer", client_state_hint=hint)
                 elif mtype == "request_stop":
                     if self.role == Role.HOST and self.peer and addr == self.peer and not self.ignore_client:
                         await self._stop_pressed(source="peer")
@@ -834,12 +836,6 @@ class RelayCore:
     async def _handle_connect_request(self, addr, msg):
         # If we are connected as a CLIENT, we don't accept inbound connect (by design).
         if self.role == Role.CLIENT:
-            # If the host is ignoring the client, client actions remain local-only.
-            if self.ignore_client:
-                if self.resume_mode == ResumeMode.BLIND:
-                    await self._toggle_local()
-                return
-
             await self._send(addr, {"t": "connect_ack", "id": msg.get("id"), "ok": False, "reason": "busy_client", "ts": now_ms()})
             return
 
@@ -995,7 +991,7 @@ class RelayCore:
 
 
     async def _handle_policy(self, addr, msg):
-        # Policy is HOST-authoritative (resume_mode + ignore_client).
+        # Policy is HOST-authoritative (resume_mode).
         # - If we are CLIENT, accept policy updates from our host.
         # - If we are HOST, ignore policy coming from the peer.
         if self.peer and addr != self.peer:
@@ -1008,13 +1004,6 @@ class RelayCore:
             try:
                 mode = ResumeMode(mode_value)
                 await self._apply_resume_mode(mode, notify=True)
-            except Exception:
-                pass
-
-        if "ignore_client" in msg:
-            try:
-                enabled = bool(msg.get("ignore_client"))
-                await self._apply_ignore_client(enabled, notify=True)
             except Exception:
                 pass
     async def _apply_resume_mode(self, resume_mode: ResumeMode, notify: bool):
@@ -1040,9 +1029,14 @@ class RelayCore:
     async def _set_resume_mode(self, resume_mode: ResumeMode, source: str):
         await self._apply_resume_mode(resume_mode, notify=True)
         if self.peer:
-        # Resume mode is host-authoritative; client does not push it upstream.
-        # await self._send(self.peer, {"t": "resume_mode", "mode": resume_mode.value, "ts": now_ms(), "source": source})
-            await self._send_policy_to_peer(source=source)
+            # Resume mode is a shared setting:
+            # - If we're CLIENT, inform the host so its arbitration matches our selection.
+            # - If we're HOST, broadcast our mode to the client.
+            if self.role == Role.CLIENT:
+                await self._send(self.peer, {"t": "resume_mode", "mode": resume_mode.value, "ts": now_ms(), "source": source})
+            else:
+                await self._send_policy_to_peer(source=source)
+
 
     async def _set_ignore_client(self, enabled: bool, source: str):
         # Ignore client is controlled by the HOST only.
@@ -1086,11 +1080,10 @@ class RelayCore:
             return await self.media.command("play")
         return False
 
-    async def _toggle_pressed(self, source: str):
+    async def _toggle_pressed(self, source: str, client_state_hint: Optional[State] = None):
         """
         If HOST: run arbitration (query peer state, decide explicit actions).
         If CLIENT: send request_toggle to host unless in blind mode (then relay local intent),
-        or ignore-client is enabled (then stay local-only in blind mode).
         """
         if not self.peer:
             # no peer: just toggle locally by play/pause based on local state
@@ -1098,15 +1091,17 @@ class RelayCore:
             return
 
         if self.role == Role.CLIENT:
-            if self.ignore_client:
-                if self.resume_mode == ResumeMode.BLIND:
-                    await self._toggle_local()
-                return
             if self.resume_mode == ResumeMode.BLIND:
                 await self._toggle_local()
                 await self._send(self.peer, {"t": "cmd", "cmd": "toggle", "ts": now_ms(), "source": source})
                 return
-            await self._send(self.peer, {"t": "request_toggle", "ts": now_ms(), "source": source})
+            snap = await self.media.snapshot()
+            await self._send(self.peer, {
+                "t": "request_toggle",
+                "ts": now_ms(),
+                "source": source,
+                "state": snap.state.value,
+            })
             return
 
         if self.resume_mode == ResumeMode.BLIND:
@@ -1123,6 +1118,8 @@ class RelayCore:
                 client_state = State(resp.get("state", "none"))
             except Exception:
                 client_state = State.NONE
+        if client_state == State.NONE and client_state_hint and client_state_hint != State.NONE:
+            client_state = client_state_hint
 
         host_cmd, client_cmd = decide_actions(host_snap.state, client_state, self.resume_mode)
 
@@ -1141,12 +1138,6 @@ class RelayCore:
             return
 
         if self.role == Role.CLIENT:
-            # If the host is ignoring the client, keep client controls local-only in blind mode.
-            if self.ignore_client:
-                if self.resume_mode == ResumeMode.BLIND:
-                    await self.media.command("stop")
-                return
-
             if self.resume_mode == ResumeMode.BLIND:
                 await self.media.command("stop")
                 await self._send(self.peer, {"t": "cmd", "cmd": "stop", "ts": now_ms(), "source": source})
