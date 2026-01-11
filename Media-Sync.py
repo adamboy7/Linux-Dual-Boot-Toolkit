@@ -1091,9 +1091,10 @@ class RelayCore:
             return
 
         if self.role == Role.CLIENT:
-            if self.resume_mode == ResumeMode.BLIND:
+            if self.resume_mode in (ResumeMode.BLIND, ResumeMode.CLIENT_ONLY):
                 await self._toggle_local()
-                await self._send(self.peer, {"t": "cmd", "cmd": "toggle", "ts": now_ms(), "source": source})
+                if self.resume_mode == ResumeMode.BLIND:
+                    await self._send(self.peer, {"t": "cmd", "cmd": "toggle", "ts": now_ms(), "source": source})
                 return
             snap = await self.media.snapshot()
             await self._send(self.peer, {
