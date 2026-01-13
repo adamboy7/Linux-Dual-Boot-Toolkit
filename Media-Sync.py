@@ -250,10 +250,10 @@ if sys.platform == "win32":
 
         def _handle_vk(self, vk_code: int) -> bool:
             if vk_code == VK_MEDIA_PLAY_PAUSE:
-                self._core.ui_toggle()
+                self._core.ui_toggle(source="hid")
                 return True
             if vk_code == VK_MEDIA_STOP:
-                self._core.ui_stop_all()
+                self._core.ui_stop_all(source="hid")
                 return True
             return False
 
@@ -346,10 +346,10 @@ if sys.platform != "win32":
 
         def _handle_key(self, key_code: int) -> bool:
             if key_code == evdev.ecodes.KEY_PLAYPAUSE:
-                self._core.ui_toggle()
+                self._core.ui_toggle(source="hid")
                 return True
             if key_code == evdev.ecodes.KEY_STOPCD:
-                self._core.ui_stop_all()
+                self._core.ui_stop_all(source="hid")
                 return True
             return False
 
@@ -622,9 +622,9 @@ class RelayCore:
         if self.loop:
             self.loop.call_soon_threadsafe(lambda: asyncio.create_task(self._disconnect("user")))
 
-    def ui_toggle(self):
+    def ui_toggle(self, source: str = "local"):
         if self.loop:
-            self.loop.call_soon_threadsafe(lambda: asyncio.create_task(self._toggle_pressed(source="local")))
+            self.loop.call_soon_threadsafe(lambda: asyncio.create_task(self._toggle_pressed(source=source)))
 
     def ui_set_resume_mode(self, resume_mode: ResumeMode):
         if self.loop:
@@ -655,9 +655,9 @@ class RelayCore:
         if self.loop:
             self.loop.call_soon_threadsafe(self._cancel_auto_connect_task)
 
-    def ui_stop_all(self):
+    def ui_stop_all(self, source: str = "local"):
         if self.loop:
-            self.loop.call_soon_threadsafe(lambda: asyncio.create_task(self._stop_pressed(source="local")))
+            self.loop.call_soon_threadsafe(lambda: asyncio.create_task(self._stop_pressed(source=source)))
 
     # ---- internal thread/loop ----
 
@@ -1541,10 +1541,10 @@ class TrayApp:
             self._last_saved_state = dict(state)
 
     def _toggle(self, icon=None, item=None):
-        self.core.ui_toggle()
+        self.core.ui_toggle(source="hid")
 
     def _stop(self, icon=None, item=None):
-        self.core.ui_stop_all()
+        self.core.ui_stop_all(source="hid")
 
     def _set_resume_mode_from_core(self, resume_mode: ResumeMode):
         def do():
