@@ -1288,9 +1288,14 @@ def make_icon(role: Role, connected: bool) -> Image.Image:
     return img
 
 
+def _resource_base_dir() -> str:
+    if getattr(sys, "frozen", False):
+        return getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
+    return os.path.dirname(os.path.abspath(__file__))
+
+
 def _app_icon_path() -> str:
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    return os.path.join(script_dir, "libraries", "Media-Sync.ico")
+    return os.path.join(_resource_base_dir(), "libraries", "Media-Sync.ico")
 
 
 def _load_app_icon() -> Image.Image:
@@ -1327,43 +1332,53 @@ def _ps_quote(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
-def _ensure_startup_shortcut() -> Tuple[str, str]:
+def _ensure_startup_shortcut() -> Tuple[str, Optional[str]]:
     if sys.platform != "win32":
         raise RuntimeError("Startup shortcut is only supported on Windows.")
     startup_dir = _windows_startup_dir()
     os.makedirs(startup_dir, exist_ok=True)
 
-    script_path = os.path.abspath(__file__)
-    script_dir = os.path.dirname(script_path)
-    pythonw_path = _windows_pythonw_path()
-    icon_path = os.path.join(script_dir, "libraries", "Media-Sync.ico")
+    frozen = getattr(sys, "frozen", False)
+    icon_path = _app_icon_path()
     if not os.path.exists(icon_path):
         raise FileNotFoundError(f"Icon not found: {icon_path}")
 
     shortcut_path = os.path.join(startup_dir, f"{APP_NAME}.lnk")
-    vbs_path = os.path.join(script_dir, f"{APP_NAME}.vbs")
     legacy_vbs_path = os.path.join(startup_dir, f"{APP_NAME}.vbs")
+    vbs_path: Optional[str] = None
 
-    for path in (shortcut_path, vbs_path, legacy_vbs_path):
+    for path in (shortcut_path, legacy_vbs_path):
         if os.path.exists(path):
             os.remove(path)
 
-    vbs_body = (
-        'Set shell = CreateObject("WScript.Shell")\n'
-        f'shell.CurrentDirectory = "{_vbs_escape(script_dir)}"\n'
-        f'shell.Run """" & "{_vbs_escape(pythonw_path)}" & """ """ & "{_vbs_escape(script_path)}" & """", 0, False\n'
-    )
-    with open(vbs_path, "w", encoding="utf-8") as handle:
-        handle.write(vbs_body)
+    if frozen:
+        target_path = sys.executable
+        args_value = ""
+        working_dir = os.path.dirname(sys.executable)
+    else:
+        script_path = os.path.abspath(__file__)
+        script_dir = os.path.dirname(script_path)
+        pythonw_path = _windows_pythonw_path()
+        vbs_path = os.path.join(script_dir, f"{APP_NAME}.vbs")
+        if os.path.exists(vbs_path):
+            os.remove(vbs_path)
+        vbs_body = (
+            'Set shell = CreateObject("WScript.Shell")\n'
+            f'shell.CurrentDirectory = "{_vbs_escape(script_dir)}"\n'
+            f'shell.Run """" & "{_vbs_escape(pythonw_path)}" & """ """ & "{_vbs_escape(script_path)}" & """", 0, False\n'
+        )
+        with open(vbs_path, "w", encoding="utf-8") as handle:
+            handle.write(vbs_body)
+        target_path = os.path.join(os.getenv("WINDIR", "C:\\Windows"), "System32", "wscript.exe")
+        args_value = f'"{vbs_path}"'
+        working_dir = script_dir
 
-    wscript_path = os.path.join(os.getenv("WINDIR", "C:\\Windows"), "System32", "wscript.exe")
-    args_value = f'"{vbs_path}"'
     ps_script = (
         "$WshShell = New-Object -ComObject WScript.Shell;"
         f"$Shortcut = $WshShell.CreateShortcut({_ps_quote(shortcut_path)});"
-        f"$Shortcut.TargetPath = {_ps_quote(wscript_path)};"
+        f"$Shortcut.TargetPath = {_ps_quote(target_path)};"
         f"$Shortcut.Arguments = {_ps_quote(args_value)};"
-        f"$Shortcut.WorkingDirectory = {_ps_quote(script_dir)};"
+        f"$Shortcut.WorkingDirectory = {_ps_quote(working_dir)};"
         f"$Shortcut.IconLocation = {_ps_quote(icon_path + ',0')};"
         "$Shortcut.Save();"
     )

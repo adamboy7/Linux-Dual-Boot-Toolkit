@@ -8,12 +8,14 @@ on:
       - "v*"
     paths:
       - 'Bluetooth-GUI.py'
+      - 'Media-Sync.py'
       - 'libraries/**'
       - '.github/workflows/build-windows-exes.yml'
 
   pull_request:
     paths:
       - 'Bluetooth-GUI.py'
+      - 'Media-Sync.py'
       - 'libraries/**'
       - '.github/workflows/build-windows-exes.yml'
 
@@ -63,6 +65,31 @@ jobs:
             dist/Bluetooth-GUI.exe
 
       # -------------------------
+      # Media Sync - Release
+      # -------------------------
+      - name: Build Media Sync EXE (release, no console)
+        run: |
+          pyinstaller `
+            --onefile `
+            --noconsole `
+            --name MediaRelay `
+            --icon "libraries/Media-Sync.ico" `
+            --add-data "libraries;libraries" `
+            --hidden-import winrt.windows.media.control `
+            --collect-submodules winrt `
+            Media-Sync.py
+
+      # -------------------------
+      # Upload artifacts
+      # -------------------------
+      - name: Upload Media Sync artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: MediaRelay-windows
+          path: |
+            dist/MediaRelay.exe
+
+      # -------------------------
       # Publish to GitHub Release (tag builds only)
       # -------------------------
       - name: Publish EXEs to GitHub Release
@@ -71,3 +98,4 @@ jobs:
         with:
           files: |
             dist/Bluetooth-GUI.exe
+            dist/MediaRelay.exe

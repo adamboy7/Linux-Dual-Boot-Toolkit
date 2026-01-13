@@ -49,7 +49,6 @@ python3 Steam-Symlink-Helper.py \
 ## Media Playback Sync Tool
 `Media-Sync.py` is a system tray tool that controls playback for two PC's at once, KVM style. One PC is host, the other client. If media is playing on one or more PC's, it automatically pauses. If either PC has paused media it plays. If both PC's have paused media, the tool can be configured to resume host only or both. Remembers the last connected host and auto re-connects unless manually disconnected. Use `pythonw.exe` to run without the console window, or rename to .pyw.
 
-
 ## Usage tips
 - Keep `PsExec.exe`/`PsExec64.exe` in your `PATH` on Windows so the GUI can elevate to SYSTEM when needed for registry writes.
 - Keep the JSON backups from imports— they are portable between OSes and act as a quick restore point.
