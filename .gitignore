@@ -1,2 +1,30 @@
-*.psd
+# --- Python ---
 __pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+ENV/
+
+# --- PyInstaller ---
+build/
+dist/
+*.spec
+*.manifest
+*.toc
+
+# PyInstaller onefile temp dirs (safety net)
+_MEI*/
+__pypackages__/
+
+# --- Windows ---
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# --- Extra ---
+*.log
+*.vbs
+*.psd
