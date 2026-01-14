@@ -198,8 +198,6 @@ if sys.platform == "win32":
     WM_KEYDOWN = 0x0100
     WM_SYSKEYDOWN = 0x0104
     WM_QUIT = 0x0012
-    VK_MEDIA_NEXT_TRACK = 0xB0
-    VK_MEDIA_PREV_TRACK = 0xB1
     VK_MEDIA_STOP = 0xB2
     VK_MEDIA_PLAY_PAUSE = 0xB3
 
@@ -1296,13 +1294,6 @@ def _resource_base_dir() -> str:
 
 def _app_icon_path() -> str:
     return os.path.join(_resource_base_dir(), "libraries", "Media-Sync.ico")
-
-
-def _load_app_icon() -> Image.Image:
-    try:
-        return Image.open(_app_icon_path()).convert("RGBA")
-    except Exception:
-        return make_icon(Role.HOST, False)
 
 
 def _windows_startup_dir() -> str:
