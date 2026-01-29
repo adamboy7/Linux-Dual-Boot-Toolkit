@@ -27,8 +27,10 @@ TARGET_FPS    = 60
 # Audio: smaller = lower latency, but more likely crackle if system can't keep up
 AUDIO_SAMPLERATE = 48000
 AUDIO_CHANNELS   = 2
-AUDIO_BLOCKSIZE  = 128     # try 64 / 128 / 256
-AUDIO_QUEUE_MAX  = 8       # keep small to prevent latency ballooning
+# Lower blocksize/queue = lower latency, but too small can crackle on weak systems.
+AUDIO_BLOCKSIZE  = 96      # try 64 / 96 / 128
+AUDIO_QUEUE_MAX  = 3       # small queue prevents latency ballooning
+USE_WASAPI_EXCLUSIVE = True
 
 
 @dataclass
@@ -61,8 +63,12 @@ class LowLatencyAudioLoopback:
         try:
             self._q.put_nowait(indata.copy())
         except queue.Full:
-            # Drop newest chunk if we're behind; dropping keeps latency from growing.
-            pass
+            # Drop oldest so we keep the newest audio (minimizes latency).
+            try:
+                _ = self._q.get_nowait()
+                self._q.put_nowait(indata.copy())
+            except queue.Empty:
+                pass
 
     def _out_cb(self, outdata, frames, time_info, status):
         if status:
@@ -85,24 +91,56 @@ class LowLatencyAudioLoopback:
             return
         self._running = True
 
+        extra_settings = None
+        if USE_WASAPI_EXCLUSIVE and sys.platform == "win32":
+            try:
+                extra_settings = sd.WasapiSettings(exclusive=True)
+            except Exception:
+                extra_settings = None
+
         # Default output device = None (sounddevice uses OS default output)
         # For lowest latency, ask for 'low' latency; actual depends on device/driver.
-        self._in_stream = sd.InputStream(
-            device=self.input_device_index,
-            samplerate=AUDIO_SAMPLERATE,
-            channels=AUDIO_CHANNELS,
-            blocksize=AUDIO_BLOCKSIZE,
-            latency="low",
-            callback=self._in_cb,
-        )
-        self._out_stream = sd.OutputStream(
-            device=None,  # default output
-            samplerate=AUDIO_SAMPLERATE,
-            channels=AUDIO_CHANNELS,
-            blocksize=AUDIO_BLOCKSIZE,
-            latency="low",
-            callback=self._out_cb,
-        )
+        try:
+            self._in_stream = sd.InputStream(
+                device=self.input_device_index,
+                samplerate=AUDIO_SAMPLERATE,
+                channels=AUDIO_CHANNELS,
+                blocksize=AUDIO_BLOCKSIZE,
+                latency="low",
+                dtype="float32",
+                extra_settings=extra_settings,
+                callback=self._in_cb,
+            )
+            self._out_stream = sd.OutputStream(
+                device=None,  # default output
+                samplerate=AUDIO_SAMPLERATE,
+                channels=AUDIO_CHANNELS,
+                blocksize=AUDIO_BLOCKSIZE,
+                latency="low",
+                dtype="float32",
+                extra_settings=extra_settings,
+                callback=self._out_cb,
+            )
+        except Exception:
+            # Fallback to shared-mode if exclusive mode fails.
+            self._in_stream = sd.InputStream(
+                device=self.input_device_index,
+                samplerate=AUDIO_SAMPLERATE,
+                channels=AUDIO_CHANNELS,
+                blocksize=AUDIO_BLOCKSIZE,
+                latency="low",
+                dtype="float32",
+                callback=self._in_cb,
+            )
+            self._out_stream = sd.OutputStream(
+                device=None,  # default output
+                samplerate=AUDIO_SAMPLERATE,
+                channels=AUDIO_CHANNELS,
+                blocksize=AUDIO_BLOCKSIZE,
+                latency="low",
+                dtype="float32",
+                callback=self._out_cb,
+            )
 
         self._in_stream.start()
         self._out_stream.start()
