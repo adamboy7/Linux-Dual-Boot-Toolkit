@@ -25,10 +25,9 @@ TARGET_HEIGHT = 1080
 TARGET_FPS    = 60
 
 # Audio: smaller = lower latency, but more likely crackle if system can't keep up
-AUDIO_SAMPLERATE = 48000
 AUDIO_CHANNELS   = 2
-AUDIO_BLOCKSIZE  = 128     # try 64 / 128 / 256
-AUDIO_QUEUE_MAX  = 8       # keep small to prevent latency ballooning
+AUDIO_BLOCKSIZE  = 0        # let WASAPI choose the native period (often best)
+AUDIO_SAMPLERATE = 48000    # we'll override to match device if needed
 
 
 @dataclass
@@ -43,81 +42,59 @@ class LowLatencyAudioLoopback:
     """
     Input: capture card audio device
     Output: Windows default output device (sounddevice default)
-    Uses callback streams + tiny queue to keep latency minimal.
+    Uses a single duplex callback stream to keep input/output in sync.
     """
 
     def __init__(self, input_device_index: int | None):
         self.input_device_index = input_device_index
-        self._q = queue.Queue(maxsize=AUDIO_QUEUE_MAX)
         self._running = False
-        self._in_stream = None
-        self._out_stream = None
+        self._stream = None
 
-    def _in_cb(self, indata, frames, time_info, status):
+    def _cb(self, indata, outdata, frames, time_info, status):
         if status:
             # Over/under-runs show up here (useful while tuning blocksize)
-            # print("AUDIO IN:", status)
+            # print("AUDIO:", status)
             pass
-        try:
-            self._q.put_nowait(indata.copy())
-        except queue.Full:
-            # Drop newest chunk if we're behind; dropping keeps latency from growing.
-            pass
-
-    def _out_cb(self, outdata, frames, time_info, status):
-        if status:
-            # print("AUDIO OUT:", status)
-            pass
-        try:
-            data = self._q.get_nowait()
-            # Ensure shape matches out buffer
-            if data.shape != outdata.shape:
-                outdata.fill(0)
-                n = min(len(data), len(outdata))
-                outdata[:n] = data[:n]
-            else:
-                outdata[:] = data
-        except queue.Empty:
-            outdata.fill(0)
+        if indata.shape[1] >= AUDIO_CHANNELS:
+            outdata[:] = indata[:, :AUDIO_CHANNELS]
+        else:
+            outdata[:, 0] = indata[:, 0]
+            outdata[:, 1] = indata[:, 0]
 
     def start(self):
         if self._running:
             return
         self._running = True
 
+        in_info = sd.query_devices(self.input_device_index)
+        sr = int(in_info["default_samplerate"])
+
+        extra_in = None
+        extra_out = None
+
         # Default output device = None (sounddevice uses OS default output)
         # For lowest latency, ask for 'low' latency; actual depends on device/driver.
-        self._in_stream = sd.InputStream(
-            device=self.input_device_index,
-            samplerate=AUDIO_SAMPLERATE,
-            channels=AUDIO_CHANNELS,
+        self._stream = sd.Stream(
+            device=(self.input_device_index, None),
+            samplerate=sr,
             blocksize=AUDIO_BLOCKSIZE,
+            channels=(AUDIO_CHANNELS, AUDIO_CHANNELS),
+            dtype="float32",
             latency="low",
-            callback=self._in_cb,
+            callback=self._cb,
+            extra_settings=(extra_in, extra_out),
         )
-        self._out_stream = sd.OutputStream(
-            device=None,  # default output
-            samplerate=AUDIO_SAMPLERATE,
-            channels=AUDIO_CHANNELS,
-            blocksize=AUDIO_BLOCKSIZE,
-            latency="low",
-            callback=self._out_cb,
-        )
-
-        self._in_stream.start()
-        self._out_stream.start()
+        self._stream.start()
 
     def stop(self):
         self._running = False
-        for s in (self._in_stream, self._out_stream):
-            try:
-                if s:
-                    s.stop()
-                    s.close()
-            except Exception:
-                pass
-        self._in_stream = None
-        self._out_stream = None
+        try:
+            if self._stream:
+                self._stream.stop()
+                self._stream.close()
+        except Exception:
+            pass
+        self._stream = None
 
 
 class VideoCaptureThread(threading.Thread):
@@ -294,17 +271,12 @@ class ViewerWindow(QMainWindow):
         super().closeEvent(event)
 
 
-def pick_audio_input_device_index(name_hint: str) -> int | None:
-    """
-    Choose the first input device whose name contains name_hint.
-    Returns None if not found (you'll get default input, which is not ideal).
-    """
+def pick_device_index(name_hint: str, want_input: bool) -> int | None:
     devices = sd.query_devices()
     for i, d in enumerate(devices):
-        if d.get("max_input_channels", 0) >= 1:
-            nm = (d.get("name") or "")
-            if name_hint.lower() in nm.lower():
-                return i
+        ch = d["max_input_channels"] if want_input else d["max_output_channels"]
+        if ch >= 1 and name_hint.lower() in d["name"].lower():
+            return i
     return None
 
 
@@ -332,11 +304,10 @@ def pick_video_device_index_by_probe() -> int:
 
 def main():
     # Pick devices
-    audio_in = pick_audio_input_device_index(AUDIO_DEVICE_NAME_HINT)
+    audio_in = pick_device_index(AUDIO_DEVICE_NAME_HINT, want_input=True)
     if audio_in is None:
-        print("[Audio] Could not find capture card audio by name; using default input (not recommended).")
-    else:
-        print(f"[Audio] Using input device index {audio_in}: {sd.query_devices(audio_in)['name']}")
+        raise RuntimeError("Couldn't find capture card input device")
+    print(f"[Audio] Using input device index {audio_in}: {sd.query_devices(audio_in)['name']}")
 
     video_idx = pick_video_device_index_by_probe()
 
