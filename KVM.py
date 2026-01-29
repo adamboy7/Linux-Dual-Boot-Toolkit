@@ -19,13 +19,13 @@ from PySide6.QtWidgets import QApplication, QLabel, QMainWindow, QWidget, QMessa
 # ----------------------------
 
 VIDEO_DEVICE_NAME_HINT = "Razer Ripsaw"   # used for heuristics only (OpenCV index is still used)
-AUDIO_DEVICE_NAME_HINT = "Razer Ripsaw"   # name hint for the audio capture device to "listen" to
+AUDIO_DEVICE_NAME_HINT = "Ripsaw HD HDMI"   # name hint for the audio capture device to "listen" to
 
 TARGET_WIDTH  = 1920
 TARGET_HEIGHT = 1080
 TARGET_FPS    = 60
 
-PKEY_DEVICE_FRIENDLY_NAME = "{a45c254e-df1c-4efd-8020-67d146a850e0},2"
+PKEY_DEVICE_FRIENDLY_NAME = "{a45c254e-df1c-4efd-8020-67d146a850e0},14"
 
 
 def _is_windows() -> bool:
