@@ -26,6 +26,7 @@ TARGET_HEIGHT = 1080
 TARGET_FPS    = 60
 
 PKEY_DEVICE_FRIENDLY_NAME = "{a45c254e-df1c-4efd-8020-67d146a850e0},14"
+PKEY_DEVICE_INTERFACE_FRIENDLY_NAME = "{026e516e-b814-414b-83cd-856d6fef4822},2"
 
 
 def _is_windows() -> bool:
@@ -117,6 +118,7 @@ class WindowsListenManager:
     def _find_capture_device_id(self) -> str | None:
         winreg = _ensure_winreg()
         key_path = r"SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Capture"
+        available_names: list[str] = []
         try:
             with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key_path) as capture_root:
                 index = 0
@@ -126,25 +128,43 @@ class WindowsListenManager:
                     except OSError:
                         break
                     index += 1
-                    friendly_name = self._read_capture_friendly_name(
+                    names = self._read_capture_names(
                         winreg, f"{key_path}\\{subkey_name}"
                     )
-                    if not friendly_name:
+                    if not names:
                         continue
-                    if self.device_name_hint.lower() in friendly_name.lower():
+                    available_names.extend(names)
+                    if self._capture_name_matches(names):
                         return subkey_name
         except FileNotFoundError:
             return None
+        if available_names:
+            unique_names = sorted({name for name in available_names if name.strip()})
+            print("[Audio] Available capture devices:")
+            for name in unique_names:
+                print(f"  - {name}")
         return None
 
     @staticmethod
-    def _read_capture_friendly_name(winreg, base_key: str) -> str | None:
+    def _read_capture_names(winreg, base_key: str) -> list[str]:
+        names: list[str] = []
         try:
             with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, f"{base_key}\\Properties") as props:
-                value, _ = winreg.QueryValueEx(props, PKEY_DEVICE_FRIENDLY_NAME)
-                return str(value)
+                for prop_key in (PKEY_DEVICE_FRIENDLY_NAME, PKEY_DEVICE_INTERFACE_FRIENDLY_NAME):
+                    try:
+                        value, _ = winreg.QueryValueEx(props, prop_key)
+                    except OSError:
+                        continue
+                    if value is None:
+                        continue
+                    names.append(str(value))
         except OSError:
-            return None
+            return []
+        return names
+
+    def _capture_name_matches(self, names: list[str]) -> bool:
+        hint = self.device_name_hint.lower()
+        return any(hint in name.lower() for name in names)
 
     def _read_listen_state(self) -> ListenState | None:
         winreg = _ensure_winreg()
