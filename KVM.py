@@ -286,8 +286,9 @@ class TrayController:
         self.corner_menu.addAction(action)
 
     def _exit_app(self):
+        self.tray.hide()
         self.window.close()
-        self.app.quit()
+        self.app.exit(0)
 
     def sync_state(self):
         self.fullscreen_action.setChecked(self.window._fullscreen)
