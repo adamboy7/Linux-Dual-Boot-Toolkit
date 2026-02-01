@@ -8,8 +8,15 @@ import numpy as np
 import cv2
 
 from PySide6.QtCore import Qt, QTimer, QRect
-from PySide6.QtGui import QImage, QPixmap, QKeySequence, QShortcut
-from PySide6.QtWidgets import QApplication, QLabel, QMainWindow, QWidget
+from PySide6.QtGui import QImage, QPixmap, QIcon, QAction
+from PySide6.QtWidgets import (
+    QApplication,
+    QLabel,
+    QMainWindow,
+    QMenu,
+    QSystemTrayIcon,
+    QWidget,
+)
 
 
 # ----------------------------
@@ -113,15 +120,6 @@ class ViewerWindow(QMainWindow):
         self.label.setStyleSheet("background: black;")
         self.setCentralWidget(self.label)
 
-        # Hotkeys
-        QShortcut(QKeySequence("Esc"), self, activated=self.close)
-        QShortcut(QKeySequence("F11"), self, activated=self.toggle_fullscreen)
-        QShortcut(QKeySequence("P"), self, activated=self.toggle_pip)
-        QShortcut(QKeySequence("1"), self, activated=lambda: self.set_corner("tl"))
-        QShortcut(QKeySequence("2"), self, activated=lambda: self.set_corner("tr"))
-        QShortcut(QKeySequence("3"), self, activated=lambda: self.set_corner("bl"))
-        QShortcut(QKeySequence("4"), self, activated=lambda: self.set_corner("br"))
-
         # UI refresh timer (keep it modest; capture thread is already pulling at device rate)
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.update_frame)
@@ -204,6 +202,88 @@ class ViewerWindow(QMainWindow):
         super().closeEvent(event)
 
 
+class TrayController:
+    def __init__(self, app: QApplication, window: ViewerWindow, mode: VideoMode):
+        self.app = app
+        self.window = window
+        self.mode = mode
+
+        self.tray = QSystemTrayIcon(self._build_icon(), self.window)
+        self.menu = QMenu()
+
+        self.show_action = QAction("Show Viewer", self.menu)
+        self.show_action.triggered.connect(self._show_viewer)
+        self.menu.addAction(self.show_action)
+
+        self.fullscreen_action = QAction("Fullscreen", self.menu, checkable=True)
+        self.fullscreen_action.triggered.connect(self._toggle_fullscreen)
+        self.menu.addAction(self.fullscreen_action)
+
+        self.pip_action = QAction("Picture-in-Picture", self.menu, checkable=True)
+        self.pip_action.triggered.connect(self._toggle_pip)
+        self.menu.addAction(self.pip_action)
+
+        self.corner_menu = QMenu("PiP Corner", self.menu)
+        self._add_corner_action("Top Left", "tl")
+        self._add_corner_action("Top Right", "tr")
+        self._add_corner_action("Bottom Left", "bl")
+        self._add_corner_action("Bottom Right", "br")
+        self.menu.addMenu(self.corner_menu)
+
+        self.menu.addSeparator()
+
+        self.exit_action = QAction("Exit", self.menu)
+        self.exit_action.triggered.connect(self._exit_app)
+        self.menu.addAction(self.exit_action)
+
+        self.tray.setContextMenu(self.menu)
+        self.tray.activated.connect(self._tray_activated)
+        self.sync_state()
+        self.tray.show()
+
+    def _build_icon(self) -> QIcon:
+        icon = QIcon.fromTheme("video-display")
+        if not icon.isNull():
+            return icon
+        pixmap = QPixmap(64, 64)
+        pixmap.fill(Qt.black)
+        return QIcon(pixmap)
+
+    def _show_viewer(self):
+        self.window.show()
+        self.window.raise_()
+        self.window.activateWindow()
+
+    def _tray_activated(self, reason):
+        if reason == QSystemTrayIcon.Trigger:
+            self._show_viewer()
+
+    def _toggle_fullscreen(self):
+        self.window.toggle_fullscreen()
+        self.sync_state()
+
+    def _toggle_pip(self):
+        self.window.toggle_pip()
+        self.sync_state()
+
+    def _set_corner(self, corner: str):
+        self.window.set_corner(corner)
+        self.sync_state()
+
+    def _add_corner_action(self, label: str, corner: str):
+        action = QAction(label, self.corner_menu)
+        action.triggered.connect(lambda checked=False, c=corner: self._set_corner(c))
+        self.corner_menu.addAction(action)
+
+    def _exit_app(self):
+        self.window.close()
+        self.app.quit()
+
+    def sync_state(self):
+        self.fullscreen_action.setChecked(self.window._fullscreen)
+        self.pip_action.setChecked(self.mode.pip)
+
+
 def pick_video_device_index_by_probe() -> int:
     """
     OpenCV can't reliably pick by name without extra libraries.
@@ -238,6 +318,7 @@ def main():
     app = QApplication(sys.argv)
     mode = VideoMode(pip=False)
     win = ViewerWindow(vid_thread, mode)
+    TrayController(app, win, mode)
     win.show()
 
     rc = app.exec()
