@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import numpy as np
 import cv2
 
-from PySide6.QtCore import Qt, QTimer, QRect
+from PySide6.QtCore import Qt, QTimer, QRect, QPoint
 from PySide6.QtGui import QImage, QPixmap, QIcon, QAction
 from PySide6.QtWidgets import (
     QApplication,
@@ -158,17 +158,18 @@ class ViewerWindow(QMainWindow):
         w = int(screen.width() * self.mode.pip_scale)
         h = int(screen.height() * self.mode.pip_scale)
         m = self.mode.pip_margin
+        rect = QRect(0, 0, w, h)
 
         if self.mode.pip_corner == "tl":
-            x, y = screen.left() + m, screen.top() + m
+            rect.moveTopLeft(QPoint(screen.left() + m, screen.top() + m))
         elif self.mode.pip_corner == "tr":
-            x, y = screen.right() - w - m, screen.top() + m
+            rect.moveTopRight(QPoint(screen.right() - m, screen.top() + m))
         elif self.mode.pip_corner == "bl":
-            x, y = screen.left() + m, screen.bottom() - h - m
+            rect.moveBottomLeft(QPoint(screen.left() + m, screen.bottom() - m))
         else:  # "br"
-            x, y = screen.right() - w - m, screen.bottom() - h - m
+            rect.moveBottomRight(QPoint(screen.right() - m, screen.bottom() - m))
 
-        return QRect(x, y, w, h)
+        return rect
 
     def update_frame(self):
         # Always use newest available frame
