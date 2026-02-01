@@ -135,12 +135,17 @@ class ViewerWindow(QMainWindow):
 
     def toggle_pip(self):
         self.mode.pip = not self.mode.pip
+        if self.mode.pip:
+            if self._fullscreen:
+                self.showNormal()
+                self._fullscreen = False
 
     def toggle_fullscreen(self):
         if self._fullscreen:
             self.showNormal()
             self._fullscreen = False
         else:
+            self.mode.pip = False
             self.showFullScreen()
             self._fullscreen = True
 
@@ -179,6 +184,9 @@ class ViewerWindow(QMainWindow):
 
         if self.mode.pip:
             # PiP: move window to corner, keep aspect
+            if self._fullscreen:
+                self.showNormal()
+                self._fullscreen = False
             self.setGeometry(self._pip_geometry())
         else:
             # Fullscreen: occupy screen
