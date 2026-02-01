@@ -136,9 +136,7 @@ class ViewerWindow(QMainWindow):
     def toggle_pip(self):
         self.mode.pip = not self.mode.pip
         if self.mode.pip:
-            if self._fullscreen or self.isMaximized() or self.isFullScreen():
-                self.showNormal()
-                self._fullscreen = False
+            self._normalize_for_pip()
 
     def toggle_fullscreen(self):
         if self._fullscreen:
@@ -166,6 +164,15 @@ class ViewerWindow(QMainWindow):
 
         return QRect(x, y, w, h)
 
+    def _normalize_for_pip(self):
+        if self._fullscreen or self.isMaximized() or self.isFullScreen():
+            normal_state = self.windowState()
+            normal_state &= ~Qt.WindowMaximized
+            normal_state &= ~Qt.WindowFullScreen
+            self.setWindowState(normal_state)
+            self.showNormal()
+            self._fullscreen = False
+
     def update_frame(self):
         # Always use newest available frame
         frame = None
@@ -184,9 +191,7 @@ class ViewerWindow(QMainWindow):
 
         if self.mode.pip:
             # PiP: move window to corner, keep aspect
-            if self._fullscreen or self.isMaximized() or self.isFullScreen():
-                self.showNormal()
-                self._fullscreen = False
+            self._normalize_for_pip()
             pip_rect = self._pip_geometry()
             self.resize(pip_rect.size())
             self.move(pip_rect.topLeft())
