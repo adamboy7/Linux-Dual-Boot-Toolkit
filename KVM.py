@@ -132,16 +132,26 @@ class ViewerWindow(QMainWindow):
     def set_corner(self, c: str):
         self.mode.pip_corner = c
 
-    def toggle_pip(self):
-        self.mode.pip = not self.mode.pip
-
-    def toggle_fullscreen(self):
-        if self._fullscreen:
+    def set_pip(self, enabled: bool):
+        if enabled and self._fullscreen:
             self.showNormal()
             self._fullscreen = False
-        else:
+        self.mode.pip = enabled
+
+    def toggle_pip(self):
+        self.set_pip(not self.mode.pip)
+
+    def set_fullscreen(self, enabled: bool):
+        if enabled:
+            self.mode.pip = False
             self.showFullScreen()
             self._fullscreen = True
+        else:
+            self.showNormal()
+            self._fullscreen = False
+
+    def toggle_fullscreen(self):
+        self.set_fullscreen(not self._fullscreen)
 
     def _pip_geometry(self) -> QRect:
         screen = self.screen().availableGeometry()
