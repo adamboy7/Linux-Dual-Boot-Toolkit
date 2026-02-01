@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QSystemTrayIcon,
     QWidget,
+    QInputDialog,
 )
 
 
@@ -35,6 +36,7 @@ class VideoMode:
     pip_scale: float = 0.35   # PiP size relative to screen
     pip_margin: int = 24      # px margin from edges
     pip_corner: str = "br"    # "br", "bl", "tr", "tl"
+    scale_percent: int = 100
 
 
 class VideoCaptureThread(threading.Thread):
@@ -141,9 +143,21 @@ class ViewerWindow(QMainWindow):
     def toggle_pip(self):
         self.set_pip(not self.mode.pip)
 
+    def set_scale_percent(self, percent: int):
+        percent = max(1, int(percent))
+        self.mode.scale_percent = percent
+        if self.mode.pip:
+            return
+        if percent == 100:
+            self.set_fullscreen(True)
+        else:
+            self.set_fullscreen(False)
+            self._apply_scaled_geometry()
+
     def set_fullscreen(self, enabled: bool):
         if enabled:
             self.mode.pip = False
+            self.mode.scale_percent = 100
             self.showFullScreen()
             self._fullscreen = True
         else:
@@ -170,6 +184,15 @@ class ViewerWindow(QMainWindow):
 
         return QRect(x, y, w, h)
 
+    def _apply_scaled_geometry(self):
+        screen = self.screen().availableGeometry()
+        scale = self.mode.scale_percent / 100.0
+        w = max(1, int(screen.width() * scale))
+        h = max(1, int(screen.height() * scale))
+        x = screen.left() + (screen.width() - w) // 2
+        y = screen.top() + (screen.height() - h) // 2
+        self.setGeometry(QRect(x, y, w, h))
+
     def update_frame(self):
         # Always use newest available frame
         frame = None
@@ -192,10 +215,16 @@ class ViewerWindow(QMainWindow):
         else:
             # Fullscreen: occupy screen
             # If you want borderless-but-not-fullscreen, use showMaximized() instead.
-            if self._fullscreen:
+            if self._fullscreen and self.mode.scale_percent == 100:
                 pass
             else:
-                self.showMaximized()
+                if self._fullscreen:
+                    self.showNormal()
+                    self._fullscreen = False
+                if self.mode.scale_percent != 100:
+                    self._apply_scaled_geometry()
+                else:
+                    self.showMaximized()
 
         # Scale to label size without adding extra buffering
         self.label.setPixmap(pix.scaled(
@@ -239,6 +268,14 @@ class TrayController:
         self._add_corner_action("Bottom Left", "bl")
         self._add_corner_action("Bottom Right", "br")
         self.menu.addMenu(self.corner_menu)
+
+        self.scale_display_action = QAction("Scale: 100%", self.menu)
+        self.scale_display_action.setEnabled(False)
+        self.menu.addAction(self.scale_display_action)
+
+        self.scale_action = QAction("Set Scale...", self.menu)
+        self.scale_action.triggered.connect(self._set_scale)
+        self.menu.addAction(self.scale_action)
 
         self.menu.addSeparator()
 
@@ -285,6 +322,22 @@ class TrayController:
         action.triggered.connect(lambda checked=False, c=corner: self._set_corner(c))
         self.corner_menu.addAction(action)
 
+    def _set_scale(self):
+        value, ok = QInputDialog.getDouble(
+            self.window,
+            "Set Scale",
+            "Scale percentage:",
+            float(self.mode.scale_percent),
+            1.0,
+            1000.0,
+            2,
+        )
+        if not ok:
+            return
+        percent = int(value)
+        self.window.set_scale_percent(percent)
+        self.sync_state()
+
     def _exit_app(self):
         self.tray.hide()
         self.window.close()
@@ -293,6 +346,7 @@ class TrayController:
     def sync_state(self):
         self.fullscreen_action.setChecked(self.window._fullscreen)
         self.pip_action.setChecked(self.mode.pip)
+        self.scale_display_action.setText(f"Scale: {self.mode.scale_percent}%")
 
 
 def pick_video_device_index_by_probe() -> int:
