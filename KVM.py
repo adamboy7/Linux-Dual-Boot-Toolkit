@@ -132,11 +132,12 @@ class ViewerWindow(QMainWindow):
 
     def set_corner(self, c: str):
         self.mode.pip_corner = c
+        self._schedule_pip_geometry()
 
     def toggle_pip(self):
         self.mode.pip = not self.mode.pip
         if self.mode.pip:
-            self._normalize_for_pip()
+            self._schedule_pip_geometry()
 
     def toggle_fullscreen(self):
         if self._fullscreen:
@@ -173,6 +174,19 @@ class ViewerWindow(QMainWindow):
             self.showNormal()
             self._fullscreen = False
 
+    def _schedule_pip_geometry(self):
+        if not self.mode.pip:
+            return
+        self._normalize_for_pip()
+        QTimer.singleShot(0, self._apply_pip_geometry)
+
+    def _apply_pip_geometry(self):
+        if not self.mode.pip:
+            return
+        pip_rect = self._pip_geometry()
+        self.resize(pip_rect.size())
+        self.move(pip_rect.topLeft())
+
     def update_frame(self):
         # Always use newest available frame
         frame = None
@@ -189,13 +203,7 @@ class ViewerWindow(QMainWindow):
 
         pix = QPixmap.fromImage(img)
 
-        if self.mode.pip:
-            # PiP: move window to corner, keep aspect
-            self._normalize_for_pip()
-            pip_rect = self._pip_geometry()
-            self.resize(pip_rect.size())
-            self.move(pip_rect.topLeft())
-        else:
+        if not self.mode.pip:
             # Fullscreen: occupy screen
             # If you want borderless-but-not-fullscreen, use showMaximized() instead.
             if self._fullscreen:
@@ -314,6 +322,7 @@ class TrayController:
             return
         percent = min(percent, 100.0)
         self.mode.pip_scale = percent / 100.0
+        self.window._schedule_pip_geometry()
 
     def _exit_app(self):
         self.window.close()
