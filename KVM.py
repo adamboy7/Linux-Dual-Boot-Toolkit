@@ -12,6 +12,7 @@ from PySide6.QtGui import QImage, QPixmap, QIcon, QAction
 from PySide6.QtWidgets import (
     QApplication,
     QLabel,
+    QInputDialog,
     QMainWindow,
     QMenu,
     QSystemTrayIcon,
@@ -32,7 +33,7 @@ TARGET_FPS    = 60
 @dataclass
 class VideoMode:
     pip: bool = False
-    pip_scale: float = 0.35   # PiP size relative to screen
+    pip_scale: float = 0.25   # PiP size relative to screen
     pip_margin: int = 24      # px margin from edges
     pip_corner: str = "br"    # "br", "bl", "tr", "tl"
 
@@ -230,6 +231,10 @@ class TrayController:
         self._add_corner_action("Bottom Right", "br")
         self.menu.addMenu(self.corner_menu)
 
+        self.pip_scale_action = QAction("PiP Scale...", self.menu)
+        self.pip_scale_action.triggered.connect(self._set_pip_scale)
+        self.menu.addAction(self.pip_scale_action)
+
         self.menu.addSeparator()
 
         self.exit_action = QAction("Exit", self.menu)
@@ -274,6 +279,26 @@ class TrayController:
         action = QAction(label, self.corner_menu)
         action.triggered.connect(lambda checked=False, c=corner: self._set_corner(c))
         self.corner_menu.addAction(action)
+
+    def _set_pip_scale(self):
+        current_percent = int(round(self.mode.pip_scale * 100))
+        text, ok = QInputDialog.getText(
+            self.window,
+            "Set PiP Scale",
+            "Enter PiP scale (%):",
+            text=f"{current_percent}",
+        )
+        if not ok:
+            return
+        cleaned = text.strip().replace("%", "")
+        try:
+            percent = float(cleaned)
+        except ValueError:
+            return
+        if percent <= 0:
+            return
+        percent = min(percent, 100.0)
+        self.mode.pip_scale = percent / 100.0
 
     def _exit_app(self):
         self.window.close()
