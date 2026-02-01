@@ -8,7 +8,7 @@ import numpy as np
 import cv2
 
 from PySide6.QtCore import Qt, QTimer, QRect
-from PySide6.QtGui import QImage, QPixmap, QIcon, QAction
+from PySide6.QtGui import QImage, QPixmap, QIcon, QAction, QActionGroup
 from PySide6.QtWidgets import (
     QApplication,
     QLabel,
@@ -126,17 +126,21 @@ class ViewerWindow(QMainWindow):
         self.timer.start(0)  # 0 = as fast as event loop can, typically fine
 
         self._fullscreen = False
+        self._source_width = TARGET_WIDTH
+        self._source_height = TARGET_HEIGHT
         self.showFullScreen()
         self._fullscreen = True
 
     def set_corner(self, c: str):
         self.mode.pip_corner = c
+        self._apply_pip_geometry()
 
     def set_pip(self, enabled: bool):
         if enabled and self._fullscreen:
             self.showNormal()
             self._fullscreen = False
         self.mode.pip = enabled
+        self._apply_pip_geometry()
 
     def toggle_pip(self):
         self.set_pip(not self.mode.pip)
@@ -153,10 +157,14 @@ class ViewerWindow(QMainWindow):
     def toggle_fullscreen(self):
         self.set_fullscreen(not self._fullscreen)
 
+    def set_pip_scale(self, scale: float):
+        self.mode.pip_scale = scale
+        self._apply_pip_geometry()
+
     def _pip_geometry(self) -> QRect:
         screen = self.screen().availableGeometry()
-        w = int(screen.width() * self.mode.pip_scale)
-        h = int(screen.height() * self.mode.pip_scale)
+        w = int(self._source_width * self.mode.pip_scale)
+        h = int(self._source_height * self.mode.pip_scale)
         m = self.mode.pip_margin
 
         if self.mode.pip_corner == "tl":
@@ -170,6 +178,10 @@ class ViewerWindow(QMainWindow):
 
         return QRect(x, y, w, h)
 
+    def _apply_pip_geometry(self):
+        if self.mode.pip:
+            self.setGeometry(self._pip_geometry())
+
     def update_frame(self):
         # Always use newest available frame
         frame = None
@@ -181,6 +193,8 @@ class ViewerWindow(QMainWindow):
         # Convert BGR -> RGB for Qt
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         h, w, ch = rgb.shape
+        self._source_width = w
+        self._source_height = h
         bytes_per_line = ch * w
         img = QImage(rgb.data, w, h, bytes_per_line, QImage.Format_RGB888)
 
@@ -188,7 +202,7 @@ class ViewerWindow(QMainWindow):
 
         if self.mode.pip:
             # PiP: move window to corner, keep aspect
-            self.setGeometry(self._pip_geometry())
+            self._apply_pip_geometry()
         else:
             # Fullscreen: occupy screen
             # If you want borderless-but-not-fullscreen, use showMaximized() instead.
@@ -217,6 +231,7 @@ class TrayController:
         self.app = app
         self.window = window
         self.mode = mode
+        self.scale_actions = {}
 
         self.tray = QSystemTrayIcon(self._build_icon(), self.window)
         self.menu = QMenu()
@@ -239,6 +254,19 @@ class TrayController:
         self._add_corner_action("Bottom Left", "bl")
         self._add_corner_action("Bottom Right", "br")
         self.menu.addMenu(self.corner_menu)
+
+        self.scale_menu = QMenu("Scale", self.menu)
+        self.scale_group = QActionGroup(self.scale_menu)
+        self.scale_group.setExclusive(True)
+        for label, scale in (
+            ("25%", 0.25),
+            ("35%", 0.35),
+            ("50%", 0.50),
+            ("75%", 0.75),
+            ("100%", 1.00),
+        ):
+            self._add_scale_action(label, scale)
+        self.menu.addMenu(self.scale_menu)
 
         self.menu.addSeparator()
 
@@ -285,6 +313,17 @@ class TrayController:
         action.triggered.connect(lambda checked=False, c=corner: self._set_corner(c))
         self.corner_menu.addAction(action)
 
+    def _set_scale(self, scale: float):
+        self.window.set_pip_scale(scale)
+        self.sync_state()
+
+    def _add_scale_action(self, label: str, scale: float):
+        action = QAction(label, self.scale_menu, checkable=True)
+        action.triggered.connect(lambda checked=False, s=scale: self._set_scale(s))
+        self.scale_group.addAction(action)
+        self.scale_menu.addAction(action)
+        self.scale_actions[scale] = action
+
     def _exit_app(self):
         self.window.close()
         self.app.quit()
@@ -292,6 +331,8 @@ class TrayController:
     def sync_state(self):
         self.fullscreen_action.setChecked(self.window._fullscreen)
         self.pip_action.setChecked(self.mode.pip)
+        for scale, action in self.scale_actions.items():
+            action.setChecked(abs(self.mode.pip_scale - scale) < 1e-6)
 
 
 def pick_video_device_index_by_probe() -> int:
