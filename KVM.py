@@ -1,13 +1,11 @@
 import sys
-import time
 import threading
 import queue
-from dataclasses import dataclass
 
 import numpy as np
 import cv2
 
-from PySide6.QtCore import Qt, QTimer, QRect
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QImage, QPixmap, QIcon, QAction
 from PySide6.QtWidgets import (
     QApplication,
@@ -28,14 +26,6 @@ VIDEO_DEVICE_NAME_HINT = "Razer Ripsaw"   # used for heuristics only (OpenCV ind
 TARGET_WIDTH  = 1920
 TARGET_HEIGHT = 1080
 TARGET_FPS    = 60
-
-@dataclass
-class VideoMode:
-    pip: bool = False
-    pip_scale: float = 0.35   # PiP size relative to screen
-    pip_margin: int = 24      # px margin from edges
-    pip_corner: str = "br"    # "br", "bl", "tr", "tl"
-
 
 class VideoCaptureThread(threading.Thread):
     """
@@ -104,10 +94,9 @@ class VideoCaptureThread(threading.Thread):
 
 
 class ViewerWindow(QMainWindow):
-    def __init__(self, vid_thread: VideoCaptureThread, mode: VideoMode):
+    def __init__(self, vid_thread: VideoCaptureThread):
         super().__init__()
         self.vid_thread = vid_thread
-        self.mode = mode
 
         self.setWindowTitle("KVM Viewer")
         self.setWindowFlags(
@@ -129,36 +118,16 @@ class ViewerWindow(QMainWindow):
         self.showFullScreen()
         self._fullscreen = True
 
-    def set_corner(self, c: str):
-        self.mode.pip_corner = c
-
-    def toggle_pip(self):
-        self.mode.pip = not self.mode.pip
-
-    def toggle_fullscreen(self):
-        if self._fullscreen:
-            self.showNormal()
-            self._fullscreen = False
-        else:
+    def set_fullscreen(self, enabled: bool):
+        if enabled:
             self.showFullScreen()
             self._fullscreen = True
+        else:
+            self.showNormal()
+            self._fullscreen = False
 
-    def _pip_geometry(self) -> QRect:
-        screen = self.screen().availableGeometry()
-        w = int(screen.width() * self.mode.pip_scale)
-        h = int(screen.height() * self.mode.pip_scale)
-        m = self.mode.pip_margin
-
-        if self.mode.pip_corner == "tl":
-            x, y = screen.left() + m, screen.top() + m
-        elif self.mode.pip_corner == "tr":
-            x, y = screen.right() - w - m, screen.top() + m
-        elif self.mode.pip_corner == "bl":
-            x, y = screen.left() + m, screen.bottom() - h - m
-        else:  # "br"
-            x, y = screen.right() - w - m, screen.bottom() - h - m
-
-        return QRect(x, y, w, h)
+    def toggle_fullscreen(self):
+        self.set_fullscreen(not self._fullscreen)
 
     def update_frame(self):
         # Always use newest available frame
@@ -176,23 +145,14 @@ class ViewerWindow(QMainWindow):
 
         pix = QPixmap.fromImage(img)
 
-        if self.mode.pip:
-            # PiP: move window to corner, keep aspect
-            self.setGeometry(self._pip_geometry())
+        # Fullscreen: occupy screen
+        # If you want borderless-but-not-fullscreen, use showMaximized() instead.
+        if self._fullscreen:
+            pass
         else:
-            # Fullscreen: occupy screen
-            # If you want borderless-but-not-fullscreen, use showMaximized() instead.
-            if self._fullscreen:
-                pass
-            else:
-                self.showMaximized()
+            self.showMaximized()
 
-        # Scale to label size without adding extra buffering
-        self.label.setPixmap(pix.scaled(
-            self.label.size(),
-            Qt.KeepAspectRatio,
-            Qt.FastTransformation
-        ))
+        self.label.setPixmap(pix)
 
     def closeEvent(self, event):
         try:
@@ -203,10 +163,9 @@ class ViewerWindow(QMainWindow):
 
 
 class TrayController:
-    def __init__(self, app: QApplication, window: ViewerWindow, mode: VideoMode):
+    def __init__(self, app: QApplication, window: ViewerWindow):
         self.app = app
         self.window = window
-        self.mode = mode
 
         self.tray = QSystemTrayIcon(self._build_icon(), self.window)
         self.menu = QMenu()
@@ -218,17 +177,6 @@ class TrayController:
         self.fullscreen_action = QAction("Fullscreen", self.menu, checkable=True)
         self.fullscreen_action.triggered.connect(self._toggle_fullscreen)
         self.menu.addAction(self.fullscreen_action)
-
-        self.pip_action = QAction("Picture-in-Picture", self.menu, checkable=True)
-        self.pip_action.triggered.connect(self._toggle_pip)
-        self.menu.addAction(self.pip_action)
-
-        self.corner_menu = QMenu("PiP Corner", self.menu)
-        self._add_corner_action("Top Left", "tl")
-        self._add_corner_action("Top Right", "tr")
-        self._add_corner_action("Bottom Left", "bl")
-        self._add_corner_action("Bottom Right", "br")
-        self.menu.addMenu(self.corner_menu)
 
         self.menu.addSeparator()
 
@@ -262,26 +210,13 @@ class TrayController:
         self.window.toggle_fullscreen()
         self.sync_state()
 
-    def _toggle_pip(self):
-        self.window.toggle_pip()
-        self.sync_state()
-
-    def _set_corner(self, corner: str):
-        self.window.set_corner(corner)
-        self.sync_state()
-
-    def _add_corner_action(self, label: str, corner: str):
-        action = QAction(label, self.corner_menu)
-        action.triggered.connect(lambda checked=False, c=corner: self._set_corner(c))
-        self.corner_menu.addAction(action)
-
     def _exit_app(self):
+        self.tray.hide()
         self.window.close()
-        self.app.quit()
+        self.app.exit(0)
 
     def sync_state(self):
         self.fullscreen_action.setChecked(self.window._fullscreen)
-        self.pip_action.setChecked(self.mode.pip)
 
 
 def pick_video_device_index_by_probe() -> int:
@@ -316,9 +251,8 @@ def main():
 
     # Start UI
     app = QApplication(sys.argv)
-    mode = VideoMode(pip=False)
-    win = ViewerWindow(vid_thread, mode)
-    TrayController(app, win, mode)
+    win = ViewerWindow(vid_thread)
+    TrayController(app, win)
     win.show()
 
     rc = app.exec()
