@@ -136,7 +136,7 @@ class ViewerWindow(QMainWindow):
     def toggle_pip(self):
         self.mode.pip = not self.mode.pip
         if self.mode.pip:
-            if self._fullscreen:
+            if self._fullscreen or self.isMaximized() or self.isFullScreen():
                 self.showNormal()
                 self._fullscreen = False
 
@@ -184,10 +184,12 @@ class ViewerWindow(QMainWindow):
 
         if self.mode.pip:
             # PiP: move window to corner, keep aspect
-            if self._fullscreen:
+            if self._fullscreen or self.isMaximized() or self.isFullScreen():
                 self.showNormal()
                 self._fullscreen = False
-            self.setGeometry(self._pip_geometry())
+            pip_rect = self._pip_geometry()
+            self.resize(pip_rect.size())
+            self.move(pip_rect.topLeft())
         else:
             # Fullscreen: occupy screen
             # If you want borderless-but-not-fullscreen, use showMaximized() instead.
