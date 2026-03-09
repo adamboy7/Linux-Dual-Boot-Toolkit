@@ -202,7 +202,7 @@ class BluetoothKeyManagerApp(tk.Tk):
             fallback_status = None
             if selected_index is not None:
                 self.adapter_combobox.current(selected_index)
-                self.on_adapter_selected(preferred_device_mac)
+                self.on_adapter_selected(preferred_device_mac=preferred_device_mac)
             else:
                 self.adapter_combobox.current(0)
                 if preferred_adapter_mac:

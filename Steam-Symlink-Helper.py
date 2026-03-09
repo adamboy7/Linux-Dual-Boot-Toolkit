@@ -282,7 +282,7 @@ def remove_stale_symlinks(linux_steamapps, windows_steamapps, logger=print):
     return 0
 
 
-# ---------- Tkinter GUI ----------
+# ---------- GTK GUI ----------
 
 def run_gui():
     try:
