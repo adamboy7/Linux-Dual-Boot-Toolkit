@@ -1401,6 +1401,7 @@ class TrayApp:
             resume_mode=resume_mode,
             ignore_client=ignore_client,
         )
+        self._last_tray_state = self._desired_tray_state()
         self.core.on_status_change = self._refresh_tray
         self.core.on_resume_mode_change = self._set_resume_mode_from_core
         self.core.on_ignore_client_change = self._set_ignore_client_from_core
@@ -1651,7 +1652,7 @@ class TrayApp:
         self._start_tray_watchdog()
         # Run tray
         try:
-            self.icon.run()
+            self.icon.run(setup=lambda icon: self._refresh_tray())
         finally:
             self._stop_tray_watchdog()
 
