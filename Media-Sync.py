@@ -1651,8 +1651,11 @@ class TrayApp:
             )
         self._start_tray_watchdog()
         # Run tray
+        def _setup(icon):
+            icon.visible = True
+            self._refresh_tray()
         try:
-            self.icon.run(setup=lambda icon: self._refresh_tray())
+            self.icon.run(setup=_setup)
         finally:
             self._stop_tray_watchdog()
 
