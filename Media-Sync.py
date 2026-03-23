@@ -12,7 +12,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from enum import Enum
-from typing import Optional, Tuple
+from typing import Dict, Optional, Tuple
 
 import pystray
 from pystray import MenuItem as Item, Menu as Menu
@@ -579,6 +579,8 @@ class RelayCore:
         self.ignore_client: bool = ignore_client
         self.peer: Optional[Tuple[str, int]] = None
         self.peer_last_seen: float = 0.0
+        # HOST multi-client: maps each connected client addr → last_seen timestamp
+        self.peers: Dict[Tuple[str, int], float] = {}
 
         self.sock: Optional[socket.socket] = None
         self.loop: Optional[asyncio.AbstractEventLoop] = None
@@ -596,6 +598,13 @@ class RelayCore:
         self.on_status_change = lambda: None
         self.on_resume_mode_change = lambda mode: None
         self.on_ignore_client_change = lambda enabled: None
+
+    @property
+    def _effective_resume_mode(self) -> ResumeMode:
+        """BLIND is forced when HOST has more than one client connected."""
+        if self.role == Role.HOST and len(self.peers) > 1:
+            return ResumeMode.BLIND
+        return self.resume_mode
 
     def _log(self, message: str) -> None:
         print(f"[Media-Sync] {message}")
@@ -712,23 +721,30 @@ class RelayCore:
             pass
 
     def status_text(self) -> str:
-        if self.peer:
-            return f"{self.role.value.upper()} connected → {self.peer[0]}:{self.peer[1]}"
+        if self.role == Role.HOST and self.peers:
+            if len(self.peers) == 1:
+                addr = next(iter(self.peers))
+                return f"HOST connected → {addr[0]}:{addr[1]}"
+            return f"HOST connected → {len(self.peers)} clients"
+        if self.role == Role.CLIENT and self.peer:
+            return f"CLIENT connected → {self.peer[0]}:{self.peer[1]}"
         return f"{self.role.value.upper()} (no peer)"
 
 
     async def _send_policy_to_peer(self, source: str = "core"):
-        """Send host-authoritative policy (resume_mode) to the peer."""
-        if not self.peer:
-            return
+        """Send host-authoritative policy (resume_mode) to all connected clients."""
         if self.role != Role.HOST:
             return
-        await self._send(self.peer, {
+        if not self.peers:
+            return
+        msg = {
             "t": "policy",
             "ts": now_ms(),
-            "resume_mode": self.resume_mode.value,
+            "resume_mode": self._effective_resume_mode.value,
             "source": source,
-        })
+        }
+        for addr in list(self.peers):
+            await self._send(addr, msg)
     async def _send(self, addr: Tuple[str, int], msg: dict):
         if not self.sock:
             return
@@ -769,7 +785,9 @@ class RelayCore:
                     continue
 
                 # record peer liveness when relevant
-                if self.peer and addr == self.peer:
+                if self.role == Role.HOST and addr in self.peers:
+                    self.peers[addr] = time.time()
+                elif self.role == Role.CLIENT and self.peer and addr == self.peer:
                     self.peer_last_seen = time.time()
 
                 # handle messages
@@ -795,11 +813,15 @@ class RelayCore:
                         self._log(f"Connected to host {addr[0]}:{addr[1]} (late ack).")
                         self._notify()
                 elif mtype == "disconnect":
-                    # peer asked to disconnect
-                    if self.peer and addr == self.peer:
+                    if self.role == Role.HOST and addr in self.peers:
+                        await self._disconnect_client(addr, "peer")
+                    elif self.role == Role.CLIENT and self.peer and addr == self.peer:
                         await self._disconnect("peer")
                 elif mtype == "ping":
-                    await self._send(addr, {"t": "pong", "ts": now_ms()})
+                    if self.role == Role.HOST and addr in self.peers:
+                        await self._send(addr, {"t": "pong", "ts": now_ms()})
+                    elif self.role == Role.CLIENT and self.peer and addr == self.peer:
+                        await self._send(addr, {"t": "pong", "ts": now_ms()})
                 elif mtype == "pong":
                     # liveness updated above if addr==peer
                     pass
@@ -813,16 +835,16 @@ class RelayCore:
                     await self._handle_policy(addr, msg)
                 elif mtype == "request_toggle":
                     # client asks host to arbitrate
-                    if self.role == Role.HOST and self.peer and addr == self.peer and not self.ignore_client:
+                    if self.role == Role.HOST and addr in self.peers and not self.ignore_client:
                         hint = None
                         try:
                             hint = State(msg.get("state", "none"))
                         except Exception:
                             hint = None
-                        await self._toggle_pressed(source="peer", client_state_hint=hint)
+                        await self._toggle_pressed(source="peer", client_state_hint=hint, source_addr=addr)
                 elif mtype == "request_stop":
-                    if self.role == Role.HOST and self.peer and addr == self.peer and not self.ignore_client:
-                        await self._stop_pressed(source="peer")
+                    if self.role == Role.HOST and addr in self.peers and not self.ignore_client:
+                        await self._stop_pressed(source="peer", source_addr=addr)
             except asyncio.CancelledError:
                 return
             except (OSError, RuntimeError):
@@ -832,24 +854,23 @@ class RelayCore:
                 continue
 
     async def _handle_connect_request(self, addr, msg):
-        # If we are connected as a CLIENT, we don't accept inbound connect (by design).
+        # If we are connected as a CLIENT, we don't accept inbound connects.
         if self.role == Role.CLIENT:
             await self._send(addr, {"t": "connect_ack", "id": msg.get("id"), "ok": False, "reason": "busy_client", "ts": now_ms()})
             return
 
-        # If we already have a peer, refuse new ones (simple policy).
-        if self.peer and addr != self.peer:
-            await self._send(addr, {"t": "connect_ack", "id": msg.get("id"), "ok": False, "reason": "already_connected", "ts": now_ms()})
-            return
-
-        # Accept: we remain/become HOST.
+        # Accept: remain/become HOST, add client to peers dict.
+        prev_count = len(self.peers)
         self.role = Role.HOST
-        self.peer = (addr[0], addr[1])
+        normalized = (addr[0], addr[1])
+        self.peers[normalized] = time.time()
+        self.peer = normalized
         self.peer_last_seen = time.time()
         await self._send(addr, {"t": "connect_ack", "id": msg.get("id"), "ok": True, "ts": now_ms()})
         await self._send(addr, {"t": "resume_mode", "mode": self.resume_mode.value, "ts": now_ms()})
+        # Broadcast policy to all clients (effective mode may have changed if count went from 1→2)
         await self._send_policy_to_peer(source="connect")
-        self._log(f"Client connected from {addr[0]}:{addr[1]}.")
+        self._log(f"Client connected from {addr[0]}:{addr[1]}. Total clients: {len(self.peers)}.")
         self._notify()
 
     async def _connect_out(self, ip: str, port: int):
@@ -884,7 +905,16 @@ class RelayCore:
 
     async def _disconnect(self, why: str):
         was_client = self.role == Role.CLIENT
-        if self.peer:
+        if self.role == Role.HOST and self.peers:
+            # Notify all connected clients then clear the list
+            for addr in list(self.peers):
+                try:
+                    await self._send(addr, {"t": "disconnect", "why": why, "ts": now_ms()})
+                except Exception:
+                    pass
+            self._log(f"Disconnected all {len(self.peers)} client(s) (reason: {why}).")
+            self.peers.clear()
+        elif self.peer:
             try:
                 await self._send(self.peer, {"t": "disconnect", "why": why, "ts": now_ms()})
             except Exception:
@@ -909,11 +939,35 @@ class RelayCore:
         if self._auto_connect_enabled:
             self._ensure_auto_connect_task()
 
+    async def _disconnect_client(self, addr: Tuple[str, int], why: str):
+        """Remove a single client from the HOST peers dict without affecting other clients."""
+        if addr not in self.peers:
+            return
+        try:
+            await self._send(addr, {"t": "disconnect", "why": why, "ts": now_ms()})
+        except Exception:
+            pass
+        del self.peers[addr]
+        remaining = len(self.peers)
+        self._log(f"Client {addr[0]}:{addr[1]} disconnected (reason: {why}). Remaining clients: {remaining}.")
+        # Update self.peer to reflect current state (used for single-client compat paths)
+        self.peer = next(iter(self.peers), None)
+        self.peer_last_seen = self.peers.get(self.peer, 0.0) if self.peer else 0.0
+        # If effective mode changed (multi→single), update policy for remaining client(s)
+        if self.peers:
+            await self._send_policy_to_peer(source="client_disconnect")
+        self._notify()
+
     async def _peer_timeout_loop(self):
         while True:
             await asyncio.sleep(1.0)
-            if self.peer:
-                # if no pong/ping seen for >6s, drop peer
+            if self.role == Role.HOST:
+                now = time.time()
+                timed_out = [addr for addr, ts in list(self.peers.items()) if (now - ts) > 6.0]
+                for addr in timed_out:
+                    self._log(f"Client {addr[0]}:{addr[1]} timed out.")
+                    await self._disconnect_client(addr, "timeout")
+            elif self.peer:
                 if (time.time() - self.peer_last_seen) > 6.0:
                     self._log(f"Connection to {self.peer[0]}:{self.peer[1]} lost (timeout).")
                     await self._disconnect("timeout")
@@ -921,7 +975,13 @@ class RelayCore:
     async def _heartbeat_loop(self):
         while True:
             await asyncio.sleep(2.0)
-            if self.peer:
+            if self.role == Role.HOST:
+                for addr in list(self.peers):
+                    try:
+                        await self._send(addr, {"t": "ping", "ts": now_ms()})
+                    except Exception:
+                        pass
+            elif self.peer:
                 try:
                     await self._send(self.peer, {"t": "ping", "ts": now_ms()})
                 except Exception:
@@ -968,6 +1028,7 @@ class RelayCore:
     async def _handle_cmd(self, addr, msg):
         cmd = msg.get("cmd")
         if self.role == Role.HOST and self.ignore_client:
+            # ignore_client: reject and do NOT relay to other clients
             await self._send(addr, {"t": "ack", "id": msg.get("id"), "ts": now_ms(), "ok": False, "cmd": cmd})
             return
         ok = False
@@ -976,6 +1037,11 @@ class RelayCore:
         elif cmd in ("play", "pause", "stop"):
             ok = await self.media.command(cmd)
         await self._send(addr, {"t": "ack", "id": msg.get("id"), "ts": now_ms(), "ok": ok, "cmd": cmd})
+        # HOST: relay command to all OTHER connected clients to keep them in sync
+        if self.role == Role.HOST and addr in self.peers:
+            for other_addr in list(self.peers):
+                if other_addr != addr:
+                    await self._send(other_addr, {"t": "cmd", "cmd": cmd, "ts": now_ms(), "relayed": True})
 
     async def _handle_resume_mode(self, addr, msg):
         if self.peer and addr != self.peer:
@@ -1047,7 +1113,7 @@ class RelayCore:
     async def _set_listen_port(self, port: int):
         if port == self.listen_port:
             return
-        if self.role == Role.HOST and self.peer:
+        if self.role == Role.HOST and self.peers:
             await self._disconnect("listen_port_changed")
 
         new_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -1078,13 +1144,17 @@ class RelayCore:
             return await self.media.command("play")
         return False
 
-    async def _toggle_pressed(self, source: str, client_state_hint: Optional[State] = None):
+    async def _toggle_pressed(self, source: str, client_state_hint: Optional[State] = None,
+                               source_addr: Optional[Tuple[str, int]] = None):
         """
         If HOST: run arbitration (query peer state, decide explicit actions).
-        If CLIENT: send request_toggle to host unless in blind mode (then relay local intent),
+        If CLIENT: send request_toggle to host unless in blind mode (then relay local intent).
         """
-        if not self.peer:
-            # no peer: just toggle locally by play/pause based on local state
+        # No peers at all: toggle locally
+        if self.role == Role.HOST and not self.peers:
+            await self._toggle_local()
+            return
+        if self.role == Role.CLIENT and not self.peer:
             await self._toggle_local()
             return
 
@@ -1102,12 +1172,16 @@ class RelayCore:
             })
             return
 
-        if self.resume_mode == ResumeMode.BLIND:
+        # HOST: use effective mode (forced BLIND when >1 client)
+        if self._effective_resume_mode == ResumeMode.BLIND:
             await self._toggle_local()
-            await self._send(self.peer, {"t": "cmd", "cmd": "toggle", "ts": now_ms(), "source": source})
+            # Relay to all clients; skip source_addr since it already toggled locally in BLIND mode
+            for addr in list(self.peers):
+                if addr != source_addr:
+                    await self._send(addr, {"t": "cmd", "cmd": "toggle", "ts": now_ms(), "source": source})
             return
 
-        # HOST arbitration:
+        # Single-client HOST arbitration:
         host_snap = await self.media.snapshot()
         client_state = State.NONE
         resp = await self._rpc(self.peer, {"t": "get_state", "ts": now_ms()}, timeout=0.5)
@@ -1126,12 +1200,15 @@ class RelayCore:
         if client_cmd:
             await self._send(self.peer, {"t": "cmd", "cmd": client_cmd, "ts": now_ms()})
 
-    async def _stop_pressed(self, source: str):
+    async def _stop_pressed(self, source: str, source_addr: Optional[Tuple[str, int]] = None):
         """
-        STOP is always explicit and safe: stop local, and tell peer to stop.
-        If CLIENT: request host stop (so host can stop both).
+        STOP is always explicit and safe: stop local, and tell peer(s) to stop.
+        If CLIENT: request host stop (so host can stop all).
         """
-        if not self.peer:
+        if self.role == Role.HOST and not self.peers:
+            await self.media.command("stop")
+            return
+        if self.role == Role.CLIENT and not self.peer:
             await self.media.command("stop")
             return
 
@@ -1143,9 +1220,10 @@ class RelayCore:
             await self._send(self.peer, {"t": "request_stop", "ts": now_ms(), "source": source})
             return
 
-        # HOST: stop both directly
+        # HOST: stop locally and send stop to all clients
         await self.media.command("stop")
-        await self._send(self.peer, {"t": "cmd", "cmd": "stop", "ts": now_ms()})
+        for addr in list(self.peers):
+            await self._send(addr, {"t": "cmd", "cmd": "stop", "ts": now_ms()})
 
 
 # -------------------- Tray UI --------------------
