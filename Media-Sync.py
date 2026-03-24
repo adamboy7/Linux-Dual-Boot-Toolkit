@@ -1,4 +1,5 @@
 import asyncio
+import fnmatch
 import json
 import importlib.util
 import ipaddress
@@ -10,9 +11,11 @@ import sys
 import threading
 import time
 import uuid
+import webbrowser
 from dataclasses import dataclass
 from enum import Enum
 from typing import Dict, Optional, Tuple
+from urllib.parse import urlparse
 
 import pystray
 from pystray import MenuItem as Item, Menu as Menu
@@ -543,6 +546,101 @@ def save_config(cfg: dict) -> None:
         json.dump(cfg, f, indent=2)
 
 
+# -------------------- URL trust management --------------------
+
+def _trusted_domains_path() -> str:
+    return os.path.join(os.path.dirname(config_path()), "trusted_domains.json")
+
+
+def _trusted_hosts_path() -> str:
+    return os.path.join(os.path.dirname(config_path()), "trusted_hosts.json")
+
+
+def _load_trusted_domains() -> list:
+    p = _trusted_domains_path()
+    if not os.path.exists(p):
+        return []
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+
+def _save_trusted_domains(patterns: list) -> None:
+    with open(_trusted_domains_path(), "w", encoding="utf-8") as f:
+        json.dump(patterns, f, indent=2)
+
+
+def _load_trusted_hosts() -> list:
+    p = _trusted_hosts_path()
+    if not os.path.exists(p):
+        return []
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+
+def _save_trusted_hosts(hosts: list) -> None:
+    with open(_trusted_hosts_path(), "w", encoding="utf-8") as f:
+        json.dump(hosts, f, indent=2)
+
+
+def _is_ip_url(url: str) -> bool:
+    """Return True if the URL's host is a raw IP address rather than a domain name."""
+    try:
+        parsed = urlparse(url if "://" in url else "http://" + url)
+        host = parsed.hostname or ""
+        ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        return False
+
+
+def _url_domain(url: str) -> str:
+    """Extract the hostname from a URL."""
+    try:
+        parsed = urlparse(url if "://" in url else "http://" + url)
+        return parsed.hostname or ""
+    except Exception:
+        return ""
+
+
+def is_domain_trusted(url: str) -> bool:
+    """Return True if the URL's domain matches any saved trusted pattern."""
+    domain = _url_domain(url)
+    if not domain:
+        return False
+    for pattern in _load_trusted_domains():
+        if fnmatch.fnmatch(domain.lower(), pattern.lower()):
+            return True
+    return False
+
+
+def add_trusted_domain(url: str) -> None:
+    """Save the URL's domain to the trusted domains list."""
+    domain = _url_domain(url)
+    if not domain:
+        return
+    patterns = _load_trusted_domains()
+    if domain not in patterns:
+        patterns.append(domain)
+        _save_trusted_domains(patterns)
+
+
+def is_host_permanently_trusted(host_ip: str) -> bool:
+    return host_ip in _load_trusted_hosts()
+
+
+def add_trusted_host(host_ip: str) -> None:
+    hosts = _load_trusted_hosts()
+    if host_ip not in hosts:
+        hosts.append(host_ip)
+        _save_trusted_hosts(hosts)
+
+
 # -------------------- Networking / role state machine --------------------
 
 class Role(str, Enum):
@@ -598,6 +696,9 @@ class RelayCore:
         self.on_status_change = lambda: None
         self.on_resume_mode_change = lambda mode: None
         self.on_ignore_client_change = lambda enabled: None
+        self.on_open_url = lambda url, host_ip: None
+        # Host IPs that the client has trusted for the duration of this session
+        self.session_trusted_hosts: set = set()
 
     @property
     def _effective_resume_mode(self) -> ResumeMode:
@@ -665,6 +766,10 @@ class RelayCore:
     def ui_stop_all(self, source: str = "local"):
         if self.loop:
             self.loop.call_soon_threadsafe(lambda: asyncio.create_task(self._stop_pressed(source=source)))
+
+    def ui_send_link(self, url: str):
+        if self.loop:
+            self.loop.call_soon_threadsafe(lambda: asyncio.create_task(self._send_link(url)))
 
     # ---- internal thread/loop ----
 
@@ -845,6 +950,8 @@ class RelayCore:
                 elif mtype == "request_stop":
                     if self.role == Role.HOST and addr in self.peers and not self.ignore_client:
                         await self._stop_pressed(source="peer", source_addr=addr)
+                elif mtype == "open_url":
+                    await self._handle_open_url_msg(addr, msg)
             except asyncio.CancelledError:
                 return
             except (OSError, RuntimeError):
@@ -905,6 +1012,7 @@ class RelayCore:
 
     async def _disconnect(self, why: str):
         was_client = self.role == Role.CLIENT
+        _host_ip_before_disconnect = self.peer[0] if (was_client and self.peer) else None
         if self.role == Role.HOST and self.peers:
             # Notify all connected clients then clear the list
             for addr in list(self.peers):
@@ -922,6 +1030,8 @@ class RelayCore:
             self._log(f"Disconnected from {self.peer[0]}:{self.peer[1]} (reason: {why}).")
         self.peer = None
         self.peer_last_seen = 0.0
+        if _host_ip_before_disconnect:
+            self.session_trusted_hosts.discard(_host_ip_before_disconnect)
         should_retry = (
             self._auto_connect_enabled
             and self._auto_connect_target
@@ -1225,6 +1335,28 @@ class RelayCore:
         for addr in list(self.peers):
             await self._send(addr, {"t": "cmd", "cmd": "stop", "ts": now_ms()})
 
+    async def _send_link(self, url: str):
+        """HOST: broadcast a URL to all connected clients."""
+        if self.role != Role.HOST or not self.peers:
+            return
+        msg = {"t": "open_url", "url": url, "ts": now_ms()}
+        for addr in list(self.peers):
+            await self._send(addr, msg)
+
+    async def _handle_open_url_msg(self, addr, msg):
+        """CLIENT: receive a URL from the host and invoke the UI callback."""
+        if self.role != Role.CLIENT:
+            return
+        if not self.peer or addr != self.peer:
+            return
+        url = msg.get("url", "")
+        if not url:
+            return
+        try:
+            self.on_open_url(url, addr[0])
+        except Exception:
+            pass
+
 
 # -------------------- Tray UI --------------------
 
@@ -1252,21 +1384,29 @@ class WinPromptThread:
     def _process_queue(self):
         while True:
             try:
-                task = self._queue.get_nowait()
+                fn, result, done = self._queue.get_nowait()
             except queue.Empty:
                 break
-            prompt, initial, result, done = task
-            value = _ask_string_windows(prompt, initial, parent=self._root)
+            try:
+                value = fn(self._root)
+            except Exception:
+                value = None
             result["value"] = value
             done.set()
         self._root.after(50, self._process_queue)
 
-    def ask_string(self, prompt: str, initial: str = "") -> Optional[str]:
+    def _enqueue(self, fn):
         result = {}
         done = threading.Event()
-        self._queue.put((prompt, initial, result, done))
+        self._queue.put((fn, result, done))
         done.wait()
         return result.get("value")
+
+    def ask_string(self, prompt: str, initial: str = "") -> Optional[str]:
+        return self._enqueue(lambda root: _ask_string_windows(prompt, initial, parent=root))
+
+    def ask_url_confirm(self, url: str, is_ip: bool) -> Optional[dict]:
+        return self._enqueue(lambda root: _ask_url_confirm_windows(url, is_ip, parent=root))
 
     def stop(self):
         if self._root:
@@ -1342,6 +1482,139 @@ def _ask_string_windows(prompt: str, initial: str, parent: Optional["tk.Misc"] =
         return dialog.result
     except Exception:
         return simpledialog.askstring(APP_NAME, prompt, initialvalue=initial, parent=parent)
+
+
+if sys.platform == "win32":
+    class _WinUrlConfirmDialog(simpledialog.Dialog):
+        def __init__(self, parent, url: str, is_ip: bool):
+            self.url = url
+            self.is_ip = is_ip
+            self._accepted = False
+            self._trust_domain = tk.BooleanVar(value=False)
+            self._trust_session = tk.BooleanVar(value=False)
+            self._trust_host = tk.BooleanVar(value=False)
+            super().__init__(parent, title=APP_NAME)
+
+        def body(self, master):
+            icon_path = _app_icon_path()
+            if os.path.exists(icon_path):
+                try:
+                    self.iconbitmap(icon_path)
+                except Exception:
+                    pass
+            tk.Label(master, text="The host is requesting to open a URL.", anchor="w").grid(
+                row=0, column=0, sticky="w", padx=8, pady=(8, 2)
+            )
+            tk.Label(master, text="Would you like to open:", anchor="w").grid(
+                row=1, column=0, sticky="w", padx=8
+            )
+            tk.Label(master, text=self.url, fg="blue", wraplength=440, anchor="w").grid(
+                row=2, column=0, sticky="w", padx=8, pady=(2, 10)
+            )
+            row = 3
+            if not self.is_ip:
+                tk.Checkbutton(master, text="Trust this domain", variable=self._trust_domain).grid(
+                    row=row, column=0, sticky="w", padx=8
+                )
+                row += 1
+            tk.Checkbutton(master, text="Trust this session", variable=self._trust_session).grid(
+                row=row, column=0, sticky="w", padx=8
+            )
+            tk.Checkbutton(master, text="Trust this host", variable=self._trust_host).grid(
+                row=row + 1, column=0, sticky="w", padx=8, pady=(0, 8)
+            )
+            return None
+
+        def buttonbox(self):
+            box = tk.Frame(self)
+            tk.Button(box, text="Yes", width=8, command=self.ok).pack(side=tk.LEFT, padx=5, pady=5)
+            tk.Button(box, text="No", width=8, command=self.cancel).pack(side=tk.LEFT, padx=5, pady=5)
+            self.bind("<Return>", self.ok)
+            self.bind("<Escape>", self.cancel)
+            box.pack()
+
+        def apply(self):
+            self._accepted = True
+
+        def get_result(self) -> Optional[dict]:
+            if not self._accepted:
+                return None
+            return {
+                "accepted": True,
+                "trust_domain": self._trust_domain.get(),
+                "trust_session": self._trust_session.get(),
+                "trust_host": self._trust_host.get(),
+            }
+
+    def _ask_url_confirm_windows(url: str, is_ip: bool, parent=None) -> Optional[dict]:
+        try:
+            dlg = _WinUrlConfirmDialog(parent, url, is_ip)
+            return dlg.get_result()
+        except Exception:
+            return None
+
+else:
+    def _prompt_url_confirm_gtk(url: str, is_ip: bool) -> Optional[dict]:
+        dialog = Gtk.Dialog(title=APP_NAME)
+        icon_path = _app_icon_path()
+        if os.path.exists(icon_path):
+            try:
+                dialog.set_icon_from_file(icon_path)
+            except Exception:
+                pass
+        dialog.add_buttons("No", Gtk.ResponseType.NO, "Yes", Gtk.ResponseType.YES)
+        dialog.set_default_response(Gtk.ResponseType.YES)
+
+        box = dialog.get_content_area()
+        box.set_spacing(6)
+        box.set_border_width(12)
+
+        lbl_msg = Gtk.Label(label="The host is requesting to open a URL.\nWould you like to open:")
+        lbl_msg.set_halign(Gtk.Align.START)
+        lbl_url = Gtk.Label(label=url)
+        lbl_url.set_halign(Gtk.Align.START)
+        lbl_url.set_line_wrap(True)
+        lbl_url.set_max_width_chars(64)
+        lbl_url.set_markup(f'<span foreground="blue">{url}</span>')
+
+        box.add(lbl_msg)
+        box.add(lbl_url)
+
+        chk_domain = None
+        if not is_ip:
+            chk_domain = Gtk.CheckButton(label="Trust this domain")
+            box.add(chk_domain)
+
+        chk_session = Gtk.CheckButton(label="Trust this session")
+        chk_host = Gtk.CheckButton(label="Trust this host")
+        box.add(chk_session)
+        box.add(chk_host)
+
+        dialog.show_all()
+        response = dialog.run()
+        if response == Gtk.ResponseType.YES:
+            result = {
+                "accepted": True,
+                "trust_domain": chk_domain.get_active() if chk_domain else False,
+                "trust_session": chk_session.get_active(),
+                "trust_host": chk_host.get_active(),
+            }
+        else:
+            result = None
+        dialog.destroy()
+        return result
+
+
+def prompt_url_confirm(url: str, is_ip: bool) -> Optional[dict]:
+    """Show a URL open-confirmation dialog (cross-platform).
+
+    Returns a dict with ``accepted=True`` and trust flags, or None if rejected.
+    """
+    if sys.platform == "win32":
+        if _WIN_PROMPTER is not None:
+            return _WIN_PROMPTER.ask_url_confirm(url, is_ip)
+        return _ask_url_confirm_windows(url, is_ip)
+    return _prompt_url_confirm_gtk(url, is_ip)
 
 
 def make_icon(role: Role, connected: bool) -> Image.Image:
@@ -1483,6 +1756,7 @@ class TrayApp:
         self.core.on_status_change = self._refresh_tray
         self.core.on_resume_mode_change = self._set_resume_mode_from_core
         self.core.on_ignore_client_change = self._set_ignore_client_from_core
+        self.core.on_open_url = self._handle_open_url_from_core
         self.media_key_listener = build_media_key_listener(
             self.core,
             swallow=bool(self.cfg.get("swallow_media_keys", True)),
@@ -1527,6 +1801,13 @@ class TrayApp:
             Item("Disconnect", self._disconnect, enabled=lambda item: self.core.peer is not None),
         ]
         if self.core.role == Role.HOST:
+            items.append(
+                Item(
+                    "Send Link\u2026",
+                    self._send_link_action,
+                    enabled=lambda item: bool(self.core.peers),
+                )
+            )
             items.append(
                 Item(
                     "Ignore Client",
@@ -1717,6 +1998,48 @@ class TrayApp:
             messagebox.showinfo(APP_NAME, f"Startup shortcut created:\n{shortcut_path}")
         except Exception as exc:
             messagebox.showerror(APP_NAME, f"Failed to add startup shortcut:\n{exc}")
+
+    def _send_link_action(self, icon=None, item=None):
+        url = prompt_string("URL to send to clients:")
+        if not url:
+            return
+        self.core.ui_send_link(url)
+
+    def _handle_open_url_from_core(self, url: str, host_ip: str):
+        """Called from the asyncio thread when the client receives a URL from the host."""
+        threading.Thread(
+            target=self._process_open_url,
+            args=(url, host_ip),
+            daemon=True,
+        ).start()
+
+    def _process_open_url(self, url: str, host_ip: str):
+        """Worker thread: check trust settings, prompt if necessary, then open URL."""
+        is_ip = _is_ip_url(url)
+
+        # Auto-open if already trusted
+        if host_ip in self.core.session_trusted_hosts:
+            webbrowser.open(url)
+            return
+        if is_host_permanently_trusted(host_ip):
+            webbrowser.open(url)
+            return
+        if not is_ip and is_domain_trusted(url):
+            webbrowser.open(url)
+            return
+
+        result = prompt_url_confirm(url, is_ip)
+        if not result or not result.get("accepted"):
+            return
+
+        if result.get("trust_session"):
+            self.core.session_trusted_hosts.add(host_ip)
+        if result.get("trust_host"):
+            add_trusted_host(host_ip)
+        if result.get("trust_domain") and not is_ip:
+            add_trusted_domain(url)
+
+        webbrowser.open(url)
 
     def run(self):
         # Start core networking
