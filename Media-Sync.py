@@ -2444,8 +2444,7 @@ class TrayApp:
             return
         if not is_ip and is_domain_trusted(url):
             webbrowser.open(url)
-            self.core.ui_send_link(url, exclude_addr=client_addr)
-            return
+            # Fall through to dialog so host can decide whether to forward
 
         result = prompt_host_url_confirm(url, is_ip, client_ip)
         if result is None:
