@@ -1058,7 +1058,15 @@ class RelayCore:
         self._notify()
 
     async def _connect_out(self, ip: str, port: int):
-        addr = (ip, int(port))
+        # Resolve hostname to IP so self.peer always stores a numeric address,
+        # ensuring addr comparisons work when the user connects via domain name.
+        try:
+            resolved = await self.loop.run_in_executor(None, socket.gethostbyname, ip)
+        except OSError:
+            self._log(f"DNS resolution failed for {ip}.")
+            await self._disconnect("connect_failed")
+            return
+        addr = (resolved, int(port))
         self._last_connect_attempt = addr
         self._last_connect_attempt_ts = time.time()
 
@@ -2100,8 +2108,7 @@ class TrayApp:
         return (
             self.cfg.get("auto_connect")
             and self.cfg.get("last_role") == Role.CLIENT.value
-            and ip
-            and self._is_valid_ip(ip)
+            and bool(ip)
         )
 
     def _build_menu(self):
