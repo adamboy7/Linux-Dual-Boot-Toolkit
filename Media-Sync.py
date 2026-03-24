@@ -456,7 +456,14 @@ else:
             return
 
 
-def build_media_key_listener(core: "RelayCore", swallow: bool):
+class NullMediaKeyListener:
+    def start(self): pass
+    def stop(self): pass
+
+
+def build_media_key_listener(core: "RelayCore", swallow: bool, enabled: bool = True):
+    if not enabled:
+        return NullMediaKeyListener()
     if sys.platform == "win32":
         return WindowsMediaKeyListener(core, swallow=swallow)
     return LinuxMediaKeyListener(core, swallow=swallow)
@@ -521,6 +528,8 @@ def load_config() -> dict:
             "swallow_media_keys": True,
             "resume_mode": ResumeMode.HOST_ONLY.value,
             "ignore_client": False,
+            "enable_media_controls": True,
+            "enable_links": True,
         }
     try:
         with open(p, "r", encoding="utf-8") as f:
@@ -538,6 +547,8 @@ def load_config() -> dict:
             "swallow_media_keys": True,
             "resume_mode": ResumeMode.HOST_ONLY.value,
             "ignore_client": False,
+            "enable_media_controls": True,
+            "enable_links": True,
         }
 
 
@@ -668,13 +679,16 @@ class RelayCore:
     Runs in an asyncio loop (background thread). Tray callbacks call into this
     using thread-safe methods.
     """
-    def __init__(self, listen_port: int, resume_mode: ResumeMode, ignore_client: bool):
+    def __init__(self, listen_port: int, resume_mode: ResumeMode, ignore_client: bool,
+                 enable_media_controls: bool = True, enable_links: bool = True):
         self.listen_port = listen_port
         self.media = build_media_controller()
 
         self.role: Role = Role.HOST
         self.resume_mode: ResumeMode = resume_mode
         self.ignore_client: bool = ignore_client
+        self.enable_media_controls: bool = enable_media_controls
+        self.enable_links: bool = enable_links
         self.peer: Optional[Tuple[str, int]] = None
         self.peer_last_seen: float = 0.0
         # HOST multi-client: maps each connected client addr → last_seen timestamp
@@ -697,6 +711,8 @@ class RelayCore:
         self.on_resume_mode_change = lambda mode: None
         self.on_ignore_client_change = lambda enabled: None
         self.on_open_url = lambda url, host_ip: None
+        self.on_enable_media_controls_change = lambda enabled: None
+        self.on_enable_links_change = lambda enabled: None
         # Host IPs that the client has trusted for the duration of this session
         self.session_trusted_hosts: set = set()
 
@@ -750,6 +766,18 @@ class RelayCore:
         if self.loop:
             self.loop.call_soon_threadsafe(
                 lambda: asyncio.create_task(self._set_ignore_client(bool(enabled), source="local"))
+            )
+
+    def ui_set_enable_media_controls(self, enabled: bool):
+        if self.loop:
+            self.loop.call_soon_threadsafe(
+                lambda: asyncio.create_task(self._set_enable_media_controls(bool(enabled)))
+            )
+
+    def ui_set_enable_links(self, enabled: bool):
+        if self.loop:
+            self.loop.call_soon_threadsafe(
+                lambda: asyncio.create_task(self._set_enable_links(bool(enabled)))
             )
 
     def start_auto_connect(self, ip: str, port: int):
@@ -1125,6 +1153,16 @@ class RelayCore:
                 await asyncio.sleep(30.0)
 
     async def _handle_get_state(self, addr, msg):
+        if self.role == Role.CLIENT and not self.enable_media_controls:
+            await self._send(addr, {
+                "t": "state",
+                "id": msg.get("id"),
+                "ts": now_ms(),
+                "state": State.NONE.value,
+                "app": "",
+                "title": "",
+            })
+            return
         snap = await self.media.snapshot()
         await self._send(addr, {
             "t": "state",
@@ -1139,6 +1177,9 @@ class RelayCore:
         cmd = msg.get("cmd")
         if self.role == Role.HOST and self.ignore_client:
             # ignore_client: reject and do NOT relay to other clients
+            await self._send(addr, {"t": "ack", "id": msg.get("id"), "ts": now_ms(), "ok": False, "cmd": cmd})
+            return
+        if self.role == Role.CLIENT and not self.enable_media_controls:
             await self._send(addr, {"t": "ack", "id": msg.get("id"), "ts": now_ms(), "ok": False, "cmd": cmd})
             return
         ok = False
@@ -1220,6 +1261,24 @@ class RelayCore:
         await self._apply_ignore_client(bool(enabled), notify=True)
         await self._send_policy_to_peer(source=source)
 
+    async def _set_enable_media_controls(self, enabled: bool):
+        if enabled == self.enable_media_controls:
+            return
+        self.enable_media_controls = enabled
+        try:
+            self.on_enable_media_controls_change(enabled)
+        except Exception:
+            pass
+
+    async def _set_enable_links(self, enabled: bool):
+        if enabled == self.enable_links:
+            return
+        self.enable_links = enabled
+        try:
+            self.on_enable_links_change(enabled)
+        except Exception:
+            pass
+
     async def _set_listen_port(self, port: int):
         if port == self.listen_port:
             return
@@ -1269,6 +1328,9 @@ class RelayCore:
             return
 
         if self.role == Role.CLIENT:
+            if not self.enable_media_controls:
+                await self._toggle_local()
+                return
             if self.resume_mode == ResumeMode.BLIND:
                 await self._toggle_local()
                 await self._send(self.peer, {"t": "cmd", "cmd": "toggle", "ts": now_ms(), "source": source})
@@ -1323,6 +1385,9 @@ class RelayCore:
             return
 
         if self.role == Role.CLIENT:
+            if not self.enable_media_controls:
+                await self.media.command("stop")
+                return
             if self.resume_mode == ResumeMode.BLIND:
                 await self.media.command("stop")
                 await self._send(self.peer, {"t": "cmd", "cmd": "stop", "ts": now_ms(), "source": source})
@@ -1346,6 +1411,8 @@ class RelayCore:
     async def _handle_open_url_msg(self, addr, msg):
         """CLIENT: receive a URL from the host and invoke the UI callback."""
         if self.role != Role.CLIENT:
+            return
+        if not self.enable_links:
             return
         if not self.peer or addr != self.peer:
             return
@@ -1747,19 +1814,26 @@ class TrayApp:
         except Exception:
             resume_mode = ResumeMode.HOST_ONLY
         ignore_client = bool(self.cfg.get("ignore_client", False))
+        enable_media_controls = bool(self.cfg.get("enable_media_controls", True))
+        enable_links = bool(self.cfg.get("enable_links", True))
         self.core = RelayCore(
             listen_port=self.listen_port,
             resume_mode=resume_mode,
             ignore_client=ignore_client,
+            enable_media_controls=enable_media_controls,
+            enable_links=enable_links,
         )
         self._last_tray_state = self._desired_tray_state()
         self.core.on_status_change = self._refresh_tray
         self.core.on_resume_mode_change = self._set_resume_mode_from_core
         self.core.on_ignore_client_change = self._set_ignore_client_from_core
         self.core.on_open_url = self._handle_open_url_from_core
+        self.core.on_enable_media_controls_change = self._set_enable_media_controls_from_core
+        self.core.on_enable_links_change = self._set_enable_links_from_core
         self.media_key_listener = build_media_key_listener(
             self.core,
             swallow=bool(self.cfg.get("swallow_media_keys", True)),
+            enabled=enable_media_controls,
         )
 
         if sys.platform == "win32":
@@ -1816,6 +1890,16 @@ class TrayApp:
                 )
             )
         items += [
+            Item(
+                "Media Controls",
+                self._toggle_enable_media_controls,
+                checked=lambda item: self.core.enable_media_controls,
+            ),
+            Item(
+                "Receive Links",
+                self._toggle_enable_links,
+                checked=lambda item: self.core.enable_links,
+            ),
             Item(
                 "Resume Mode",
                 Menu(
@@ -1901,6 +1985,8 @@ class TrayApp:
             "auto_connect": self.cfg.get("auto_connect", False),
             "resume_mode": self.cfg.get("resume_mode", ResumeMode.HOST_ONLY.value),
             "ignore_client": self.cfg.get("ignore_client", False),
+            "enable_media_controls": self.cfg.get("enable_media_controls", True),
+            "enable_links": self.cfg.get("enable_links", True),
         }
         if state != self._last_saved_state:
             save_config(self.cfg)
@@ -1945,6 +2031,53 @@ class TrayApp:
 
     def _toggle_ignore_client(self, icon=None, item=None):
         self.core.ui_set_ignore_client(not self.core.ignore_client)
+
+    def _toggle_enable_media_controls(self, icon=None, item=None):
+        new_val = not self.core.enable_media_controls
+        self.cfg["enable_media_controls"] = new_val
+        save_config(self.cfg)
+        self.media_key_listener.stop()
+        self.media_key_listener = build_media_key_listener(
+            self.core,
+            swallow=bool(self.cfg.get("swallow_media_keys", True)),
+            enabled=new_val,
+        )
+        self.media_key_listener.start()
+        self.core.ui_set_enable_media_controls(new_val)
+
+    def _toggle_enable_links(self, icon=None, item=None):
+        new_val = not self.core.enable_links
+        self.cfg["enable_links"] = new_val
+        save_config(self.cfg)
+        self.core.ui_set_enable_links(new_val)
+
+    def _set_enable_media_controls_from_core(self, enabled: bool):
+        def do():
+            self.cfg["enable_media_controls"] = bool(enabled)
+            save_config(self.cfg)
+            self.icon.menu = self._build_menu()
+        try:
+            q = getattr(self.icon, "_handler_queue", None)
+            if q is not None:
+                q.put(do)
+            else:
+                do()
+        except Exception:
+            pass
+
+    def _set_enable_links_from_core(self, enabled: bool):
+        def do():
+            self.cfg["enable_links"] = bool(enabled)
+            save_config(self.cfg)
+            self.icon.menu = self._build_menu()
+        try:
+            q = getattr(self.icon, "_handler_queue", None)
+            if q is not None:
+                q.put(do)
+            else:
+                do()
+        except Exception:
+            pass
 
     def _configure_listen_port(self, icon=None, item=None):
         port = prompt_int("Listen Port:", int(self.cfg.get("listen_port", DEFAULT_PORT)))
