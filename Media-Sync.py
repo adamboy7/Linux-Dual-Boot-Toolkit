@@ -538,6 +538,15 @@ def load_config() -> dict:
             cfg["ignore_client"] = not bool(cfg.get("bidirectional"))
         if "bidirectional" in cfg:
             cfg.pop("bidirectional", None)
+        migrated = False
+        if "enable_media_controls" not in cfg:
+            cfg["enable_media_controls"] = True
+            migrated = True
+        if "enable_links" not in cfg:
+            cfg["enable_links"] = False
+            migrated = True
+        if migrated:
+            save_config(cfg)
         return cfg
     except Exception:
         return {
