@@ -751,7 +751,7 @@ class RelayCore:
         self.on_resume_mode_change = lambda mode: None
         self.on_ignore_client_change = lambda enabled: None
         self.on_open_url = lambda url, host_ip: None
-        self.on_receive_url_from_client = lambda url, client_ip: None
+        self.on_receive_url_from_client = lambda url, client_addr: None
         self.on_enable_media_controls_change = lambda enabled: None
         self.on_enable_links_change = lambda enabled: None
         # Host IPs that the client has trusted for the duration of this session
@@ -838,9 +838,9 @@ class RelayCore:
         if self.loop:
             self.loop.call_soon_threadsafe(lambda: asyncio.create_task(self._stop_pressed(source=source)))
 
-    def ui_send_link(self, url: str):
+    def ui_send_link(self, url: str, exclude_addr=None):
         if self.loop:
-            self.loop.call_soon_threadsafe(lambda: asyncio.create_task(self._send_link(url)))
+            self.loop.call_soon_threadsafe(lambda: asyncio.create_task(self._send_link(url, exclude_addr)))
 
     def ui_send_link_to_host(self, url: str):
         if self.loop:
@@ -1449,12 +1449,14 @@ class RelayCore:
         for addr in list(self.peers):
             await self._send(addr, {"t": "cmd", "cmd": "stop", "ts": now_ms()})
 
-    async def _send_link(self, url: str):
-        """HOST: broadcast a URL to all connected clients."""
+    async def _send_link(self, url: str, exclude_addr=None):
+        """HOST: broadcast a URL to all connected clients, optionally skipping one."""
         if self.role != Role.HOST or not self.peers:
             return
         msg = {"t": "open_url", "url": url, "ts": now_ms()}
         for addr in list(self.peers):
+            if addr == exclude_addr:
+                continue
             await self._send(addr, msg)
 
     async def _handle_open_url_msg(self, addr, msg):
@@ -1492,7 +1494,7 @@ class RelayCore:
         if not url:
             return
         try:
-            self.on_receive_url_from_client(url, addr[0])
+            self.on_receive_url_from_client(url, addr)
         except Exception:
             pass
 
@@ -2418,30 +2420,31 @@ class TrayApp:
 
         webbrowser.open(url)
 
-    def _handle_url_from_client(self, url: str, client_ip: str):
+    def _handle_url_from_client(self, url: str, client_addr):
         """Called from the asyncio thread when the host receives a URL from a client."""
         threading.Thread(
             target=self._process_url_from_client,
-            args=(url, client_ip),
+            args=(url, client_addr),
             daemon=True,
         ).start()
 
-    def _process_url_from_client(self, url: str, client_ip: str):
+    def _process_url_from_client(self, url: str, client_addr):
         """HOST worker thread: check trust, prompt if necessary, open/forward URL from client."""
+        client_ip = client_addr[0]
         is_ip = _is_ip_url(url)
 
         # Auto-open and forward if already trusted
         if client_ip in self.core.session_trusted_clients:
             webbrowser.open(url)
-            self.core.ui_send_link(url)
+            self.core.ui_send_link(url, exclude_addr=client_addr)
             return
         if is_client_permanently_trusted(client_ip):
             webbrowser.open(url)
-            self.core.ui_send_link(url)
+            self.core.ui_send_link(url, exclude_addr=client_addr)
             return
         if not is_ip and is_domain_trusted(url):
             webbrowser.open(url)
-            self.core.ui_send_link(url)
+            self.core.ui_send_link(url, exclude_addr=client_addr)
             return
 
         result = prompt_host_url_confirm(url, is_ip, client_ip)
@@ -2456,7 +2459,7 @@ class TrayApp:
             add_trusted_domain(url)
 
         if result.get("forward"):
-            self.core.ui_send_link(url)
+            self.core.ui_send_link(url, exclude_addr=client_addr)
 
     def _send_link_to_host_action(self, icon=None, item=None):
         url = prompt_string("URL to send to host:")
