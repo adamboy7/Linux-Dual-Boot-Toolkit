@@ -754,6 +754,8 @@ class RelayCore:
         self.on_receive_url_from_client = lambda url, client_addr: None
         self.on_enable_media_controls_change = lambda enabled: None
         self.on_enable_links_change = lambda enabled: None
+        # Whether the host we're connected to has enable_links = True (received via connect_ack/policy)
+        self.host_enable_links: bool = False
         # Host IPs that the client has trusted for the duration of this session
         self.session_trusted_hosts: set = set()
         # Client IPs that the host has trusted for the duration of this session
@@ -921,6 +923,7 @@ class RelayCore:
             "t": "policy",
             "ts": now_ms(),
             "resume_mode": self._effective_resume_mode.value,
+            "enable_links": self.enable_links,
             "source": source,
         }
         for addr in list(self.peers):
@@ -1050,7 +1053,7 @@ class RelayCore:
         self.peers[normalized] = time.time()
         self.peer = normalized
         self.peer_last_seen = time.time()
-        await self._send(addr, {"t": "connect_ack", "id": msg.get("id"), "ok": True, "ts": now_ms()})
+        await self._send(addr, {"t": "connect_ack", "id": msg.get("id"), "ok": True, "enable_links": self.enable_links, "ts": now_ms()})
         await self._send(addr, {"t": "resume_mode", "mode": self.resume_mode.value, "ts": now_ms()})
         # Broadcast policy to all clients (effective mode may have changed if count went from 1→2)
         await self._send_policy_to_peer(source="connect")
@@ -1089,6 +1092,7 @@ class RelayCore:
         self.peer_last_seen = time.time()
         self._auto_connect_target = addr
         self._auto_connect_enabled = True
+        self.host_enable_links = bool(resp.get("enable_links", True))
         self._ensure_auto_connect_task()
         # Resume mode is host-authoritative; client does not push it upstream.
         # await self._send(self.peer, {"t": "resume_mode", "mode": self.resume_mode.value, "ts": now_ms()})
@@ -1115,6 +1119,7 @@ class RelayCore:
             self._log(f"Disconnected from {self.peer[0]}:{self.peer[1]} (reason: {why}).")
         self.peer = None
         self.peer_last_seen = 0.0
+        self.host_enable_links = False
         if _host_ip_before_disconnect:
             self.session_trusted_hosts.discard(_host_ip_before_disconnect)
         should_retry = (
@@ -1278,6 +1283,14 @@ class RelayCore:
                 await self._apply_resume_mode(mode, notify=True)
             except Exception:
                 pass
+
+        enable_links_val = msg.get("enable_links")
+        if enable_links_val is not None:
+            new_val = bool(enable_links_val)
+            if new_val != self.host_enable_links:
+                self.host_enable_links = new_val
+                self._notify()
+
     async def _apply_resume_mode(self, resume_mode: ResumeMode, notify: bool):
         if resume_mode == self.resume_mode:
             return
@@ -2092,8 +2105,8 @@ class TrayApp:
     def _tray_icon(self) -> Image.Image:
         return make_icon(self.core.role, self.core.peer is not None)
 
-    def _desired_tray_state(self) -> Tuple[Role, bool]:
-        return (self.core.role, self.core.peer is not None)
+    def _desired_tray_state(self) -> Tuple[Role, bool, bool]:
+        return (self.core.role, self.core.peer is not None, self.core.host_enable_links)
 
     @staticmethod
     def _is_valid_ip(ip: str) -> bool:
@@ -2139,7 +2152,7 @@ class TrayApp:
                 Item(
                     "Send Link to Host\u2026",
                     self._send_link_to_host_action,
-                    enabled=lambda item: self.core.peer is not None,
+                    enabled=lambda item: self.core.peer is not None and self.core.host_enable_links,
                 )
             )
         items += [
@@ -2186,12 +2199,12 @@ class TrayApp:
     def _refresh_tray(self):
         # Called from core thread; marshal to tray thread
         def do():
-            with self._tray_state_lock:
-                self._last_tray_state = self._desired_tray_state()
             self.icon.icon = self._tray_icon()
             self.icon.menu = self._build_menu()
             self.icon.title = f"{APP_NAME} - {self.core.status_text()}"
             self._persist_state()
+            with self._tray_state_lock:
+                self._last_tray_state = self._desired_tray_state()
         try:
             # Preferred: marshal to the tray thread if the backend provides a handler queue
             q = getattr(self.icon, "_handler_queue", None)
