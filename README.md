@@ -4,6 +4,7 @@
 - `Bluetooth-GUI.py`: Cross-platform entry point that launches the Linux or Windows Bluetooth GUI for exporting/importing link keys. Windows version uses Tkinter.
 - `Steam-Symlink-Helper.py`: GUI/CLI helper to mirror a Windows Steam library into Linux via symlinks.
 - `Media-Sync.py`: A multi PC (non dual boot) utility to allow smart media control between PC's.
+- `Update-Toolkit.py`: Updates the toolkit to the latest version from GitHub.
 - `libraries/`: Shared logic for Bluetooth parsing, permissions, backup handling, and GUI helpers.
 
 
@@ -48,6 +49,16 @@ python3 Steam-Symlink-Helper.py \
 
 ## Media Playback Sync Tool
 `Media-Sync.py` is a system tray tool that controls playback for two PC's at once, KVM style. One PC is host, the other client. If media is playing on one or more PC's, it automatically pauses. If either PC has paused media it plays. If both PC's have paused media, the tool can be configured to resume host only or both. Remembers the last connected host and auto re-connects unless manually disconnected. Use `pythonw.exe` to run without the console window, or rename to .pyw.
+
+## Updating
+
+Run the updater from the toolkit directory on either Linux or Windows:
+
+```bash
+python3 Update-Toolkit.py
+```
+
+If the directory is a git clone and `git` is on your `PATH`, it runs `git pull origin main`. Otherwise it downloads the latest ZIP from GitHub and extracts it in place. No external dependencies are required.
 
 ## Usage tips
 - Keep `PsExec.exe`/`PsExec64.exe` in your `PATH` on Windows so the GUI can elevate to SYSTEM when needed for registry writes.
