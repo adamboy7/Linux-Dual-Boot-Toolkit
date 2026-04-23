@@ -736,6 +736,7 @@ class RelayCore:
 
         self.sock: Optional[socket.socket] = None
         self.loop: Optional[asyncio.AbstractEventLoop] = None
+        self._thread: Optional[threading.Thread] = None
         self._stop_evt = threading.Event()
         self._auto_connect_enabled = False
         self._auto_connect_task: Optional[asyncio.Task] = None
@@ -775,6 +776,7 @@ class RelayCore:
 
     def start_in_thread(self):
         t = threading.Thread(target=self._thread_main, daemon=True)
+        self._thread = t
         t.start()
         return t
 
@@ -2191,8 +2193,11 @@ class TrayApp:
             ),
             Item(lambda _item: f"Status: {self.core.status_text()}", None, enabled=False),
         ]
+        tools_items = []
         if sys.platform == "win32":
-            items.append(Item("Add to startup", self._add_to_startup))
+            tools_items.append(Item("Add to startup", self._add_to_startup))
+        tools_items.append(Item("Restart", self._restart))
+        items.append(Item("Tools", Menu(*tools_items)))
         items.append(Item("Exit", self._exit))
         return Menu(*items)
 
@@ -2385,6 +2390,17 @@ class TrayApp:
         self.icon.stop()
         if _WIN_PROMPTER is not None:
             _WIN_PROMPTER.stop()
+
+    def _restart(self, icon=None, item=None):
+        self.core.stop()
+        self.media_key_listener.stop()
+        self._stop_tray_watchdog()
+        self.icon.stop()
+        if _WIN_PROMPTER is not None:
+            _WIN_PROMPTER.stop()
+        if self.core._thread is not None:
+            self.core._thread.join(timeout=3.0)
+        subprocess.Popen([sys.executable] + sys.argv)
 
     def _add_to_startup(self, icon=None, item=None):
         if sys.platform != "win32":
