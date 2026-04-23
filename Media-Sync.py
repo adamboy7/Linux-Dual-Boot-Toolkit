@@ -2131,33 +2131,9 @@ class TrayApp:
             Item("Toggle", self._toggle),
             Item("Stop", self._stop),
             Item("Connect…", self._connect),
-            Item("Listening Port…", self._configure_listen_port),
             Item("Disconnect", self._disconnect, enabled=lambda item: self.core.peer is not None),
         ]
-        if self.core.role == Role.HOST:
-            items.append(
-                Item(
-                    "Send Link\u2026",
-                    self._send_link_action,
-                    enabled=lambda item: bool(self.core.peers),
-                )
-            )
-            items.append(
-                Item(
-                    "Ignore Client",
-                    self._toggle_ignore_client,
-                    checked=lambda item: self.core.ignore_client,
-                )
-            )
-        elif self.core.role == Role.CLIENT:
-            items.append(
-                Item(
-                    "Send Link to Host\u2026",
-                    self._send_link_to_host_action,
-                    enabled=lambda item: self.core.peer is not None and self.core.host_enable_links,
-                )
-            )
-        items += [
+        controls_items = [
             Item(
                 "Media Controls",
                 self._toggle_enable_media_controls,
@@ -2168,6 +2144,17 @@ class TrayApp:
                 self._toggle_enable_links,
                 checked=lambda item: self.core.enable_links,
             ),
+        ]
+        if self.core.role == Role.HOST:
+            controls_items.append(
+                Item(
+                    "Ignore Client",
+                    self._toggle_ignore_client,
+                    checked=lambda item: self.core.ignore_client,
+                )
+            )
+        items += [
+            Item("Controls", Menu(*controls_items)),
             Item(
                 "Resume Mode",
                 Menu(
@@ -2194,6 +2181,23 @@ class TrayApp:
             Item(lambda _item: f"Status: {self.core.status_text()}", None, enabled=False),
         ]
         tools_items = []
+        if self.core.role == Role.HOST:
+            tools_items.append(
+                Item(
+                    "Send Link…",
+                    self._send_link_action,
+                    enabled=lambda item: bool(self.core.peers),
+                )
+            )
+        elif self.core.role == Role.CLIENT:
+            tools_items.append(
+                Item(
+                    "Send Link to Host…",
+                    self._send_link_to_host_action,
+                    enabled=lambda item: self.core.peer is not None and self.core.host_enable_links,
+                )
+            )
+        tools_items.append(Item("Listening Port…", self._configure_listen_port))
         if sys.platform == "win32":
             tools_items.append(Item("Add to startup", self._add_to_startup))
         tools_items.append(Item("Restart", self._restart))
