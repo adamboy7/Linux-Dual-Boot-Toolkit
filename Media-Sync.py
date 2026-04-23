@@ -24,7 +24,7 @@ from PIL import Image, ImageDraw
 if sys.platform == "win32":
     import queue
     import tkinter as tk
-    from tkinter import simpledialog, messagebox
+    from tkinter import simpledialog, messagebox, filedialog
     import ctypes
     from ctypes import wintypes
 else:
@@ -2058,6 +2058,57 @@ def _ensure_startup_shortcut() -> Tuple[str, Optional[str]]:
     return shortcut_path, vbs_path
 
 
+def _create_shortcut_in_folder(dest_dir: str) -> str:
+    if sys.platform != "win32":
+        raise RuntimeError("Shortcut creation is only supported on Windows.")
+
+    os.makedirs(dest_dir, exist_ok=True)
+
+    frozen = getattr(sys, "frozen", False)
+    icon_path = _app_icon_path()
+    if not os.path.exists(icon_path):
+        raise FileNotFoundError(f"Icon not found: {icon_path}")
+
+    shortcut_path = os.path.join(dest_dir, f"{APP_NAME}.lnk")
+
+    if frozen:
+        target_path = sys.executable
+        args_value = ""
+        working_dir = os.path.dirname(sys.executable)
+    else:
+        script_path = os.path.abspath(__file__)
+        script_dir = os.path.dirname(script_path)
+        pythonw_path = _windows_pythonw_path()
+        vbs_path = os.path.join(script_dir, f"{APP_NAME}.vbs")
+        if os.path.exists(vbs_path):
+            os.remove(vbs_path)
+        vbs_body = (
+            'Set shell = CreateObject("WScript.Shell")\n'
+            f'shell.CurrentDirectory = "{_vbs_escape(script_dir)}"\n'
+            f'shell.Run """" & "{_vbs_escape(pythonw_path)}" & """ """ & "{_vbs_escape(script_path)}" & """", 0, False\n'
+        )
+        with open(vbs_path, "w", encoding="utf-8") as handle:
+            handle.write(vbs_body)
+        target_path = os.path.join(os.getenv("WINDIR", "C:\\Windows"), "System32", "wscript.exe")
+        args_value = f'"{vbs_path}"'
+        working_dir = script_dir
+
+    ps_script = (
+        "$WshShell = New-Object -ComObject WScript.Shell;"
+        f"$Shortcut = $WshShell.CreateShortcut({_ps_quote(shortcut_path)});"
+        f"$Shortcut.TargetPath = {_ps_quote(target_path)};"
+        f"$Shortcut.Arguments = {_ps_quote(args_value)};"
+        f"$Shortcut.WorkingDirectory = {_ps_quote(working_dir)};"
+        f"$Shortcut.IconLocation = {_ps_quote(icon_path + ',0')};"
+        "$Shortcut.Save();"
+    )
+    subprocess.run(
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_script],
+        check=True,
+    )
+    return shortcut_path
+
+
 class TrayApp:
     def __init__(self):
         self.cfg = load_config()
@@ -2200,6 +2251,7 @@ class TrayApp:
         tools_items.append(Item("Listening Port…", self._configure_listen_port))
         if sys.platform == "win32":
             tools_items.append(Item("Add to startup", self._add_to_startup))
+            tools_items.append(Item("Create Shortcut…", self._create_shortcut))
         tools_items.append(Item("Update Toolkit", self._update_toolkit))
         tools_items.append(Item("Restart", self._restart))
         items.append(Item("Tools", Menu(*tools_items)))
@@ -2430,6 +2482,21 @@ class TrayApp:
             messagebox.showinfo(APP_NAME, f"Startup shortcut created:\n{shortcut_path}")
         except Exception as exc:
             messagebox.showerror(APP_NAME, f"Failed to add startup shortcut:\n{exc}")
+
+    def _create_shortcut(self, icon=None, item=None):
+        if sys.platform != "win32":
+            return
+        root = tk.Tk()
+        root.withdraw()
+        dest_dir = filedialog.askdirectory(title="Choose folder for shortcut")
+        root.destroy()
+        if not dest_dir:
+            return
+        try:
+            shortcut_path = _create_shortcut_in_folder(dest_dir)
+            messagebox.showinfo(APP_NAME, f"Shortcut created:\n{shortcut_path}")
+        except Exception as exc:
+            messagebox.showerror(APP_NAME, f"Failed to create shortcut:\n{exc}")
 
     def _send_link_action(self, icon=None, item=None):
         url = prompt_string("URL to send to clients:")
