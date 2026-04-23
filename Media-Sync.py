@@ -2200,6 +2200,7 @@ class TrayApp:
         tools_items.append(Item("Listening Port…", self._configure_listen_port))
         if sys.platform == "win32":
             tools_items.append(Item("Add to startup", self._add_to_startup))
+        tools_items.append(Item("Update Toolkit", self._update_toolkit))
         tools_items.append(Item("Restart", self._restart))
         items.append(Item("Tools", Menu(*tools_items)))
         items.append(Item("Exit", self._exit))
@@ -2394,6 +2395,18 @@ class TrayApp:
         self.icon.stop()
         if _WIN_PROMPTER is not None:
             _WIN_PROMPTER.stop()
+
+    def _update_toolkit(self, icon=None, item=None):
+        update_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Update-Toolkit.py")
+        result = subprocess.run(
+            [sys.executable, update_script],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            messagebox.showerror(APP_NAME, f"Update failed:\n{result.stderr or result.stdout}")
+            return
+        self._restart()
 
     def _restart(self, icon=None, item=None):
         self.core.stop()
