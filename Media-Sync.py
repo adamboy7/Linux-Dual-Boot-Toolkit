@@ -619,10 +619,21 @@ def _is_ip_url(url: str) -> bool:
         return False
 
 
+_STANDARD_SCHEMES = {"http", "https", "ftp", "ftps", "mailto", "file", "data", "ws", "wss"}
+
+
+def _is_app_protocol_url(url: str) -> bool:
+    """Return True if the URL uses a non-standard app/system protocol (e.g. beatsaver://, calculator://)."""
+    scheme = urlparse(url).scheme.lower()
+    return bool(scheme) and scheme not in _STANDARD_SCHEMES
+
+
 def _url_domain(url: str) -> str:
-    """Extract the hostname from a URL."""
+    """Extract the hostname from a URL, or the scheme for app protocol URLs."""
     try:
         parsed = urlparse(url if "://" in url else "http://" + url)
+        if _is_app_protocol_url(url):
+            return parsed.scheme.lower()
         return parsed.hostname or ""
     except Exception:
         return ""
@@ -1683,7 +1694,8 @@ if sys.platform == "win32":
             )
             row = 3
             if not self.is_ip:
-                tk.Checkbutton(master, text="Trust this domain", variable=self._trust_domain).grid(
+                domain_label = "Trust this protocol" if _is_app_protocol_url(self.url) else "Trust this domain"
+                tk.Checkbutton(master, text=domain_label, variable=self._trust_domain).grid(
                     row=row, column=0, sticky="w", padx=8
                 )
                 row += 1
@@ -1750,7 +1762,8 @@ if sys.platform == "win32":
             )
             row = 2
             if not self.is_ip:
-                tk.Checkbutton(master, text="Trust this domain", variable=self._trust_domain).grid(
+                domain_label = "Trust this protocol" if _is_app_protocol_url(self.url) else "Trust this domain"
+                tk.Checkbutton(master, text=domain_label, variable=self._trust_domain).grid(
                     row=row, column=0, sticky="w", padx=8
                 )
                 row += 1
@@ -1828,7 +1841,8 @@ else:
 
         chk_domain = None
         if not is_ip:
-            chk_domain = Gtk.CheckButton(label="Trust this domain")
+            domain_label = "Trust this protocol" if _is_app_protocol_url(url) else "Trust this domain"
+            chk_domain = Gtk.CheckButton(label=domain_label)
             box.add(chk_domain)
 
         chk_session = Gtk.CheckButton(label="Trust this session")
@@ -1882,7 +1896,8 @@ else:
 
         chk_domain = None
         if not is_ip:
-            chk_domain = Gtk.CheckButton(label="Trust this domain")
+            domain_label = "Trust this protocol" if _is_app_protocol_url(url) else "Trust this domain"
+            chk_domain = Gtk.CheckButton(label=domain_label)
             box.add(chk_domain)
 
         chk_session = Gtk.CheckButton(label="Trust this client (session)")
