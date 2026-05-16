@@ -450,8 +450,8 @@ def _ensure_startup_shortcut(script_path: str | None = None) -> Tuple[str, Optio
     os.makedirs(startup_dir, exist_ok=True)
 
     frozen = getattr(sys, "frozen", False)
-    icon_path = _app_icon_path()
-    if not os.path.exists(icon_path):
+    icon_path = sys.executable if frozen else _app_icon_path()
+    if not frozen and not os.path.exists(icon_path):
         raise FileNotFoundError(f"Icon not found: {icon_path}")
 
     shortcut_path = os.path.join(startup_dir, f"{APP_NAME}.lnk")
@@ -505,8 +505,8 @@ def _create_shortcut_in_folder(dest_dir: str, script_path: str | None = None) ->
     os.makedirs(dest_dir, exist_ok=True)
 
     frozen = getattr(sys, "frozen", False)
-    icon_path = _app_icon_path()
-    if not os.path.exists(icon_path):
+    icon_path = sys.executable if frozen else _app_icon_path()
+    if not frozen and not os.path.exists(icon_path):
         raise FileNotFoundError(f"Icon not found: {icon_path}")
 
     shortcut_path = os.path.join(dest_dir, f"{APP_NAME}.lnk")

@@ -68,16 +68,7 @@ jobs:
       # Media Sync - Release
       # -------------------------
       - name: Build Media Sync EXE (release, no console)
-        run: |
-          pyinstaller `
-            --onefile `
-            --noconsole `
-            --name MediaRelay `
-            --icon "libraries/Media-Sync.ico" `
-            --add-data "libraries;libraries" `
-            --hidden-import winrt.windows.media.control `
-            --collect-submodules winrt `
-            Media-Sync.py
+        run: pyinstaller MediaRelay.spec
 
       # -------------------------
       # Upload artifacts

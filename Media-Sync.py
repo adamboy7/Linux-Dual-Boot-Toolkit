@@ -390,6 +390,9 @@ class TrayApp:
             _win_mod._WIN_PROMPTER.stop()
 
     def _update_toolkit(self, icon=None, item=None):
+        if getattr(sys, "frozen", False):
+            webbrowser.open("https://github.com/adamboy7/Linux-Dual-Boot-Toolkit/releases")
+            return
         update_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Update-Toolkit.py")
         result = subprocess.run(
             [sys.executable, update_script],
