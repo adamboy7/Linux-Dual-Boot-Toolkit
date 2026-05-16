@@ -48,10 +48,6 @@ APP_NAME = "MediaRelay"
 DEFAULT_PORT = 50123
 _WIN_PROMPTER = None
 
-# Force selector loop on Windows (more reliable for UDP + sock_recvfrom)
-if sys.platform == "win32":
-    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-
 # -------------------- Media control (shared) --------------------
 
 class State(str, Enum):
@@ -864,7 +860,11 @@ class RelayCore:
     # ---- internal thread/loop ----
 
     def _thread_main(self):
-        self.loop = asyncio.new_event_loop()
+        # Use SelectorEventLoop directly on Windows for UDP reliability
+        if sys.platform == "win32":
+            self.loop = asyncio.SelectorEventLoop()
+        else:
+            self.loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self.loop)
         self.loop.run_until_complete(self._run())
         self.loop.close()
