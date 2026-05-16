@@ -66,9 +66,10 @@ class LinuxMediaController:
         return MediaSnapshot(state, app=app, title=title)
 
     async def command(self, cmd: str) -> bool:
-        if cmd not in ("play", "pause", "stop"):
+        if cmd not in ("play", "pause", "stop", "next", "prev"):
             return False
-        result = self._run_playerctl(cmd)
+        playerctl_cmd = "previous" if cmd == "prev" else cmd
+        result = self._run_playerctl(playerctl_cmd)
         return result is not None
 
 
@@ -121,6 +122,12 @@ class LinuxMediaKeyListener:
         if key_code == evdev.ecodes.KEY_STOPCD:
             self._core.ui_stop_all(source="hid")
             return True
+        if key_code == evdev.ecodes.KEY_NEXTSONG:
+            self._core.ui_next(source="hid")
+            return True
+        if key_code == evdev.ecodes.KEY_PREVIOUSSONG:
+            self._core.ui_prev(source="hid")
+            return True
         return False
 
     def _find_devices(self):
@@ -135,7 +142,13 @@ class LinuxMediaKeyListener:
             except Exception:
                 dev.close()
                 continue
-            if evdev.ecodes.KEY_PLAYPAUSE in caps or evdev.ecodes.KEY_STOPCD in caps:
+            _MEDIA_KEYS = (
+                evdev.ecodes.KEY_PLAYPAUSE,
+                evdev.ecodes.KEY_STOPCD,
+                evdev.ecodes.KEY_NEXTSONG,
+                evdev.ecodes.KEY_PREVIOUSSONG,
+            )
+            if any(k in caps for k in _MEDIA_KEYS):
                 devices.append(dev)
             else:
                 dev.close()
@@ -202,7 +215,12 @@ class LinuxMediaKeyListener:
                     for event in dev.read():
                         swallow_event = False
                         if event.type == evdev.ecodes.EV_KEY:
-                            if event.code in (evdev.ecodes.KEY_PLAYPAUSE, evdev.ecodes.KEY_STOPCD):
+                            if event.code in (
+                                evdev.ecodes.KEY_PLAYPAUSE,
+                                evdev.ecodes.KEY_STOPCD,
+                                evdev.ecodes.KEY_NEXTSONG,
+                                evdev.ecodes.KEY_PREVIOUSSONG,
+                            ):
                                 if event.value == 1:
                                     self._handle_key(event.code)
                                 if self._swallow:

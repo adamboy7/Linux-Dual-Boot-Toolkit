@@ -69,6 +69,10 @@ class WindowsMediaController:
                 return bool(await session.try_pause_async())
             if cmd == "stop":
                 return bool(await session.try_stop_async())
+            if cmd == "next":
+                return bool(await session.try_skip_next_async())
+            if cmd == "prev":
+                return bool(await session.try_skip_previous_async())
         except Exception:
             return False
         return False
@@ -85,6 +89,8 @@ WH_KEYBOARD_LL = 13
 WM_KEYDOWN = 0x0100
 WM_SYSKEYDOWN = 0x0104
 WM_QUIT = 0x0012
+VK_MEDIA_NEXT_TRACK = 0xB0
+VK_MEDIA_PREV_TRACK = 0xB1
 VK_MEDIA_STOP = 0xB2
 VK_MEDIA_PLAY_PAUSE = 0xB3
 
@@ -141,6 +147,12 @@ class WindowsMediaKeyListener:
             return True
         if vk_code == VK_MEDIA_STOP:
             self._core.ui_stop_all(source="hid")
+            return True
+        if vk_code == VK_MEDIA_NEXT_TRACK:
+            self._core.ui_next(source="hid")
+            return True
+        if vk_code == VK_MEDIA_PREV_TRACK:
+            self._core.ui_prev(source="hid")
             return True
         return False
 

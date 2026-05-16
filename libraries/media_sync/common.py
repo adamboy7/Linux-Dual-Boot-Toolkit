@@ -88,6 +88,36 @@ def decide_actions(
     return None, None
 
 
+def decide_track_action(
+    host: State,
+    client: State,
+    resume_mode: ResumeMode,
+    track: str,
+) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Returns (host_cmd, client_cmd) for a Next/Prev press.
+    - Only one side has media -> track goes there
+    - Both have media, only one playing -> track goes to the playing side
+    - Both playing or both paused -> resume_mode decides; pause the other if it was playing
+    """
+    host_has = host in (State.PLAYING, State.PAUSED)
+    client_has = client in (State.PLAYING, State.PAUSED)
+
+    if not host_has and not client_has:
+        return None, None
+    if host_has and not client_has:
+        return track, None
+    if client_has and not host_has:
+        return None, track
+    if host == State.PLAYING and client != State.PLAYING:
+        return track, None
+    if client == State.PLAYING and host != State.PLAYING:
+        return None, track
+    if resume_mode == ResumeMode.CLIENT_ONLY:
+        return ("pause" if host == State.PLAYING else None), track
+    return track, ("pause" if client == State.PLAYING else None)
+
+
 # -------------------- Storage --------------------
 
 def config_path() -> str:
@@ -436,6 +466,14 @@ class RelayCore:
         if self.loop:
             self.loop.call_soon_threadsafe(lambda: asyncio.create_task(self._stop_pressed(source=source)))
 
+    def ui_next(self, source: str = "local"):
+        if self.loop:
+            self.loop.call_soon_threadsafe(lambda: asyncio.create_task(self._next_pressed(source=source)))
+
+    def ui_prev(self, source: str = "local"):
+        if self.loop:
+            self.loop.call_soon_threadsafe(lambda: asyncio.create_task(self._prev_pressed(source=source)))
+
     def ui_send_link(self, url: str, exclude_addr=None):
         if self.loop:
             self.loop.call_soon_threadsafe(lambda: asyncio.create_task(self._send_link(url, exclude_addr)))
@@ -626,6 +664,22 @@ class RelayCore:
                 elif mtype == "request_stop":
                     if self.role == Role.HOST and addr in self.peers and not self.ignore_client:
                         await self._stop_pressed(source="peer", source_addr=addr)
+                elif mtype == "request_next":
+                    if self.role == Role.HOST and addr in self.peers and not self.ignore_client:
+                        hint = None
+                        try:
+                            hint = State(msg.get("state", "none"))
+                        except Exception:
+                            hint = None
+                        await self._next_pressed(source="peer", client_state_hint=hint, source_addr=addr)
+                elif mtype == "request_prev":
+                    if self.role == Role.HOST and addr in self.peers and not self.ignore_client:
+                        hint = None
+                        try:
+                            hint = State(msg.get("state", "none"))
+                        except Exception:
+                            hint = None
+                        await self._prev_pressed(source="peer", client_state_hint=hint, source_addr=addr)
                 elif mtype == "open_url":
                     await self._handle_open_url_msg(addr, msg)
                 elif mtype == "client_url":
@@ -842,7 +896,7 @@ class RelayCore:
         ok = False
         if cmd == "toggle":
             ok = await self._toggle_local()
-        elif cmd in ("play", "pause", "stop"):
+        elif cmd in ("play", "pause", "stop", "next", "prev"):
             ok = await self.media.command(cmd)
         await self._send(addr, {"t": "ack", "id": msg.get("id"), "ts": now_ms(), "ok": ok, "cmd": cmd})
         # HOST: relay command to all OTHER connected clients to keep them in sync
@@ -1059,6 +1113,110 @@ class RelayCore:
         await self.media.command("stop")
         for addr in list(self.peers):
             await self._send(addr, {"t": "cmd", "cmd": "stop", "ts": now_ms()})
+
+    async def _next_pressed(self, source: str, client_state_hint: Optional[State] = None,
+                             source_addr=None):
+        if self.role == Role.HOST and not self.peers:
+            await self.media.command("next")
+            return
+        if self.role == Role.CLIENT and not self.peer:
+            await self.media.command("next")
+            return
+
+        if self.role == Role.CLIENT:
+            if not self.enable_media_controls:
+                await self.media.command("next")
+                return
+            if self.resume_mode == ResumeMode.BLIND:
+                await self.media.command("next")
+                await self._send(self.peer, {"t": "cmd", "cmd": "next", "ts": now_ms(), "source": source})
+                return
+            snap = await self.media.snapshot()
+            await self._send(self.peer, {
+                "t": "request_next",
+                "ts": now_ms(),
+                "source": source,
+                "state": snap.state.value,
+            })
+            return
+
+        # HOST: BLIND (or >1 client) — relay without arbitration
+        if self._effective_resume_mode == ResumeMode.BLIND:
+            await self.media.command("next")
+            for addr in list(self.peers):
+                if addr != source_addr:
+                    await self._send(addr, {"t": "cmd", "cmd": "next", "ts": now_ms(), "source": source})
+            return
+
+        # Single-client HOST: query states and arbitrate
+        host_snap = await self.media.snapshot()
+        client_state = State.NONE
+        resp = await self._rpc(self.peer, {"t": "get_state", "ts": now_ms()}, timeout=0.5)
+        if resp and resp.get("t") == "state":
+            try:
+                client_state = State(resp.get("state", "none"))
+            except Exception:
+                client_state = State.NONE
+        if client_state == State.NONE and client_state_hint and client_state_hint != State.NONE:
+            client_state = client_state_hint
+
+        host_cmd, client_cmd = decide_track_action(host_snap.state, client_state, self.resume_mode, "next")
+        if host_cmd:
+            await self.media.command(host_cmd)
+        if client_cmd:
+            await self._send(self.peer, {"t": "cmd", "cmd": client_cmd, "ts": now_ms()})
+
+    async def _prev_pressed(self, source: str, client_state_hint: Optional[State] = None,
+                             source_addr=None):
+        if self.role == Role.HOST and not self.peers:
+            await self.media.command("prev")
+            return
+        if self.role == Role.CLIENT and not self.peer:
+            await self.media.command("prev")
+            return
+
+        if self.role == Role.CLIENT:
+            if not self.enable_media_controls:
+                await self.media.command("prev")
+                return
+            if self.resume_mode == ResumeMode.BLIND:
+                await self.media.command("prev")
+                await self._send(self.peer, {"t": "cmd", "cmd": "prev", "ts": now_ms(), "source": source})
+                return
+            snap = await self.media.snapshot()
+            await self._send(self.peer, {
+                "t": "request_prev",
+                "ts": now_ms(),
+                "source": source,
+                "state": snap.state.value,
+            })
+            return
+
+        # HOST: BLIND (or >1 client) — relay without arbitration
+        if self._effective_resume_mode == ResumeMode.BLIND:
+            await self.media.command("prev")
+            for addr in list(self.peers):
+                if addr != source_addr:
+                    await self._send(addr, {"t": "cmd", "cmd": "prev", "ts": now_ms(), "source": source})
+            return
+
+        # Single-client HOST: query states and arbitrate
+        host_snap = await self.media.snapshot()
+        client_state = State.NONE
+        resp = await self._rpc(self.peer, {"t": "get_state", "ts": now_ms()}, timeout=0.5)
+        if resp and resp.get("t") == "state":
+            try:
+                client_state = State(resp.get("state", "none"))
+            except Exception:
+                client_state = State.NONE
+        if client_state == State.NONE and client_state_hint and client_state_hint != State.NONE:
+            client_state = client_state_hint
+
+        host_cmd, client_cmd = decide_track_action(host_snap.state, client_state, self.resume_mode, "prev")
+        if host_cmd:
+            await self.media.command(host_cmd)
+        if client_cmd:
+            await self._send(self.peer, {"t": "cmd", "cmd": client_cmd, "ts": now_ms()})
 
     async def _send_link(self, url: str, exclude_addr=None):
         """HOST: broadcast a URL to all connected clients, optionally skipping one."""
