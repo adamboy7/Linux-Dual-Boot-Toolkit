@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import threading
 import urllib.request
 import webbrowser
@@ -444,8 +445,14 @@ class TrayApp:
             os.rename(exe_path, old_path)
             os.rename(new_path, exe_path)
 
-            subprocess.Popen([exe_path])
-            self._exit()
+            bat_path = os.path.join(tempfile.gettempdir(), "_mediarelay_restart.bat")
+            with open(bat_path, "w") as f:
+                f.write(f'@echo off\r\ntimeout /t 2 /nobreak >nul\r\nstart "" "{exe_path}"\r\ndel "%~f0"\r\n')
+            subprocess.Popen(
+                ["cmd", "/c", bat_path],
+                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW,
+            )
+            os._exit(0)
 
         except Exception as exc:
             messagebox.showerror(APP_NAME, f"Update failed:\n{exc}")
