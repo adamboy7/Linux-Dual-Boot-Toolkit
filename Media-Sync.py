@@ -21,10 +21,7 @@ from libraries.media_sync import (
     RelayCore,
     ResumeMode,
     Role,
-    State,
-    _app_icon_path,
     _is_ip_url,
-    _resource_base_dir,
     add_trusted_client,
     add_trusted_domain,
     add_trusted_host,
@@ -59,7 +56,7 @@ class TrayApp:
         self.listen_port = int(self.cfg.get("listen_port", DEFAULT_PORT))
         self._last_saved_state = {}
         self._tray_state_lock = threading.Lock()
-        self._last_tray_state: Optional[Tuple[Role, bool]] = None
+        self._last_tray_state: Optional[Tuple[Role, bool, bool]] = None
         self._tray_watchdog_stop = threading.Event()
         self._tray_watchdog_thread: Optional[threading.Thread] = None
 
@@ -522,6 +519,7 @@ class TrayApp:
         if self.core._thread is not None:
             self.core._thread.join(timeout=3.0)
         subprocess.Popen([sys.executable] + sys.argv)
+        os._exit(0)
 
     def _add_to_startup(self, icon=None, item=None):
         if sys.platform != "win32":
@@ -620,7 +618,7 @@ class TrayApp:
             return
 
         result = prompt_host_url_confirm(url, is_ip, client_ip)
-        if result is None:
+        if not result or not result.get("accepted"):
             return
 
         if result.get("trust_session"):
@@ -630,6 +628,7 @@ class TrayApp:
         if result.get("trust_domain") and not is_ip:
             add_trusted_domain(url)
 
+        webbrowser.open(url)
         if result.get("forward"):
             self.core.ui_send_link(url, exclude_addr=client_addr)
 
