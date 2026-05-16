@@ -448,8 +448,17 @@ class TrayApp:
             bat_path = os.path.join(tempfile.gettempdir(), "_mediarelay_restart.bat")
             with open(bat_path, "w") as f:
                 f.write(f'@echo off\r\ntimeout /t 2 /nobreak >nul\r\nstart "" "{exe_path}"\r\ndel "%~f0"\r\n')
+            _env = os.environ.copy()
+            _meipass = getattr(sys, "_MEIPASS", None)
+            if _meipass:
+                _env.pop("_PYIBoot_MEIPASS", None)  # PyInstaller 6.x child-reuse signal
+                _env.pop("_MEIPASS2", None)          # older PyInstaller variants
+                _env["PATH"] = os.pathsep.join(
+                    p for p in _env.get("PATH", "").split(os.pathsep) if p != _meipass
+                )
             subprocess.Popen(
                 ["cmd", "/c", bat_path],
+                env=_env,
                 creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW,
             )
             os._exit(0)
