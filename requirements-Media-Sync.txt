@@ -9,15 +9,22 @@ Pillow>=10.0.0
 # ── Windows only ──────────────────────────────────────────────────────────────
 # The old monolithic 'winrt' package (1.x) is deprecated and lacks pre-built
 # binaries for Python 3.9+. The project was split into per-namespace packages
-# under the 'pywinrt' umbrella. Install the two packages below instead:
+# under the 'pywinrt' umbrella. The packages below cover the full dependency
+# chain — pywinrt does NOT pull inter-package deps automatically, so they must
+# all be listed explicitly or pip will leave them out.
 #
-#   winrt-runtime          – core WinRT async / COM glue
-#   winrt-Windows.Media.Control – exposes winrt.windows.media.control
-#                                 (GlobalSystemMediaTransportControlsSessionManager, etc.)
+#   winrt-runtime                  – core WinRT async / COM glue
+#   winrt-Windows.Foundation       – IAsyncOperation and base WinRT types
+#   winrt-Windows.Foundation.Collections – IVector / IMap used by media APIs
+#   winrt-Windows.Media            – base media namespace
+#   winrt-Windows.Media.Control    – GlobalSystemMediaTransportControlsSession*
 #
 # The import paths in Media-Sync.py are unchanged — no code edits required.
 #
 winrt-runtime>=2.0.0; sys_platform == "win32"
+winrt-Windows.Foundation>=2.0.0; sys_platform == "win32"
+winrt-Windows.Foundation.Collections>=2.0.0; sys_platform == "win32"
+winrt-Windows.Media>=2.0.0; sys_platform == "win32"
 winrt-Windows.Media.Control>=2.0.0; sys_platform == "win32"
 
 # ── Linux only ────────────────────────────────────────────────────────────────
