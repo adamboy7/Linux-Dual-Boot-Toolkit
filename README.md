@@ -3,7 +3,7 @@
 ## Repository layout
 - `Bluetooth-GUI.py`: Cross-platform entry point that launches the Linux or Windows Bluetooth GUI for exporting/importing link keys. Windows version uses Tkinter.
 - `Steam-Symlink-Helper.py`: GUI/CLI helper to mirror a Windows Steam library into Linux via symlinks.
-- `Media-Sync.py`: A multi PC (non dual boot) utility to allow smart media control between PC's.
+- `Media-Sync.py`: Media Relay — a multi PC (non dual boot) utility to allow smart media control between PC's.
 - `Update-Toolkit.py`: Updates the toolkit to the latest version from GitHub.
 - `libraries/`: Shared logic for Bluetooth parsing, permissions, backup handling, and GUI helpers.
 
@@ -47,7 +47,7 @@ python3 Steam-Symlink-Helper.py \
   --cleanup
 ```
 
-## Media Playback Sync Tool
+## Media Relay
 `Media-Sync.py` is a system tray tool that controls playback for two PC's at once, KVM style. One PC is host, the other client. If media is playing on one or more PC's, it automatically pauses. If either PC has paused media it plays. If both PC's have paused media, the tool can be configured to resume host only or both. Remembers the last connected host and auto re-connects unless manually disconnected. Use `pythonw.exe` to run without the console window, or rename to .pyw.
 
 ## Updating
@@ -74,4 +74,4 @@ If the directory is a git clone and `git` is on your `PATH`, it runs `git pull o
   ```bash
   python3 Steam-Symlink-Helper.py --win-steam /mnt/windows/SteamLibrary/steamapps --cleanup
   ```
-- Media-Sync works with Keyboard HID style media playback control. Bluetooth based playback usually works on a different driver level and therefore can't be easily intercepted. It causes the wireless playback control to be single system only. Maybe bug, maybe feature ¯\_(ツ)_/¯
+- Media Relay works with Keyboard HID style media playback control. Bluetooth based playback usually works on a different driver level and therefore can't be easily intercepted. It causes the wireless playback control to be single system only. Maybe bug, maybe feature ¯\_(ツ)_/¯

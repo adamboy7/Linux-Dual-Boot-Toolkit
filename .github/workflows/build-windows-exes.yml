@@ -8,14 +8,18 @@ on:
       - "v*"
     paths:
       - 'Bluetooth-GUI.py'
+      - 'Bluetooth-GUI.spec'
       - 'Media-Sync.py'
+      - 'MediaRelay.spec'
       - 'libraries/**'
       - '.github/workflows/build-windows-exes.yml'
 
   pull_request:
     paths:
       - 'Bluetooth-GUI.py'
+      - 'Bluetooth-GUI.spec'
       - 'Media-Sync.py'
+      - 'MediaRelay.spec'
       - 'libraries/**'
       - '.github/workflows/build-windows-exes.yml'
 
@@ -44,15 +48,7 @@ jobs:
       # Bluetooth GUI - Release
       # -------------------------
       - name: Build Bluetooth GUI EXE (release, no console)
-        run: |
-          pyinstaller `
-            --onefile `
-            --noconsole `
-            --name Bluetooth-GUI `
-            --icon "libraries/Bluetooth-Key.ico" `
-            --add-data "libraries;libraries" `
-            --collect-submodules libraries `
-            Bluetooth-GUI.py
+        run: pyinstaller Bluetooth-GUI.spec
 
       # -------------------------
       # Upload artifacts
