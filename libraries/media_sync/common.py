@@ -142,6 +142,7 @@ def load_config() -> dict:
             "ignore_client": False,
             "enable_media_controls": True,
             "enable_links": True,
+            "installed_version": "Unknown",
         }
     try:
         with open(p, "r", encoding="utf-8") as f:
@@ -157,6 +158,9 @@ def load_config() -> dict:
         if "enable_links" not in cfg:
             cfg["enable_links"] = False
             migrated = True
+        if "installed_version" not in cfg:
+            cfg["installed_version"] = "Unknown"
+            migrated = True
         if migrated:
             save_config(cfg)
         return cfg
@@ -170,12 +174,19 @@ def load_config() -> dict:
             "ignore_client": False,
             "enable_media_controls": True,
             "enable_links": True,
+            "installed_version": "Unknown",
         }
 
 
 def save_config(cfg: dict) -> None:
     with open(config_path(), "w", encoding="utf-8") as f:
         json.dump(cfg, f, indent=2)
+
+
+def get_installed_version(cfg: dict) -> str:
+    if not getattr(sys, "frozen", False):
+        return "Source"
+    return cfg.get("installed_version", "Unknown")
 
 
 # -------------------- URL trust management --------------------

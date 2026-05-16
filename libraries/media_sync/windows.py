@@ -5,6 +5,7 @@ import os
 import queue
 import subprocess
 import sys
+import tempfile
 import threading
 import tkinter as tk
 from ctypes import wintypes
@@ -560,3 +561,53 @@ def _create_shortcut_in_folder(dest_dir: str, script_path: str | None = None) ->
         check=True,
     )
     return shortcut_path
+
+
+def cleanup_old_exe(exe_path: str) -> None:
+    old_path = exe_path + ".old"
+    try:
+        os.remove(old_path)
+    except OSError:
+        pass
+
+
+def perform_frozen_update(exe_path: str, new_path: str, old_path: str, env_vars_to_clear: list) -> None:
+    if os.path.exists(old_path):
+        os.remove(old_path)
+    os.rename(exe_path, old_path)
+    os.rename(new_path, exe_path)
+
+    _env = {
+        k: v
+        for k, v in os.environ.items()
+        if not (k.startswith("_PYI_") or k in env_vars_to_clear)
+    }
+    _meipass = getattr(sys, "_MEIPASS", None)
+    if _meipass:
+        _env["PATH"] = os.pathsep.join(
+            p for p in _env.get("PATH", "").split(os.pathsep)
+            if p and p != _meipass
+        )
+
+    exe_dir = os.path.dirname(exe_path) or "."
+    bat_path = os.path.join(tempfile.gettempdir(), "_mediarelay_restart.bat")
+    with open(bat_path, "w") as f:
+        f.write(
+            "@echo off\r\n"
+            "set \"_PYI_PARENT_PROCESS_LEVEL=\"\r\n"
+            "set \"_PYI_APPLICATION_HOME_DIR=\"\r\n"
+            "set \"_PYI_ARCHIVE_FILE=\"\r\n"
+            "set \"_PYI_SPLASH_IPC=\"\r\n"
+            "set \"_PYIBoot_MEIPASS=\"\r\n"
+            "set \"_MEIPASS2=\"\r\n"
+            "timeout /t 2 /nobreak >nul\r\n"
+            f"start \"\" /D \"{exe_dir}\" \"{exe_path}\"\r\n"
+            "del \"%~f0\"\r\n"
+        )
+    subprocess.Popen(
+        ["cmd", "/c", bat_path],
+        env=_env,
+        cwd=exe_dir,
+        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW,
+    )
+    os._exit(0)

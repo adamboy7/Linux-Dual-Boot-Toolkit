@@ -382,3 +382,7 @@ def _prompt_host_url_confirm_gtk(url: str, is_ip: bool, client_ip: str) -> Optio
         }
     dialog.destroy()
     return result
+
+
+def perform_frozen_update(exe_path: str, new_path: str, old_path: str, env_vars_to_clear: list) -> None:
+    raise NotImplementedError("Linux frozen update not yet implemented")

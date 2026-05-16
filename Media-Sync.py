@@ -5,7 +5,6 @@ import json
 import os
 import subprocess
 import sys
-import tempfile
 import threading
 import urllib.request
 import webbrowser
@@ -27,6 +26,7 @@ from libraries.media_sync import (
     add_trusted_host,
     build_media_controller,
     build_media_key_listener,
+    get_installed_version,
     is_client_permanently_trusted,
     is_domain_trusted,
     is_host_permanently_trusted,
@@ -427,7 +427,12 @@ class TrayApp:
                 return
 
             tag = release.get("tag_name", "unknown")
-            if not messagebox.askyesno(APP_NAME, f"Update to {tag}?\n\nThe app will restart automatically."):
+            current = get_installed_version(self.cfg)
+            if current == "Unknown":
+                msg = f"Update to {tag}?\n\nThe app will restart automatically."
+            else:
+                msg = f"Update from {current} to {tag}?\n\nThe app will restart automatically."
+            if not messagebox.askyesno(APP_NAME, msg):
                 return
 
             exe_path = sys.executable
@@ -443,70 +448,20 @@ class TrayApp:
             with open(new_path, "wb") as f:
                 f.write(data)
 
-            # Rename running exe out of the way (Windows allows renaming a running exe),
-            # then put the new one in its place.
-            if os.path.exists(old_path):
-                os.remove(old_path)
-            os.rename(exe_path, old_path)
-            os.rename(new_path, exe_path)
+            self.cfg["installed_version"] = tag
+            save_config(self.cfg)
 
-            # PyInstaller's onefile bootloader signals child processes to
-            # reuse the parent's _MEIPASS extraction via environment vars.
-            # If any of these leak into the relaunched exe, its bootloader
-            # will skip extraction and try to load python3xx.dll out of the
-            # OLD temp dir -- which the exiting process is about to delete,
-            # producing "LoadLibrary: The specified module could not be
-            # found." Strip every known variant before relaunching.
-            #
-            #   PyInstaller 6.x:  _PYI_PARENT_PROCESS_LEVEL,
-            #                     _PYI_APPLICATION_HOME_DIR,
-            #                     _PYI_ARCHIVE_FILE,
-            #                     _PYI_SPLASH_IPC
-            #   PyInstaller 5.x:  _PYIBoot_MEIPASS
-            #   PyInstaller 3.x:  _MEIPASS2
-            _env = {
-                k: v
-                for k, v in os.environ.items()
-                if not (
-                    k.startswith("_PYI_")
-                    or k == "_PYIBoot_MEIPASS"
-                    or k == "_MEIPASS2"
+            if sys.platform == "win32":
+                _win_mod.perform_frozen_update(
+                    exe_path, new_path, old_path,
+                    ["_PYIBoot_MEIPASS", "_MEIPASS2"],
                 )
-            }
-            _meipass = getattr(sys, "_MEIPASS", None)
-            if _meipass:
-                _env["PATH"] = os.pathsep.join(
-                    p
-                    for p in _env.get("PATH", "").split(os.pathsep)
-                    if p and p != _meipass
+            else:
+                import libraries.media_sync.linux as _linux_mod
+                _linux_mod.perform_frozen_update(
+                    exe_path, new_path, old_path,
+                    ["_PYIBoot_MEIPASS", "_MEIPASS2"],
                 )
-
-            # Also wipe the same vars inside the batch itself, in case cmd
-            # picked them up from somewhere we did not control, and pin the
-            # new exe's working directory to its own folder so a stale cwd
-            # in the old temp dir cannot redirect it.
-            exe_dir = os.path.dirname(exe_path) or "."
-            bat_path = os.path.join(tempfile.gettempdir(), "_mediarelay_restart.bat")
-            with open(bat_path, "w") as f:
-                f.write(
-                    "@echo off\r\n"
-                    "set \"_PYI_PARENT_PROCESS_LEVEL=\"\r\n"
-                    "set \"_PYI_APPLICATION_HOME_DIR=\"\r\n"
-                    "set \"_PYI_ARCHIVE_FILE=\"\r\n"
-                    "set \"_PYI_SPLASH_IPC=\"\r\n"
-                    "set \"_PYIBoot_MEIPASS=\"\r\n"
-                    "set \"_MEIPASS2=\"\r\n"
-                    "timeout /t 2 /nobreak >nul\r\n"
-                    f"start \"\" /D \"{exe_dir}\" \"{exe_path}\"\r\n"
-                    "del \"%~f0\"\r\n"
-                )
-            subprocess.Popen(
-                ["cmd", "/c", bat_path],
-                env=_env,
-                cwd=exe_dir,
-                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW,
-            )
-            os._exit(0)
 
         except Exception as exc:
             messagebox.showerror(APP_NAME, f"Update failed:\n{exc}")
@@ -679,10 +634,6 @@ class TrayApp:
 
 
 if __name__ == "__main__":
-    if getattr(sys, "frozen", False):
-        _old_exe = sys.executable + ".old"
-        try:
-            os.remove(_old_exe)
-        except OSError:
-            pass
+    if getattr(sys, "frozen", False) and sys.platform == "win32":
+        _win_mod.cleanup_old_exe(sys.executable)
     TrayApp().run()
