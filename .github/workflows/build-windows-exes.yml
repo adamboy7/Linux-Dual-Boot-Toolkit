@@ -37,7 +37,12 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          # Must be >= 3.11 because libraries/media_sync/common.py uses
+          # asyncio loop.sock_recvfrom(), which was added in Python 3.11.
+          # On 3.10 the receive loop crashes with AttributeError, so the
+          # tray app launches but no UDP packets are ever read and clients
+          # cannot complete the connect handshake.
+          python-version: '3.13'
 
       - name: Install build dependencies
         run: |
