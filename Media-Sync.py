@@ -518,7 +518,19 @@ class TrayApp:
             _win_mod._WIN_PROMPTER.stop()
         if self.core._thread is not None:
             self.core._thread.join(timeout=3.0)
-        subprocess.Popen([sys.executable] + sys.argv)
+        _env = os.environ.copy()
+        if getattr(sys, "frozen", False):
+            _env = {
+                k: v for k, v in os.environ.items()
+                if not (k.startswith("_PYI_") or k == "_PYIBoot_MEIPASS" or k == "_MEIPASS2")
+            }
+            _meipass = getattr(sys, "_MEIPASS", None)
+            if _meipass:
+                _env["PATH"] = os.pathsep.join(
+                    p for p in _env.get("PATH", "").split(os.pathsep)
+                    if p and p != _meipass
+                )
+        subprocess.Popen([sys.executable] + sys.argv, env=_env)
         os._exit(0)
 
     def _add_to_startup(self, icon=None, item=None):

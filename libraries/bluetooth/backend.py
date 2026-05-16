@@ -226,9 +226,6 @@ class WindowsBluetoothBackend:
                 "Failed to import Bluetooth key: "
                 f"{exc}. Rollback attempted: {rollback_detail or 'see logs for details.'}"
             ) from exc
-        finally:
-            # Context manager closes registry handle even on failure.
-            pass
 
         return ImportResult(
             backup_path=backup_path,

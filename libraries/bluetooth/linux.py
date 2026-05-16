@@ -173,7 +173,9 @@ def import_bt_key(
                     inserted = True
                 in_linkkey = stripped.lower() == "[linkkey]"
             output_lines.append(line)
-        if not inserted:
+        if in_linkkey and not inserted:
+            output_lines.append(f"Key={record.key_hex}\n")
+        elif not inserted:
             output_lines.append("\n[LinkKey]\n")
             output_lines.append(f"Key={record.key_hex}\n")
         new_lines = output_lines

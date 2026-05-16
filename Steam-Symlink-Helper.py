@@ -87,11 +87,8 @@ def read_installdir_from_acf(acf_path, logger=print):
 
     for i, line in enumerate(lines):
         if '"installdir"' in line:
-            # example: "\t\t\"installdir\"\t\t\"Game Name\""
+            # format: \t\t"installdir"\t\t"Game Name" -> split('"') gives 5 parts, value at [3]
             parts = line.split('"')
-            # parts: ['', '\t\t', 'installdir', '\t\t', 'Game Name', '"\n']
-            if len(parts) >= 6 and parts[5].strip():
-                return parts[5].strip()
             if len(parts) >= 4 and parts[3].strip():
                 return parts[3].strip()
             # fallback: check next line
