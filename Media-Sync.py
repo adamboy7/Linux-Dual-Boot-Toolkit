@@ -120,8 +120,10 @@ class TrayApp:
 
     def _build_menu(self):
         items = [
-            Item("Toggle", self._toggle),
-            Item("Stop", self._stop),
+            Item("⏯ Toggle", self._toggle),
+            Item("⏹ Stop", self._stop),
+            Item("⏭ Next", self._next),
+            Item("⏮ Previous", self._prev),
             Item("Connect…", self._connect),
             Item("Disconnect", self._disconnect, enabled=lambda item: self.core.peer is not None),
         ]
@@ -176,7 +178,7 @@ class TrayApp:
         if self.core.role == Role.HOST:
             tools_items.append(
                 Item(
-                    "Send Link…",
+                    "Send Link… 🔗",
                     self._send_link_action,
                     enabled=lambda item: bool(self.core.peers),
                 )
@@ -184,7 +186,7 @@ class TrayApp:
         elif self.core.role == Role.CLIENT:
             tools_items.append(
                 Item(
-                    "Send Link to Host…",
+                    "Send Link to Host… 🔗",
                     self._send_link_to_host_action,
                     enabled=lambda item: self.core.peer is not None and self.core.host_enable_links,
                 )
@@ -266,6 +268,12 @@ class TrayApp:
 
     def _stop(self, icon=None, item=None):
         self.core.ui_stop_all(source="hid")
+
+    def _next(self, icon=None, item=None):
+        self.core.ui_next(source="local")
+
+    def _prev(self, icon=None, item=None):
+        self.core.ui_prev(source="local")
 
     def _set_resume_mode_from_core(self, resume_mode: ResumeMode):
         def do():
