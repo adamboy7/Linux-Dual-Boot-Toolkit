@@ -196,6 +196,10 @@ class TrayApp:
             tools_items.append(Item("Add to startup", self._add_to_startup))
             tools_items.append(Item("Create Shortcut…", self._create_shortcut))
         tools_items.append(Item("Update Toolkit", self._update_toolkit))
+        if getattr(sys, "frozen", False):
+            tools_items.append(Item("View Source", self._view_source))
+        else:
+            tools_items.append(Item("Download Release", self._download_release))
         tools_items.append(Item("Restart", self._restart))
         items.append(Item("Tools", Menu(*tools_items)))
         items.append(Item("Exit", self._exit))
@@ -471,6 +475,56 @@ class TrayApp:
                     os.remove(_new)
                 except OSError:
                     pass
+
+    def _view_source(self, icon=None, item=None):
+        webbrowser.open("https://github.com/adamboy7/Linux-Dual-Boot-Toolkit")
+
+    def _download_release(self, icon=None, item=None):
+        threading.Thread(target=self._do_download_release, daemon=True).start()
+
+    def _do_download_release(self):
+        import tkinter as tk
+        from tkinter import filedialog, messagebox as mb
+
+        api_url = "https://api.github.com/repos/adamboy7/Linux-Dual-Boot-Toolkit/releases/latest"
+        try:
+            req = urllib.request.Request(api_url, headers={"User-Agent": "MediaRelay-updater"})
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                release = json.loads(resp.read())
+
+            if sys.platform == "win32":
+                asset = next((a for a in release["assets"] if a["name"].endswith(".exe")), None)
+            else:
+                asset = next((a for a in release["assets"] if not a["name"].endswith(".exe")), None)
+
+            if asset is None:
+                mb.showinfo(APP_NAME, "No suitable release asset found for this platform.")
+                return
+
+            tag = release.get("tag_name", "unknown")
+            root = tk.Tk()
+            root.withdraw()
+            save_path = filedialog.asksaveasfilename(
+                title=f"Save {APP_NAME} {tag}",
+                initialfile=asset["name"],
+                defaultextension=os.path.splitext(asset["name"])[1],
+            )
+            root.destroy()
+            if not save_path:
+                return
+
+            req2 = urllib.request.Request(
+                asset["browser_download_url"], headers={"User-Agent": "MediaRelay-updater"}
+            )
+            with urllib.request.urlopen(req2, timeout=120) as resp:
+                data = resp.read()
+
+            with open(save_path, "wb") as f:
+                f.write(data)
+
+            mb.showinfo(APP_NAME, f"Downloaded {asset['name']} to:\n{save_path}")
+        except Exception as exc:
+            mb.showerror(APP_NAME, f"Download failed:\n{exc}")
 
     def _restart(self, icon=None, item=None):
         self.core.stop()
