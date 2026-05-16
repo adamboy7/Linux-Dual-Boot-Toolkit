@@ -1,0 +1,14 @@
+# Requirements for Steam-Symlink-Helper.py
+#
+# This script uses GTK 3.0 for its GUI on Linux.
+# All other imports (os, sys, pathlib, argparse, json) are Python standard library.
+#
+# --- Linux only ---
+# PyGObject (the 'gi' namespace) is typically installed as a system package rather than via pip.
+# Use your distro's package manager:
+#   Debian / Ubuntu:  sudo apt install python3-gi python3-gi-cairo gir1.2-gtk-3.0
+#   Fedora / RHEL:    sudo dnf install python3-gobject gtk3
+#   Arch:             sudo pacman -S python-gobject gtk3
+#
+# If you prefer pip on a system where the native libraries are already present:
+PyGObject>=3.42.0; sys_platform != "win32"

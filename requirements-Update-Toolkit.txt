@@ -1,0 +1,7 @@
+# Requirements for Update-Toolkit.py
+#
+# This script uses only Python standard library modules:
+#   io, subprocess, sys, zipfile, pathlib, urllib.request, urllib.error
+#
+# No third-party packages are required.
+# Python >= 3.8 recommended.
