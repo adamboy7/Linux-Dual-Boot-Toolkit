@@ -445,20 +445,60 @@ class TrayApp:
             os.rename(exe_path, old_path)
             os.rename(new_path, exe_path)
 
-            bat_path = os.path.join(tempfile.gettempdir(), "_mediarelay_restart.bat")
-            with open(bat_path, "w") as f:
-                f.write(f'@echo off\r\ntimeout /t 2 /nobreak >nul\r\nstart "" "{exe_path}"\r\ndel "%~f0"\r\n')
-            _env = os.environ.copy()
+            # PyInstaller's onefile bootloader signals child processes to
+            # reuse the parent's _MEIPASS extraction via environment vars.
+            # If any of these leak into the relaunched exe, its bootloader
+            # will skip extraction and try to load python3xx.dll out of the
+            # OLD temp dir -- which the exiting process is about to delete,
+            # producing "LoadLibrary: The specified module could not be
+            # found." Strip every known variant before relaunching.
+            #
+            #   PyInstaller 6.x:  _PYI_PARENT_PROCESS_LEVEL,
+            #                     _PYI_APPLICATION_HOME_DIR,
+            #                     _PYI_ARCHIVE_FILE,
+            #                     _PYI_SPLASH_IPC
+            #   PyInstaller 5.x:  _PYIBoot_MEIPASS
+            #   PyInstaller 3.x:  _MEIPASS2
+            _env = {
+                k: v
+                for k, v in os.environ.items()
+                if not (
+                    k.startswith("_PYI_")
+                    or k == "_PYIBoot_MEIPASS"
+                    or k == "_MEIPASS2"
+                )
+            }
             _meipass = getattr(sys, "_MEIPASS", None)
             if _meipass:
-                _env.pop("_PYIBoot_MEIPASS", None)  # PyInstaller 6.x child-reuse signal
-                _env.pop("_MEIPASS2", None)          # older PyInstaller variants
                 _env["PATH"] = os.pathsep.join(
-                    p for p in _env.get("PATH", "").split(os.pathsep) if p != _meipass
+                    p
+                    for p in _env.get("PATH", "").split(os.pathsep)
+                    if p and p != _meipass
+                )
+
+            # Also wipe the same vars inside the batch itself, in case cmd
+            # picked them up from somewhere we did not control, and pin the
+            # new exe's working directory to its own folder so a stale cwd
+            # in the old temp dir cannot redirect it.
+            exe_dir = os.path.dirname(exe_path) or "."
+            bat_path = os.path.join(tempfile.gettempdir(), "_mediarelay_restart.bat")
+            with open(bat_path, "w") as f:
+                f.write(
+                    "@echo off\r\n"
+                    "set \"_PYI_PARENT_PROCESS_LEVEL=\"\r\n"
+                    "set \"_PYI_APPLICATION_HOME_DIR=\"\r\n"
+                    "set \"_PYI_ARCHIVE_FILE=\"\r\n"
+                    "set \"_PYI_SPLASH_IPC=\"\r\n"
+                    "set \"_PYIBoot_MEIPASS=\"\r\n"
+                    "set \"_MEIPASS2=\"\r\n"
+                    "timeout /t 2 /nobreak >nul\r\n"
+                    f"start \"\" /D \"{exe_dir}\" \"{exe_path}\"\r\n"
+                    "del \"%~f0\"\r\n"
                 )
             subprocess.Popen(
                 ["cmd", "/c", bat_path],
                 env=_env,
+                cwd=exe_dir,
                 creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW,
             )
             os._exit(0)
