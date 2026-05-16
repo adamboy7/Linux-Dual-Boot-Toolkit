@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import ipaddress
+import json
 import os
 import subprocess
 import sys
 import threading
+import urllib.request
 import webbrowser
 from typing import Optional, Tuple
 
@@ -391,7 +393,7 @@ class TrayApp:
 
     def _update_toolkit(self, icon=None, item=None):
         if getattr(sys, "frozen", False):
-            webbrowser.open("https://github.com/adamboy7/Linux-Dual-Boot-Toolkit/releases")
+            threading.Thread(target=self._do_frozen_update, daemon=True).start()
             return
         update_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Update-Toolkit.py")
         result = subprocess.run(
@@ -404,6 +406,55 @@ class TrayApp:
                 messagebox.showerror(APP_NAME, f"Update failed:\n{result.stderr or result.stdout}")
             return
         self._restart()
+
+    def _do_frozen_update(self):
+        api_url = "https://api.github.com/repos/adamboy7/Linux-Dual-Boot-Toolkit/releases/latest"
+        try:
+            req = urllib.request.Request(api_url, headers={"User-Agent": "MediaRelay-updater"})
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                release = json.loads(resp.read())
+
+            exe_name = os.path.basename(sys.executable)
+            asset = next((a for a in release["assets"] if a["name"] == exe_name), None)
+            if asset is None:
+                messagebox.showinfo(APP_NAME, f"No asset named '{exe_name}' found in the latest release.")
+                return
+
+            tag = release.get("tag_name", "unknown")
+            if not messagebox.askyesno(APP_NAME, f"Update to {tag}?\n\nThe app will restart automatically."):
+                return
+
+            exe_path = sys.executable
+            new_path = exe_path + ".new"
+            old_path = exe_path + ".old"
+
+            req2 = urllib.request.Request(
+                asset["browser_download_url"], headers={"User-Agent": "MediaRelay-updater"}
+            )
+            with urllib.request.urlopen(req2, timeout=120) as resp:
+                data = resp.read()
+
+            with open(new_path, "wb") as f:
+                f.write(data)
+
+            # Rename running exe out of the way (Windows allows renaming a running exe),
+            # then put the new one in its place.
+            if os.path.exists(old_path):
+                os.remove(old_path)
+            os.rename(exe_path, old_path)
+            os.rename(new_path, exe_path)
+
+            subprocess.Popen([exe_path])
+            self._exit()
+
+        except Exception as exc:
+            messagebox.showerror(APP_NAME, f"Update failed:\n{exc}")
+            _new = sys.executable + ".new"
+            if os.path.exists(_new):
+                try:
+                    os.remove(_new)
+                except OSError:
+                    pass
 
     def _restart(self, icon=None, item=None):
         self.core.stop()
@@ -553,4 +604,10 @@ class TrayApp:
 
 
 if __name__ == "__main__":
+    if getattr(sys, "frozen", False):
+        _old_exe = sys.executable + ".old"
+        try:
+            os.remove(_old_exe)
+        except OSError:
+            pass
     TrayApp().run()
