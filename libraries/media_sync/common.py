@@ -5,6 +5,7 @@ import fnmatch
 import ipaddress
 import json
 import os
+import secrets
 import shutil
 import socket
 import subprocess
@@ -337,6 +338,15 @@ def now_ms() -> int:
     return int(time.time() * 1000)
 
 
+def _gen_session_token() -> str:
+    """Generate a random per-connection session token used to bind link-
+    bearing UDP packets to a peer that completed the handshake. This raises
+    the bar for blind IP-spoofing attacks against the URL-auto-open path:
+    an off-path attacker has to guess a 128-bit value to forge an open_url
+    or client_url packet that the receiver will accept."""
+    return secrets.token_hex(16)
+
+
 def encode(msg: dict) -> bytes:
     return json.dumps(msg, separators=(",", ":")).encode("utf-8")
 
@@ -396,6 +406,15 @@ class RelayCore:
         self.session_trusted_hosts: set = set()
         # Client IPs that the host has trusted for the duration of this session
         self.session_trusted_clients: set = set()
+
+        # ---- Per-peer session tokens (basic anti-IP-spoofing for links) ----
+        # HOST: maps each connected client addr -> token issued by us in
+        # connect_ack. CLIENT: token received from our host. Only link-bearing
+        # messages (open_url / client_url) require this token; media-control
+        # traffic stays unauthenticated so peers that don't speak the token
+        # protocol can still synchronise playback.
+        self.peer_tokens: Dict[Tuple[str, int], str] = {}
+        self.peer_token: Optional[str] = None
 
     @property
     def _effective_resume_mode(self) -> ResumeMode:
@@ -580,11 +599,104 @@ class RelayCore:
     async def _send(self, addr: Tuple[str, int], msg: dict):
         if not self.sock:
             return
+        # Auto-attach the session token for this peer when we have one, so
+        # link-bearing packets we send can be authenticated on the receiver.
+        # Callers that already populated "tok" (e.g. connect_ack carrying
+        # the newly-issued token) are left untouched.
+        if "tok" not in msg:
+            token: Optional[str] = None
+            if self.role == Role.HOST:
+                token = self.peer_tokens.get(addr)
+            elif self.role == Role.CLIENT and self.peer == addr:
+                token = self.peer_token
+            if token:
+                msg = {**msg, "tok": token}
         try:
             self.sock.sendto(encode(msg), addr)
         except OSError as exc:
             self._log(f"Socket send error to {addr[0]}:{addr[1]}: {exc}")
             return
+
+    # Message types that MUST carry a valid session token to be accepted.
+    # Only link-bearing traffic is gated so legacy peers keep working for
+    # media control (their pre-existing IP-spoofing exposure on that path
+    # is unchanged by us). Both link directions are gated:
+    #   client_url (CLIENT→HOST): blocks a spoofed URL the host would
+    #     otherwise fan out to every connected client.
+    #   open_url   (HOST→CLIENT): blocks an unauthenticated host from
+    #     auto-opening URLs on a modern client. A legacy host never
+    #     issues a token, so peer_token stays None and open_url is
+    #     refused; a legacy client never inspects this field at all.
+    _AUTH_REQUIRED_TYPES = frozenset({"client_url", "open_url"})
+
+    def _validate_source(self, addr: Tuple[str, int], msg: dict, mtype: Optional[str]) -> bool:
+        """Decide whether to accept an inbound packet.
+
+        The check is intentionally permissive: it only enforces the
+        session token on link-bearing packets (see _AUTH_REQUIRED_TYPES).
+        Everything else passes so legacy peers keep working — their
+        existing addr-based checks downstream still apply.
+
+        Rules:
+        - connect_request: always allowed (it bootstraps the handshake).
+        - connect_ack: only allowed from the address we just sent a
+          connect_request to, within a short window.
+        - client_url / open_url: must carry the per-peer session token
+          AND originate from the expected peer addr.
+        - Everything else: accepted. Per-handler addr checks downstream
+          (addr in self.peers, addr == self.peer) still apply.
+        """
+        if mtype == "connect_request":
+            return True
+        if mtype == "connect_ack":
+            return bool(
+                self._last_connect_attempt
+                and addr == self._last_connect_attempt
+                and (time.time() - self._last_connect_attempt_ts) < 5.0
+            )
+        if mtype not in self._AUTH_REQUIRED_TYPES:
+            return True
+        # Link-bearing message: require token + addr binding.
+        incoming = msg.get("tok", "")
+        if not isinstance(incoming, str) or not incoming:
+            self._log(
+                f"Dropped {mtype} from {addr[0]}:{addr[1]}: unauthenticated "
+                f"peer is not permitted to send links."
+            )
+            return False
+        if self.role == Role.HOST:
+            expected = self.peer_tokens.get(addr)
+            if not expected:
+                self._log(
+                    f"Dropped {mtype} from {addr[0]}:{addr[1]}: no session "
+                    f"token recorded for this client."
+                )
+                return False
+            if not secrets.compare_digest(expected, incoming):
+                self._log(
+                    f"Dropped {mtype} from {addr[0]}:{addr[1]}: session "
+                    f"token mismatch (possible spoof)."
+                )
+                return False
+            return True
+        # CLIENT side: bind the token to the expected host address. Accept
+        # _last_connect_attempt too, since the role/peer fields may not be
+        # flipped to CLIENT yet for the very first post-ack packets.
+        if self.peer_token:
+            expected_addr = self.peer or self._last_connect_attempt
+            if expected_addr and addr == expected_addr:
+                if secrets.compare_digest(self.peer_token, incoming):
+                    return True
+                self._log(
+                    f"Dropped {mtype} from {addr[0]}:{addr[1]}: session "
+                    f"token mismatch (possible spoof)."
+                )
+                return False
+        self._log(
+            f"Dropped {mtype} from {addr[0]}:{addr[1]}: no authenticated "
+            f"host session."
+        )
+        return False
 
     async def _rpc(self, addr: Tuple[str, int], msg: dict, timeout: float = 0.5) -> Optional[dict]:
         rid = uuid.uuid4().hex
@@ -611,8 +723,26 @@ class RelayCore:
                 mtype = msg.get("t")
                 rid = msg.get("id")
 
+                # Drop spoofed / unauthenticated link packets before any
+                # further handling. _validate_source is permissive for
+                # media control traffic but blocks the URL paths that
+                # would otherwise feed the IP-based trust list.
+                if not self._validate_source(addr, msg, mtype):
+                    continue
+
                 # resolve RPC futures
                 if rid and rid in self.pending and not self.pending[rid].done():
+                    # Capture the session token from a successful connect_ack
+                    # *before* unblocking _connect_out, so any follow-up
+                    # packets the host sends are recognised as ours.
+                    if (
+                        mtype == "connect_ack"
+                        and msg.get("ok")
+                        and self.peer_token is None
+                    ):
+                        tok = msg.get("tok")
+                        if isinstance(tok, str) and tok:
+                            self.peer_token = tok
                     self.pending[rid].set_result(msg)
                     continue
 
@@ -639,6 +769,9 @@ class RelayCore:
                         self.peer_last_seen = time.time()
                         self._auto_connect_target = addr
                         self._auto_connect_enabled = True
+                        tok = msg.get("tok")
+                        if isinstance(tok, str) and tok:
+                            self.peer_token = tok
                         self._ensure_auto_connect_task()
                         self._log(f"Connected to host {addr[0]}:{addr[1]} (late ack).")
                         self._notify()
@@ -715,7 +848,19 @@ class RelayCore:
         self.peers[normalized] = time.time()
         self.peer = normalized
         self.peer_last_seen = time.time()
-        await self._send(addr, {"t": "connect_ack", "id": msg.get("id"), "ok": True, "enable_links": self.enable_links, "ts": now_ms()})
+        # Issue a fresh per-connection token. Required only on the link
+        # delivery path; peers that don't echo it can still send media
+        # control commands.
+        token = _gen_session_token()
+        self.peer_tokens[normalized] = token
+        await self._send(addr, {
+            "t": "connect_ack",
+            "id": msg.get("id"),
+            "ok": True,
+            "tok": token,
+            "enable_links": self.enable_links,
+            "ts": now_ms(),
+        })
         await self._send(addr, {"t": "resume_mode", "mode": self.resume_mode.value, "ts": now_ms()})
         # Broadcast policy to all clients (effective mode may have changed if count went from 1→2)
         await self._send_policy_to_peer(source="connect")
@@ -755,6 +900,14 @@ class RelayCore:
         self._auto_connect_target = addr
         self._auto_connect_enabled = True
         self.host_enable_links = bool(resp.get("enable_links", True))
+        # Record the host's session token (if it issued one). _rx_loop also
+        # latches this on receipt of connect_ack, but set it here for
+        # symmetry. Absent token means the host doesn't speak the token
+        # protocol — media control keeps working, but we will refuse to
+        # auto-open any open_url packet it sends us.
+        tok = resp.get("tok")
+        if isinstance(tok, str) and tok:
+            self.peer_token = tok
         self._ensure_auto_connect_task()
         self._log(f"Connected to host {addr[0]}:{addr[1]}.")
         self._notify()
@@ -771,6 +924,7 @@ class RelayCore:
                     pass
             self._log(f"Disconnected all {len(self.peers)} client(s) (reason: {why}).")
             self.peers.clear()
+            self.peer_tokens.clear()
         elif self.peer:
             try:
                 await self._send(self.peer, {"t": "disconnect", "why": why, "ts": now_ms()})
@@ -778,6 +932,7 @@ class RelayCore:
                 pass
             self._log(f"Disconnected from {self.peer[0]}:{self.peer[1]} (reason: {why}).")
         self.peer = None
+        self.peer_token = None
         self.peer_last_seen = 0.0
         self.host_enable_links = False
         if _host_ip_before_disconnect:
@@ -808,6 +963,11 @@ class RelayCore:
         except Exception:
             pass
         del self.peers[addr]
+        self.peer_tokens.pop(addr, None)
+        # Don't keep this client's IP in the session trust list once they're
+        # gone — a future connection from the same IP should re-prompt
+        # rather than silently inherit trust.
+        self.session_trusted_clients.discard(addr[0])
         remaining = len(self.peers)
         self._log(f"Client {addr[0]}:{addr[1]} disconnected (reason: {why}). Remaining clients: {remaining}.")
         # Update self.peer to reflect current state (used for single-client compat paths)
