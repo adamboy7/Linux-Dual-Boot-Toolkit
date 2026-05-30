@@ -47,7 +47,13 @@ def build_media_controller():
 
 
 def build_media_key_listener(core: RelayCore, swallow: bool, enabled: bool = True):
-    """Return the platform-appropriate media key listener."""
+    """Return the platform-appropriate media key listener.
+
+    When ``enabled`` is False, a Null listener is returned: an opted-out HOST
+    must not initiate media events toward clients, and an opted-out CLIENT
+    must not send external media toggles. Client→client relay through an
+    opted-out host happens inside ``RelayCore._handle_cmd``.
+    """
     if not enabled:
         return NullMediaKeyListener()
     if sys.platform == "win32":
