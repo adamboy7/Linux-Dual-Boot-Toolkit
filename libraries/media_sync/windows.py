@@ -245,6 +245,11 @@ class WinPromptThread:
     def ask_host_url_confirm(self, url: str, is_ip: bool, client_ip: str) -> Optional[dict]:
         return self._enqueue(lambda root: _ask_host_url_confirm_windows(url, is_ip, client_ip, parent=root))
 
+    def show_kick_dialog(self, peers: dict, kick_fn, get_aliases_fn, set_alias_fn) -> None:
+        self._enqueue(
+            lambda root: _show_kick_windows(peers, kick_fn, get_aliases_fn, set_alias_fn, parent=root)
+        )
+
     def stop(self):
         if self._root:
             self._root.after(0, self._root.quit)
@@ -427,6 +432,109 @@ def _ask_host_url_confirm_windows(url: str, is_ip: bool, client_ip: str, parent=
         return dlg.get_result()
     except Exception:
         return None
+
+
+# -------------------- Kick clients dialog --------------------
+
+class _WinKickDialog(simpledialog.Dialog):
+    def __init__(self, parent, peers: dict, get_aliases_fn, set_alias_fn):
+        self._peers = peers
+        self._get_aliases = get_aliases_fn
+        self._set_alias = set_alias_fn
+        self._live_addrs: list = list(peers.keys())
+        self._kicked_addrs: list = []
+        super().__init__(parent, title=APP_NAME)
+
+    def body(self, master):
+        icon_path = _app_icon_path()
+        if os.path.exists(icon_path):
+            try:
+                self.iconbitmap(icon_path)
+            except Exception:
+                pass
+        tk.Label(master, text="Connected clients:", anchor="w").grid(
+            row=0, column=0, columnspan=2, sticky="w", padx=8, pady=(8, 2)
+        )
+        self._listbox = tk.Listbox(master, selectmode=tk.SINGLE, height=8, width=36)
+        self._listbox.grid(row=1, column=0, sticky="nsew", padx=(8, 0), pady=(0, 8))
+        scrollbar = tk.Scrollbar(master, orient=tk.VERTICAL, command=self._listbox.yview)
+        scrollbar.grid(row=1, column=1, sticky="ns", padx=(0, 8), pady=(0, 8))
+        self._listbox.configure(yscrollcommand=scrollbar.set)
+        self._listbox.bind("<Button-3>", self._on_right_click)
+        self._rebuild_list()
+        return self._listbox
+
+    def _rebuild_list(self):
+        self._listbox.delete(0, tk.END)
+        aliases = self._get_aliases()
+        for addr in self._live_addrs:
+            ip, port = addr
+            alias = aliases.get(ip)
+            label = f"{alias}:{port}" if alias else f"{ip}:{port}"
+            self._listbox.insert(tk.END, label)
+
+    def buttonbox(self):
+        box = tk.Frame(self)
+        tk.Button(box, text="Kick", width=8, command=self._on_kick).pack(side=tk.LEFT, padx=5, pady=5)
+        tk.Button(box, text="Close", width=8, command=self.cancel).pack(side=tk.LEFT, padx=5, pady=5)
+        self.bind("<Escape>", self.cancel)
+        box.pack()
+
+    def _on_kick(self):
+        sel = self._listbox.curselection()
+        if not sel:
+            return
+        idx = sel[0]
+        addr = self._live_addrs[idx]
+        ip, port = addr
+        aliases = self._get_aliases()
+        display = f"{aliases.get(ip, ip)}:{port}"
+        if not messagebox.askyesno(APP_NAME, f"Kick {display}?", parent=self):
+            return
+        self._kicked_addrs.append(addr)
+        self._live_addrs.pop(idx)
+        self._rebuild_list()
+
+    def _on_right_click(self, event):
+        idx = self._listbox.nearest(event.y)
+        if idx < 0 or idx >= len(self._live_addrs):
+            return
+        self._listbox.selection_clear(0, tk.END)
+        self._listbox.selection_set(idx)
+        addr = self._live_addrs[idx]
+        menu = tk.Menu(self, tearoff=0)
+        menu.add_command(label="Set Alias…", command=lambda: self._on_set_alias(addr))
+        menu.tk_popup(event.x_root, event.y_root)
+
+    def _on_set_alias(self, addr):
+        ip, _port = addr
+        aliases = self._get_aliases()
+        current = aliases.get(ip, "")
+        new_alias = simpledialog.askstring(
+            APP_NAME, f"Set alias for {ip}:", initialvalue=current, parent=self
+        )
+        if new_alias is None:
+            return
+        self._set_alias(ip, new_alias)
+        self._rebuild_list()
+
+    def apply(self):
+        pass
+
+    def get_result(self) -> list:
+        return self._kicked_addrs
+
+
+def _show_kick_windows(peers: dict, kick_fn, get_aliases_fn, set_alias_fn, parent=None) -> None:
+    try:
+        dlg = _WinKickDialog(parent, peers, get_aliases_fn, set_alias_fn)
+        for addr in dlg.get_result():
+            try:
+                kick_fn(addr)
+            except Exception:
+                pass
+    except Exception:
+        pass
 
 
 # -------------------- Startup shortcut helpers --------------------

@@ -384,5 +384,117 @@ def _prompt_host_url_confirm_gtk(url: str, is_ip: bool, client_ip: str) -> Optio
     return result
 
 
+def _show_kick_gtk(peers: dict, kick_fn, get_aliases_fn, set_alias_fn) -> None:
+    dialog = Gtk.Dialog(title=APP_NAME)
+    icon_path = _app_icon_path()
+    if os.path.exists(icon_path):
+        try:
+            dialog.set_icon_from_file(icon_path)
+        except Exception:
+            pass
+
+    box = dialog.get_content_area()
+    box.set_spacing(6)
+    box.set_border_width(12)
+
+    lbl = Gtk.Label(label="Connected clients:")
+    lbl.set_halign(Gtk.Align.START)
+    box.add(lbl)
+
+    store = Gtk.ListStore(str, str)  # display_name, "ip:port" key
+    current_addrs = list(peers.keys())
+
+    def _rebuild_store():
+        store.clear()
+        aliases = get_aliases_fn()
+        for addr in current_addrs:
+            ip, port = addr
+            alias = aliases.get(ip)
+            label = f"{alias}:{port}" if alias else f"{ip}:{port}"
+            store.append([label, f"{ip}:{port}"])
+
+    _rebuild_store()
+
+    tree = Gtk.TreeView(model=store)
+    col = Gtk.TreeViewColumn("Client", Gtk.CellRendererText(), text=0)
+    tree.append_column(col)
+    tree.set_headers_visible(False)
+
+    def _on_right_click(widget, event):
+        if event.button != 3:
+            return
+        path_info = tree.get_path_at_pos(int(event.x), int(event.y))
+        if not path_info:
+            return
+        path = path_info[0]
+        tree.get_selection().select_path(path)
+        idx = path.get_indices()[0]
+        if idx >= len(current_addrs):
+            return
+        ip = current_addrs[idx][0]
+        menu = Gtk.Menu()
+        item = Gtk.MenuItem(label="Set Alias…")
+        def _on_set_alias(_item, _ip=ip, _idx=idx):
+            aliases = get_aliases_fn()
+            current = aliases.get(_ip, "")
+            new_alias = _prompt_string_gtk(f"Set alias for {_ip}:", current)
+            if new_alias is None:
+                return
+            set_alias_fn(_ip, new_alias)
+            _rebuild_store()
+        item.connect("activate", _on_set_alias)
+        menu.append(item)
+        menu.show_all()
+        menu.popup_at_pointer(event)
+
+    tree.connect("button-press-event", _on_right_click)
+
+    scroll = Gtk.ScrolledWindow()
+    scroll.set_min_content_height(150)
+    scroll.set_min_content_width(260)
+    scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+    scroll.add(tree)
+    box.add(scroll)
+
+    kick_btn = Gtk.Button(label="Kick Selected")
+    box.add(kick_btn)
+
+    def _on_kick(_btn):
+        sel = tree.get_selection()
+        model, treeiter = sel.get_selected()
+        if not treeiter:
+            return
+        idx = model.get_path(treeiter).get_indices()[0]
+        if idx >= len(current_addrs):
+            return
+        addr = current_addrs[idx]
+        ip, port = addr
+        aliases = get_aliases_fn()
+        display = f"{aliases.get(ip, ip)}:{port}"
+        confirm = Gtk.MessageDialog(
+            transient_for=dialog,
+            modal=True,
+            message_type=Gtk.MessageType.QUESTION,
+            buttons=Gtk.ButtonsType.YES_NO,
+            text=f"Kick {display}?",
+        )
+        response = confirm.run()
+        confirm.destroy()
+        if response == Gtk.ResponseType.YES:
+            try:
+                kick_fn(addr)
+            except Exception:
+                pass
+            current_addrs.pop(idx)
+            _rebuild_store()
+
+    kick_btn.connect("clicked", _on_kick)
+
+    dialog.add_button("Close", Gtk.ResponseType.CLOSE)
+    dialog.show_all()
+    dialog.run()
+    dialog.destroy()
+
+
 def perform_frozen_update(exe_path: str, new_path: str, old_path: str, env_vars_to_clear: list) -> None:
     raise NotImplementedError("Linux frozen update not yet implemented")

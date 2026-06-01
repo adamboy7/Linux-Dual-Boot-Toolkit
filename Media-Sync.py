@@ -26,6 +26,7 @@ from libraries.media_sync import (
     add_trusted_host,
     build_media_controller,
     build_media_key_listener,
+    get_client_alias,
     get_installed_version,
     is_client_permanently_trusted,
     is_domain_trusted,
@@ -37,6 +38,7 @@ from libraries.media_sync import (
     prompt_string,
     prompt_url_confirm,
     save_config,
+    show_kick_dialog,
 )
 
 if sys.platform == "win32":
@@ -180,6 +182,13 @@ class TrayApp:
                 Item(
                     "Send Link… 🔗",
                     self._send_link_action,
+                    enabled=lambda item: bool(self.core.peers),
+                )
+            )
+            tools_items.append(
+                Item(
+                    "Kick…",
+                    self._kick_action,
                     enabled=lambda item: bool(self.core.peers),
                 )
             )
@@ -583,6 +592,9 @@ class TrayApp:
             return
         self.core.ui_send_link(url)
 
+    def _kick_action(self, icon=None, item=None):
+        threading.Thread(target=show_kick_dialog, args=(self.core,), daemon=True).start()
+
     def _handle_open_url_from_core(self, url: str, host_ip: str):
         """Called from the asyncio thread when the client receives a URL from the host."""
         threading.Thread(
@@ -630,6 +642,7 @@ class TrayApp:
     def _process_url_from_client(self, url: str, client_addr):
         """HOST worker thread: check trust, prompt if necessary, open/forward URL from client."""
         client_ip = client_addr[0]
+        client_display = get_client_alias(client_ip) or client_ip
         is_ip = _is_ip_url(url)
 
         # Auto-open and forward if already trusted
@@ -646,7 +659,7 @@ class TrayApp:
             self.core.ui_send_link(url, exclude_addr=client_addr)
             return
 
-        result = prompt_host_url_confirm(url, is_ip, client_ip)
+        result = prompt_host_url_confirm(url, is_ip, client_display)
         if not result or not result.get("accepted"):
             return
 

@@ -22,18 +22,23 @@ from .common import (
     add_trusted_client,
     add_trusted_domain,
     add_trusted_host,
+    client_display_name,
     config_path,
     decide_actions,
     decode,
     encode,
+    get_client_alias,
     is_client_permanently_trusted,
     is_domain_trusted,
     is_host_permanently_trusted,
     get_installed_version,
+    load_client_aliases,
     load_config,
     make_icon,
     now_ms,
+    save_client_aliases,
     save_config,
+    set_client_alias,
 )
 
 
@@ -101,6 +106,29 @@ def prompt_url_confirm(url: str, is_ip: bool) -> Optional[dict]:
     return _prompt_url_confirm_gtk(url, is_ip)
 
 
+def show_kick_dialog(core: "RelayCore") -> None:
+    """Open the Kick Clients dialog (cross-platform, HOST only)."""
+    peers_snapshot = dict(core.peers)
+    if not peers_snapshot:
+        return
+    kick_fn = core.ui_kick_client
+    get_aliases_fn = load_client_aliases
+
+    def set_alias_fn(ip: str, alias: str) -> None:
+        set_client_alias(ip, alias)
+        core._notify()
+    if sys.platform == "win32":
+        from . import windows as _w
+        if _w._WIN_PROMPTER is not None:
+            _w._WIN_PROMPTER.show_kick_dialog(peers_snapshot, kick_fn, get_aliases_fn, set_alias_fn)
+        else:
+            from .windows import _show_kick_windows
+            _show_kick_windows(peers_snapshot, kick_fn, get_aliases_fn, set_alias_fn)
+    else:
+        from .linux import _show_kick_gtk
+        _show_kick_gtk(peers_snapshot, kick_fn, get_aliases_fn, set_alias_fn)
+
+
 def prompt_host_url_confirm(url: str, is_ip: bool, client_ip: str) -> Optional[dict]:
     """Show a host-side URL dialog for a URL received from a client (cross-platform).
 
@@ -127,10 +155,16 @@ __all__ = [
     "NullMediaKeyListener",
     "RelayCore",
     "decide_actions",
+    "client_display_name",
     "config_path",
+    "get_client_alias",
     "get_installed_version",
+    "load_client_aliases",
     "load_config",
+    "save_client_aliases",
     "save_config",
+    "set_client_alias",
+    "show_kick_dialog",
     "is_domain_trusted",
     "add_trusted_domain",
     "is_host_permanently_trusted",

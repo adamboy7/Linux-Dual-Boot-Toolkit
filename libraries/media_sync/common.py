@@ -327,6 +327,48 @@ def add_trusted_client(client_ip: str) -> None:
         _save_trusted_clients(clients)
 
 
+
+# -------------------- Client aliases --------------------
+
+def _client_aliases_path() -> str:
+    return os.path.join(os.path.dirname(config_path()), "client_aliases.json")
+
+
+def load_client_aliases() -> dict:
+    p = _client_aliases_path()
+    if not os.path.exists(p):
+        return {}
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def save_client_aliases(aliases: dict) -> None:
+    with open(_client_aliases_path(), "w", encoding="utf-8") as f:
+        json.dump(aliases, f, indent=2)
+
+
+def set_client_alias(ip: str, alias: str) -> None:
+    aliases = load_client_aliases()
+    alias = alias.strip()
+    if alias:
+        aliases[ip] = alias
+    else:
+        aliases.pop(ip, None)
+    save_client_aliases(aliases)
+
+
+def get_client_alias(ip: str) -> Optional[str]:
+    return load_client_aliases().get(ip)
+
+
+def client_display_name(ip: str, port: int) -> str:
+    alias = get_client_alias(ip)
+    return f"{alias}:{port}" if alias else f"{ip}:{port}"
+
+
 # -------------------- Networking / role state machine --------------------
 
 class Role(str, Enum):
@@ -446,6 +488,12 @@ class RelayCore:
     def ui_disconnect(self):
         if self.loop:
             self.loop.call_soon_threadsafe(lambda: asyncio.create_task(self._disconnect("user")))
+
+    def ui_kick_client(self, addr: Tuple[str, int]) -> None:
+        if self.loop:
+            self.loop.call_soon_threadsafe(
+                lambda: asyncio.create_task(self._disconnect_client(addr, "kicked"))
+            )
 
     def ui_toggle(self, source: str = "local"):
         if self.loop:
@@ -574,10 +622,10 @@ class RelayCore:
         if self.role == Role.HOST and self.peers:
             if len(self.peers) == 1:
                 addr = next(iter(self.peers))
-                return f"HOST connected → {addr[0]}:{addr[1]}"
+                return f"HOST connected → {client_display_name(addr[0], addr[1])}"
             return f"HOST connected → {len(self.peers)} clients"
         if self.role == Role.CLIENT and self.peer:
-            return f"CLIENT connected → {self.peer[0]}:{self.peer[1]}"
+            return f"CLIENT connected → {client_display_name(self.peer[0], self.peer[1])}"
         return f"{self.role.value.upper()} (no peer)"
 
     async def _send_policy_to_peer(self, source: str = "core"):
@@ -779,7 +827,7 @@ class RelayCore:
                     if self.role == Role.HOST and addr in self.peers:
                         await self._disconnect_client(addr, "peer")
                     elif self.role == Role.CLIENT and self.peer and addr == self.peer:
-                        await self._disconnect("peer")
+                        await self._disconnect(msg.get("why", "peer"))
                 elif mtype == "ping":
                     if self.role == Role.HOST and addr in self.peers:
                         await self._send(addr, {"t": "pong", "ts": now_ms()})
@@ -940,16 +988,19 @@ class RelayCore:
         should_retry = (
             self._auto_connect_enabled
             and self._auto_connect_target
-            and why not in ("user", "listen_port_changed")
+            and why not in ("user", "kicked", "listen_port_changed")
         )
         if should_retry:
             self.role = Role.CLIENT  # stay client so auto-connect keeps retrying
-        elif why == "user":
-            self.role = Role.HOST  # revert to host when manually disconnected
+        elif why in ("user", "kicked"):
+            self.role = Role.HOST  # revert to host when manually disconnected or kicked
         elif was_client and self._auto_connect_enabled:
             self.role = Role.CLIENT  # remain client to allow retry
         else:
             self.role = Role.HOST
+        if why == "kicked":
+            self._auto_connect_enabled = False
+            self._cancel_auto_connect_task()
         self._notify()
         if self._auto_connect_enabled:
             self._ensure_auto_connect_task()
