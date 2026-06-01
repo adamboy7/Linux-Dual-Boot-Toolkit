@@ -502,9 +502,15 @@ class _WinKickDialog(simpledialog.Dialog):
         self._listbox.selection_clear(0, tk.END)
         self._listbox.selection_set(idx)
         addr = self._live_addrs[idx]
+        ip = addr[0]
         menu = tk.Menu(self, tearoff=0)
+        menu.add_command(label="Copy IP", command=lambda: self._on_copy_ip(ip))
         menu.add_command(label="Set Alias…", command=lambda: self._on_set_alias(addr))
         menu.tk_popup(event.x_root, event.y_root)
+
+    def _on_copy_ip(self, ip: str):
+        self.clipboard_clear()
+        self.clipboard_append(ip)
 
     def _on_set_alias(self, addr):
         ip, _port = addr

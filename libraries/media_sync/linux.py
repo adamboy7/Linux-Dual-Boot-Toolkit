@@ -10,7 +10,8 @@ from typing import Optional
 
 import gi
 gi.require_version("Gtk", "3.0")
-from gi.repository import Gtk
+gi.require_version("Gdk", "3.0")
+from gi.repository import Gdk, Gtk
 
 from libraries.permissions.linux import ensure_root_linux
 from .common import APP_NAME, _RESP_HOST_FORWARD, _RESP_HOST_OPEN, _app_icon_path, _is_app_protocol_url
@@ -433,6 +434,13 @@ def _show_kick_gtk(peers: dict, kick_fn, get_aliases_fn, set_alias_fn) -> None:
             return
         ip = current_addrs[idx][0]
         menu = Gtk.Menu()
+        copy_item = Gtk.MenuItem(label="Copy IP")
+        def _on_copy_ip(_item, _ip=ip):
+            clipboard = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)
+            clipboard.set_text(_ip, -1)
+            clipboard.store()
+        copy_item.connect("activate", _on_copy_ip)
+        menu.append(copy_item)
         item = Gtk.MenuItem(label="Set Alias…")
         def _on_set_alias(_item, _ip=ip, _idx=idx):
             aliases = get_aliases_fn()
