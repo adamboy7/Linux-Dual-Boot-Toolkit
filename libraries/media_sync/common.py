@@ -1263,10 +1263,8 @@ class RelayCore:
         If HOST: run arbitration (query peer state, decide explicit actions).
         If CLIENT: send request_toggle to host unless in blind mode (then relay local intent).
         """
-        # No peers at all: toggle locally (skip if HOST opted out of media controls)
+        # No peers: toggle locally. HOST opt-out skips peer relay, not local control.
         if self.role == Role.HOST and not self.peers:
-            if not self.enable_media_controls:
-                return
             await self._toggle_local()
             return
         if self.role == Role.CLIENT and not self.peer:
@@ -1290,10 +1288,9 @@ class RelayCore:
             })
             return
 
-        # HOST opt-out: host doesn't initiate any media events. Client-originated
-        # commands still relay through _handle_cmd; here we just drop the local
-        # action (host's own media keys / tray button) without touching peers.
+        # HOST opt-out: still toggle locally, but skip peer relay.
         if not self.enable_media_controls:
+            await self._toggle_local()
             return
 
         # HOST: use effective mode (forced BLIND when >1 client)
@@ -1330,8 +1327,6 @@ class RelayCore:
         If CLIENT: request host stop (so host can stop all).
         """
         if self.role == Role.HOST and not self.peers:
-            if not self.enable_media_controls:
-                return
             await self.media.command("stop")
             return
         if self.role == Role.CLIENT and not self.peer:
@@ -1349,9 +1344,9 @@ class RelayCore:
             await self._send(self.peer, {"t": "request_stop", "ts": now_ms(), "source": source})
             return
 
-        # HOST opt-out: host doesn't initiate stop. Client-originated stops still
-        # relay through _handle_cmd; the host's own button/key is a no-op.
+        # HOST opt-out: still stop locally, but skip peer relay.
         if not self.enable_media_controls:
+            await self.media.command("stop")
             return
 
         # HOST: stop locally and send stop to all clients
@@ -1362,8 +1357,6 @@ class RelayCore:
     async def _next_pressed(self, source: str, client_state_hint: Optional[State] = None,
                              source_addr=None):
         if self.role == Role.HOST and not self.peers:
-            if not self.enable_media_controls:
-                return
             await self.media.command("next")
             return
         if self.role == Role.CLIENT and not self.peer:
@@ -1387,9 +1380,9 @@ class RelayCore:
             })
             return
 
-        # HOST opt-out: host doesn't initiate next. Client-originated next still
-        # relays through _handle_cmd; host's own button/key is a no-op.
+        # HOST opt-out: still advance locally, but skip peer relay.
         if not self.enable_media_controls:
+            await self.media.command("next")
             return
 
         # HOST: BLIND (or >1 client) — relay without arbitration
@@ -1421,8 +1414,6 @@ class RelayCore:
     async def _prev_pressed(self, source: str, client_state_hint: Optional[State] = None,
                              source_addr=None):
         if self.role == Role.HOST and not self.peers:
-            if not self.enable_media_controls:
-                return
             await self.media.command("prev")
             return
         if self.role == Role.CLIENT and not self.peer:
@@ -1446,9 +1437,9 @@ class RelayCore:
             })
             return
 
-        # HOST opt-out: host doesn't initiate prev. Client-originated prev still
-        # relays through _handle_cmd; host's own button/key is a no-op.
+        # HOST opt-out: still go back locally, but skip peer relay.
         if not self.enable_media_controls:
+            await self.media.command("prev")
             return
 
         # HOST: BLIND (or >1 client) — relay without arbitration
