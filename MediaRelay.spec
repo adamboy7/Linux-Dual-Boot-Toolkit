@@ -5,7 +5,7 @@ a = Analysis(
     ['Media-Sync.py'],
     pathex=[],
     binaries=[],
-    datas=[('libraries', 'libraries')],
+    datas=[('libraries/Media-Sync.ico', 'libraries')],
     hiddenimports=collect_submodules('libraries'),
     hookspath=[],
     hooksconfig={},

@@ -49,10 +49,10 @@ try:
     import tkinter as tk
     from tkinter import filedialog, messagebox
     _TK_AVAILABLE = True
-except ImportError: # pragma: no cover - tkinter missing
-    tk = None # type: ignore[assignment]
-    filedialog = None # type: ignore[assignment]
-    messagebox = None # type: ignore[assignment]
+except ImportError:  # pragma: no cover - tkinter missing
+    tk = None  # type: ignore[assignment]
+    filedialog = None  # type: ignore[assignment]
+    messagebox = None  # type: ignore[assignment]
     _TK_AVAILABLE = False
 
 if sys.platform == "win32":
@@ -69,8 +69,9 @@ def _ui_show(kind: str, title: str, message: str) -> Optional[bool]:
     """Show a tk messagebox safely from any thread.
 
     Creates a hidden root for this call only, so we don't share Tk state across
-    threads (mitigates Tk-from-non-main-thread issues for one-shot dialogs). Returns the dialog result
-    for `askyesno`, otherwise None. Logs and returns None if Tk is missing.
+    threads (mitigates Tk-from-non-main-thread issues for one-shot dialogs).
+    Returns the dialog result for ``askyesno``, otherwise None. Logs and
+    returns None if Tk is missing.
     """
     if not _TK_AVAILABLE:
         log.warning("[%s] %s: %s", kind, title, message)
@@ -104,8 +105,8 @@ def _ui_save_file(
 ) -> Optional[str]:
     """Show a save-file dialog with a per-call hidden Tk root.
 
-    Used as the non-Windows fallback for `_do_download_release`. On Windows,
-    callers should marshal through `WinPromptThread` instead.
+    Used as the non-Windows fallback for ``_do_download_release``. On Windows,
+    callers should marshal through ``WinPromptThread`` instead.
     """
     if not _TK_AVAILABLE:
         log.warning("tkinter is unavailable; cannot prompt for save location")
@@ -133,12 +134,21 @@ class TrayApp:
         self.cfg = load_config()
         self.listen_port = int(self.cfg.get("listen_port", DEFAULT_PORT))
         self._last_saved_state = {}
+        # Debounce timer to coalesce rapid _persist_state calls into at most
+        # one disk write every ~2s. Prevents a fast HOST/CLIENT role bounce
+        # from spamming the config file.
+        self._persist_debounce_timer: Optional[threading.Timer] = None
+        self._persist_debounce_lock = threading.Lock()
+        self._persist_debounce_interval = 2.0
         self._tray_state_lock = threading.Lock()
         self._last_tray_state: Optional[Tuple] = None
         self._tray_watchdog_stop = threading.Event()
         self._tray_watchdog_thread: Optional[threading.Thread] = None
         self._download_threads: list[threading.Thread] = []
         self._download_threads_lock = threading.Lock()
+        # Guards _update_toolkit / _download_release so a fast second click
+        # cannot race over exe_path + ".new" / exe_path + ".old".
+        self._update_in_progress = threading.Lock()
 
         resume_mode_value = self.cfg.get("resume_mode", ResumeMode.HOST_ONLY.value)
         try:
@@ -171,6 +181,8 @@ class TrayApp:
         self.core.on_receive_url_from_client = self._handle_url_from_client
         self.core.on_enable_media_controls_change = self._set_enable_media_controls_from_core
         self.core.on_enable_links_change = self._set_enable_links_from_core
+        self.core.on_fatal_error = self._handle_core_fatal_error
+        self.core.on_listen_port_error = self._handle_listen_port_error
         self.media_key_listener = build_media_key_listener(
             self.core,
             swallow=bool(self.cfg.get("swallow_media_keys", True)),
@@ -204,17 +216,21 @@ class TrayApp:
 
     @staticmethod
     def _is_valid_ip(ip: str) -> bool:
+        # Restricted to IPv4 because the relay socket binds AF_INET only and
+        # _connect_out resolves via socket.gethostbyname (IPv4-only). Accepting
+        # IPv6 here would let users pass validation, then fail opaquely at
+        # connect time.
         try:
-            ipaddress.ip_address(ip)
+            ipaddress.IPv4Address(ip)
             return True
-        except ValueError:
+        except (ValueError, ipaddress.AddressValueError):
             return False
 
     @staticmethod
     def _is_valid_port(port: object) -> bool:
- # reject non-int, negative, zero, and out-of-range values.
+        # reject non-int, negative, zero, and out-of-range values.
         try:
-            p = int(port) # type: ignore[arg-type]
+            p = int(port)  # type: ignore[arg-type]
         except (TypeError, ValueError):
             return False
         return 1 <= p <= 65535
@@ -226,15 +242,16 @@ class TrayApp:
             and self.cfg.get("last_role") == Role.CLIENT.value
             and ip
             and self._is_valid_ip(ip)
+            and self._is_valid_port(self.cfg.get("peer_port"))
         )
 
     def _build_menu(self):
         items = [
-            Item("⏯ Toggle", self._toggle),
-            Item("⏹ Stop", self._stop),
-            Item("⏭ Next", self._next),
-            Item("⏮ Previous", self._prev),
-            Item("Connect…", self._connect),
+            Item("Toggle", self._toggle),
+            Item("Stop", self._stop),
+            Item("Next", self._next),
+            Item("Previous", self._prev),
+            Item("Connect...", self._connect),
             Item("Disconnect", self._disconnect, enabled=lambda item: self.core.peer is not None),
         ]
         controls_items = [
@@ -292,14 +309,14 @@ class TrayApp:
         if self.core.role == Role.HOST:
             tools_items.append(
                 Item(
-                    "Send Link… \U0001f517",
+                    "Send Link...",
                     self._send_link_action,
                     enabled=lambda item: bool(self.core.peers),
                 )
             )
             tools_items.append(
                 Item(
-                    "Kick…",
+                    "Kick...",
                     self._kick_action,
                     enabled=lambda item: bool(self.core.peers),
                 )
@@ -307,15 +324,15 @@ class TrayApp:
         elif self.core.role == Role.CLIENT:
             tools_items.append(
                 Item(
-                    "Send Link to Host… \U0001f517",
+                    "Send Link to Host...",
                     self._send_link_to_host_action,
                     enabled=lambda item: self.core.peer is not None and self.core.host_enable_links,
                 )
             )
-        tools_items.append(Item("Listening Port…", self._configure_listen_port))
+        tools_items.append(Item("Listening Port...", self._configure_listen_port))
         if sys.platform == "win32":
             tools_items.append(Item("Add to startup", self._add_to_startup))
-            tools_items.append(Item("Create Shortcut…", self._create_shortcut))
+            tools_items.append(Item("Create Shortcut...", self._create_shortcut))
         tools_items.append(Item("Update Toolkit", self._update_toolkit))
         if getattr(sys, "frozen", False):
             tools_items.append(Item("View Source", self._view_source))
@@ -364,10 +381,10 @@ class TrayApp:
 
     def _persist_state(self):
         new_role = self.core.role.value
-        if self.core.peer:
+        if self.core.peer and self.core.role == Role.CLIENT:
             self.cfg["peer_ip"] = self.core.peer[0]
             self.cfg["peer_port"] = int(self.core.peer[1])
-            self.cfg["auto_connect"] = self.core.role == Role.CLIENT
+            self.cfg["auto_connect"] = True
         if self.cfg.get("last_role") != new_role:
             self.cfg["last_role"] = new_role
         state = {
@@ -380,9 +397,44 @@ class TrayApp:
             "enable_media_controls": self.cfg.get("enable_media_controls", True),
             "enable_links": self.cfg.get("enable_links", True),
         }
-        if state != self._last_saved_state:
+        if state == self._last_saved_state:
+            return
+        # Debounce so a fast role bounce doesn't spam disk writes. The cfg
+        # change is recorded in memory immediately; the on-disk save happens
+        # once the timer fires (and is forced via _flush_persist on shutdown).
+        with self._persist_debounce_lock:
+            if self._persist_debounce_timer is not None:
+                self._persist_debounce_timer.cancel()
+            self._persist_debounce_timer = threading.Timer(
+                self._persist_debounce_interval, self._flush_persist
+            )
+            self._persist_debounce_timer.daemon = True
+            self._persist_debounce_timer.start()
+
+    def _flush_persist(self) -> None:
+        """Write pending config changes to disk now.
+
+        Called by the debounce timer and forced once during shutdown.
+        """
+        with self._persist_debounce_lock:
+            self._persist_debounce_timer = None
+        state = {
+            "peer_ip": self.cfg.get("peer_ip", ""),
+            "peer_port": self.cfg.get("peer_port", DEFAULT_PORT),
+            "last_role": self.cfg.get("last_role", ""),
+            "auto_connect": self.cfg.get("auto_connect", False),
+            "resume_mode": self.cfg.get("resume_mode", ResumeMode.HOST_ONLY.value),
+            "ignore_client": self.cfg.get("ignore_client", False),
+            "enable_media_controls": self.cfg.get("enable_media_controls", True),
+            "enable_links": self.cfg.get("enable_links", True),
+        }
+        if state == self._last_saved_state:
+            return
+        try:
             save_config(self.cfg)
             self._last_saved_state = dict(state)
+        except Exception:
+            log.exception("save_config failed")
 
     def _toggle(self, icon=None, item=None):
         self.core.ui_toggle(source="hid")
@@ -397,11 +449,7 @@ class TrayApp:
         self.core.ui_prev(source="local")
 
     def _run_on_tray_thread(self, func: Callable[[], None], label: str) -> None:
-        """Marshal `func` onto pystray's handler thread when available.
-
-        Centralises the pattern used by the four `_set_*_from_core` callbacks
-        and logs failures instead of silently swallowing.
-        """
+        """Marshal ``func`` onto pystray's handler thread when available."""
         try:
             q = getattr(self.icon, "_handler_queue", None)
             if q is not None:
@@ -457,9 +505,35 @@ class TrayApp:
     def _set_enable_links_from_core(self, enabled: bool):
         self._apply_cfg_and_rebuild("enable_links", bool(enabled), "enable_links")
 
+    def _handle_core_fatal_error(self, message: str) -> None:
+        """Called from the core thread when the network loop cannot start.
+
+        Surface it to the user via a dialog (and the tray title via the
+        regular status refresh) instead of letting the tray icon sit there
+        looking functional but doing nothing.
+        """
+        def show():
+            _ui_show("error", APP_NAME, f"Media-Sync network error:\n{message}")
+        threading.Thread(target=show, daemon=True).start()
+
+    def _handle_listen_port_error(self, port: int, message: str) -> None:
+        """Called from the core thread when changing the listen port fails."""
+        def show():
+            _ui_show(
+                "error",
+                APP_NAME,
+                f"Could not switch listen port to {port}: {message}\n\n"
+                f"Listening port unchanged.",
+            )
+        threading.Thread(target=show, daemon=True).start()
+
     def _configure_listen_port(self, icon=None, item=None):
-        port = prompt_int("Listen Port:", int(self.cfg.get("listen_port", DEFAULT_PORT)))
-        if port is None:
+        result = prompt_int("Listen Port:", int(self.cfg.get("listen_port", DEFAULT_PORT)))
+        if result is None:
+            return  # user cancelled
+        ok, port = result
+        if not ok:
+            _ui_show("error", APP_NAME, "Port must be an integer between 1 and 65535.")
             return
         if not self._is_valid_port(port):
             _ui_show("error", APP_NAME, "Port must be an integer between 1 and 65535.")
@@ -473,21 +547,27 @@ class TrayApp:
         self.core.ui_set_listen_port(port)
 
     def _connect(self, icon=None, item=None):
-        ip = prompt_string("Host IP:", self.cfg.get("peer_ip", ""))
-        if not ip:
+        ip = prompt_string("Host IPv4:", self.cfg.get("peer_ip", ""))
+        if ip is None:
             return
         ip = ip.strip()
-        if not self._is_valid_ip(ip):
-            _ui_show("error", APP_NAME, f"{ip!r} is not a valid IP address.")
+        if not ip:
             return
-        port = prompt_int("Host Port:", int(self.cfg.get("peer_port", DEFAULT_PORT)))
-        if port is None:
+        if not self._is_valid_ip(ip):
+            _ui_show("error", APP_NAME, f"{ip!r} is not a valid IPv4 address.")
+            return
+        port_result = prompt_int("Host Port:", int(self.cfg.get("peer_port", DEFAULT_PORT)))
+        if port_result is None:
+            return
+        ok, port = port_result
+        if not ok:
+            _ui_show("error", APP_NAME, "Port must be an integer between 1 and 65535.")
             return
         if not self._is_valid_port(port):
             _ui_show("error", APP_NAME, "Port must be an integer between 1 and 65535.")
             return
 
- # save defaults
+        # save defaults
         self.cfg["peer_ip"] = ip
         self.cfg["peer_port"] = int(port)
         save_config(self.cfg)
@@ -501,12 +581,7 @@ class TrayApp:
         self.core.ui_disconnect()
 
     def _shutdown(self, *, join_core: bool, core_timeout: float = 3.0) -> None:
-        """Common teardown for `_exit` and `_restart`.
-
-        Centralizing this keeps the two paths in lock-step. Also bails out if a
-        download/update is still in flight so we don't leave the user
-        with a truncated `.new` file.
-        """
+        """Common teardown for ``_exit`` and ``_restart``."""
         if self._has_active_downloads():
             if not _ui_show(
                 "askyesno",
@@ -514,6 +589,10 @@ class TrayApp:
                 "A download/update is still in progress. Stop anyway?",
             ):
                 return
+        try:
+            self._flush_persist()
+        except Exception:
+            log.exception("_flush_persist failed during shutdown")
         try:
             self.core.stop()
         except Exception:
@@ -536,11 +615,7 @@ class TrayApp:
             self._join_core(timeout=core_timeout)
 
     def _join_core(self, timeout: float) -> None:
-        """Wait for the core worker thread without poking private attributes.
-
-        prefer a public API on `RelayCore` if one is ever added; today
-        the fall-back is a guarded `getattr` of `_thread`.
-        """
+        """Wait for the core worker thread without poking private attributes."""
         join_method = getattr(self.core, "join", None)
         if callable(join_method):
             try:
@@ -573,10 +648,39 @@ class TrayApp:
         self._shutdown(join_core=False)
 
     def _update_toolkit(self, icon=None, item=None):
-        if getattr(sys, "frozen", False):
-            self._track_download_thread(self._do_frozen_update, name="frozen-update")
+        if not self._update_in_progress.acquire(blocking=False):
+            _ui_show("info", APP_NAME, "An update is already in progress.")
             return
-        self._track_download_thread(self._do_source_update, name="source-update")
+        try:
+            if getattr(sys, "frozen", False):
+                self._track_download_thread(
+                    self._wrap_with_update_lock(self._do_frozen_update),
+                    name="frozen-update",
+                )
+                return
+            self._track_download_thread(
+                self._wrap_with_update_lock(self._do_source_update),
+                name="source-update",
+            )
+        except BaseException:
+            # Couldn't even start the worker - release the gate now.
+            try:
+                self._update_in_progress.release()
+            except RuntimeError:
+                pass
+            raise
+
+    def _wrap_with_update_lock(self, fn: Callable[[], None]) -> Callable[[], None]:
+        """Wrap a download worker so it releases _update_in_progress on exit."""
+        def runner():
+            try:
+                fn()
+            finally:
+                try:
+                    self._update_in_progress.release()
+                except RuntimeError:
+                    pass
+        return runner
 
     def _do_source_update(self):
         update_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Update-Toolkit.py")
@@ -585,6 +689,8 @@ class TrayApp:
                 [sys.executable, update_script],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=600,
             )
         except subprocess.TimeoutExpired:
@@ -610,10 +716,33 @@ class TrayApp:
                 release = json.loads(resp.read())
 
             exe_name = os.path.basename(sys.executable)
-            asset = next((a for a in release["assets"] if a["name"] == exe_name), None)
+            # Prefer the canonical asset name stored at install time so users
+            # who renamed the exe still receive updates. Fall back to exact
+            # match, then to the canonical "MediaRelay*.exe" family.
+            canonical = self.cfg.get("asset_name")
+            assets = release.get("assets", [])
+            asset = None
+            if canonical:
+                asset = next((a for a in assets if a["name"] == canonical), None)
             if asset is None:
-                _ui_show("info", APP_NAME, f"No asset named '{exe_name}' found in the latest release.")
+                asset = next((a for a in assets if a["name"] == exe_name), None)
+            if asset is None:
+                asset = next(
+                    (a for a in assets
+                     if a["name"].lower().startswith(APP_NAME.lower())
+                     and a["name"].lower().endswith(".exe")),
+                    None,
+                )
+            if asset is None:
+                _ui_show(
+                    "info",
+                    APP_NAME,
+                    f"No matching update asset found for '{exe_name}'.",
+                )
                 return
+            # Remember the matched asset name for future updates so a rename
+            # doesn't break the next round either.
+            self.cfg["asset_name"] = asset["name"]
 
             tag = release.get("tag_name", "unknown")
             current = get_installed_version(self.cfg)
@@ -631,17 +760,39 @@ class TrayApp:
             req2 = urllib.request.Request(
                 asset["browser_download_url"], headers={"User-Agent": "MediaRelay-updater"}
             )
-            with urllib.request.urlopen(req2, timeout=120) as resp:
-                data = resp.read()
-
             expected_size = asset.get("size")
-            if isinstance(expected_size, int) and expected_size >= 0 and len(data) != expected_size:
-                raise IOError(
-                    f"Downloaded asset size mismatch: expected {expected_size}, got {len(data)}"
-                )
+            total = expected_size if isinstance(expected_size, int) and expected_size > 0 else None
+            downloaded = 0
+            chunk = 64 * 1024
+            last_pct = -1
+            original_title = self.icon.title
+            try:
+                with urllib.request.urlopen(req2, timeout=120) as resp:
+                    with open(new_path, "wb") as f:
+                        while True:
+                            buf = resp.read(chunk)
+                            if not buf:
+                                break
+                            f.write(buf)
+                            downloaded += len(buf)
+                            if total:
+                                pct = int(downloaded * 100 / total)
+                                if pct != last_pct:
+                                    last_pct = pct
+                                    try:
+                                        self.icon.title = f"{APP_NAME} - Updating {pct}%"
+                                    except Exception:
+                                        pass
+            finally:
+                try:
+                    self.icon.title = original_title
+                except Exception:
+                    pass
 
-            with open(new_path, "wb") as f:
-                f.write(data)
+            if total is not None and downloaded != total:
+                raise IOError(
+                    f"Downloaded asset size mismatch: expected {total}, got {downloaded}"
+                )
 
             if sys.platform == "win32":
                 _win_mod.perform_frozen_update(
@@ -684,7 +835,20 @@ class TrayApp:
         webbrowser.open("https://github.com/adamboy7/Linux-Dual-Boot-Toolkit")
 
     def _download_release(self, icon=None, item=None):
-        self._track_download_thread(self._do_download_release, name="release-download")
+        if not self._update_in_progress.acquire(blocking=False):
+            _ui_show("info", APP_NAME, "A download is already in progress.")
+            return
+        try:
+            self._track_download_thread(
+                self._wrap_with_update_lock(self._do_download_release),
+                name="release-download",
+            )
+        except BaseException:
+            try:
+                self._update_in_progress.release()
+            except RuntimeError:
+                pass
+            raise
 
     def _do_download_release(self):
         if not _TK_AVAILABLE:
@@ -765,12 +929,7 @@ class TrayApp:
 
     @staticmethod
     def _build_restart_env() -> dict:
-        """Strip PyInstaller bootstrap state from the env before re-exec.
-
-        PyInstaller's `_MEIPASS` may have a trailing separator and
-        Windows path comparisons are case-insensitive. Normalize both sides
-        before filtering so we don't leave the bootstrap dir on PATH.
-        """
+        """Strip PyInstaller bootstrap state from the env before re-exec."""
         _env = {
             k: v for k, v in os.environ.items()
             if not (k.startswith("_PYI_") or k == "_PYIBoot_MEIPASS" or k == "_MEIPASS2")
@@ -862,13 +1021,7 @@ class TrayApp:
 
     @staticmethod
     def _normalize_url(url: str) -> Optional[str]:
-        """Light URL validation for outgoing links.
-
-        Strips whitespace and rejects anything that doesn't have a recognized
-        `scheme://host` shape. Lets through `http`, `https`, `ftp`, and `file`
-        - anything else gets refused to catch typos like ``htps:/example.com``
-        before they hit the peer's `webbrowser.open`.
-        """
+        """Light URL validation for outgoing links."""
         if not url:
             return None
         candidate = url.strip()
@@ -909,7 +1062,7 @@ class TrayApp:
         """Worker thread: check trust settings, prompt if necessary, then open URL."""
         is_ip = _is_ip_url(url)
 
- # Auto-open if already trusted
+        # Auto-open if already trusted
         if host_ip in self.core.session_trusted_hosts:
             webbrowser.open(url)
             return
@@ -947,7 +1100,7 @@ class TrayApp:
         client_display = get_client_alias(client_ip) or client_ip
         is_ip = _is_ip_url(url)
 
- # Auto-open and forward if already trusted
+        # Auto-open and forward if already trusted
         if client_ip in self.core.session_trusted_clients:
             webbrowser.open(url)
             self.core.ui_send_link(url, exclude_addr=client_addr)
@@ -987,16 +1140,23 @@ class TrayApp:
         self.core.ui_send_link_to_host(validated)
 
     def run(self):
- # Start core networking
+        # Start core networking
         self.core.start_in_thread()
         self.media_key_listener.start()
         if self._should_auto_connect():
-            self.core.start_auto_connect(
-                self.cfg.get("peer_ip"),
-                int(self.cfg.get("peer_port", DEFAULT_PORT)),
-            )
+            try:
+                peer_port = int(self.cfg.get("peer_port", DEFAULT_PORT))
+            except (TypeError, ValueError):
+                log.warning(
+                    "Invalid peer_port %r in config; falling back to %d",
+                    self.cfg.get("peer_port"),
+                    DEFAULT_PORT,
+                )
+                peer_port = DEFAULT_PORT
+            self.core.start_auto_connect(self.cfg.get("peer_ip"), peer_port)
         self._start_tray_watchdog()
- # Run tray
+
+        # Run tray
         def _setup(icon):
             icon.visible = True
             self._refresh_tray()

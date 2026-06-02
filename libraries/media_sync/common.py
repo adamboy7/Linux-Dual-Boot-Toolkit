@@ -61,17 +61,7 @@ def decide_actions(
 ) -> Tuple[Optional[str], Optional[str]]:
     """
     Returns (host_cmd, client_cmd) for a single "toggle press" arbitration.
-
-    Your rules (deterministic):
-    - If either is PLAYING -> pause intent (pause any playing side)
-      - both playing -> pause both
-      - host playing -> pause host only
-      - else client playing -> pause client
-    - Else -> play intent
-      - both paused -> resume host (or client in client-only mode)
-      - host paused -> play host
-      - else if client paused -> play client
-    """
+    """Returns (host_cmd, client_cmd) for a single 'toggle press' arbitration."""
     if host == State.PLAYING or client == State.PLAYING:
         if host == State.PLAYING and client == State.PLAYING:
             return "pause", "pause"
@@ -95,12 +85,7 @@ def decide_track_action(
     resume_mode: ResumeMode,
     track: str,
 ) -> Tuple[Optional[str], Optional[str]]:
-    """
-    Returns (host_cmd, client_cmd) for a Next/Prev press.
-    - Only one side has media -> track goes there
-    - Both have media, only one playing -> track goes to the playing side
-    - Both playing or both paused -> resume_mode decides; pause the other if it was playing
-    """
+    """Returns (host_cmd, client_cmd) for a Next/Prev press."""
     host_has = host in (State.PLAYING, State.PAUSED)
     client_has = client in (State.PLAYING, State.PAUSED)
 
@@ -179,9 +164,33 @@ def load_config() -> dict:
         }
 
 
+# Guards every read-modify-write cycle on the JSON state files so two
+# near-simultaneous trust prompts don't last-write-wins each other.
+_STATE_FILE_LOCK = threading.Lock()
+
+
+def _atomic_write_json(path: str, data) -> None:
+    """Write JSON atomically: tmp + fsync + os.replace.
+
+    On Windows os.replace is atomic across both NTFS and ReFS, so a crash
+    mid-write leaves either the old file intact or the new file complete.
+    Without this, a power-loss truncation would lose every saved preference
+    (and every trusted host/domain) on the next launch.
+    """
+    tmp_path = path + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+        f.flush()
+        try:
+            os.fsync(f.fileno())
+        except OSError:
+            pass
+    os.replace(tmp_path, path)
+
+
 def save_config(cfg: dict) -> None:
-    with open(config_path(), "w", encoding="utf-8") as f:
-        json.dump(cfg, f, indent=2)
+    with _STATE_FILE_LOCK:
+        _atomic_write_json(config_path(), cfg)
 
 
 def get_installed_version(cfg: dict) -> str:
@@ -212,8 +221,7 @@ def _load_trusted_domains() -> list:
 
 
 def _save_trusted_domains(patterns: list) -> None:
-    with open(_trusted_domains_path(), "w", encoding="utf-8") as f:
-        json.dump(patterns, f, indent=2)
+    _atomic_write_json(_trusted_domains_path(), patterns)
 
 
 def _load_trusted_hosts() -> list:
@@ -228,8 +236,7 @@ def _load_trusted_hosts() -> list:
 
 
 def _save_trusted_hosts(hosts: list) -> None:
-    with open(_trusted_hosts_path(), "w", encoding="utf-8") as f:
-        json.dump(hosts, f, indent=2)
+    _atomic_write_json(_trusted_hosts_path(), hosts)
 
 
 def _is_ip_url(url: str) -> bool:
@@ -245,9 +252,41 @@ def _is_ip_url(url: str) -> bool:
 
 _STANDARD_SCHEMES = {"http", "https", "ftp", "ftps", "mailto", "file", "data", "ws", "wss"}
 
+# Hard cap on the length of any URL we accept off the wire. Anything longer
+# than this is treated as garbage and dropped before reaching webbrowser.open.
+_MAX_URL_LENGTH = 8192
+
+# Schemes accepted on the receive path. Intentionally narrower than
+# _STANDARD_SCHEMES; in particular `file://` is excluded so a (trusted) peer
+# cannot trick the local UI into opening an arbitrary local path.
+_INBOUND_ALLOWED_SCHEMES = frozenset({"http", "https", "ftp"})
+
+
+def _validate_incoming_url(url: str) -> Optional[str]:
+    """Sanity-check a URL received from a peer before forwarding to the UI.
+
+    Returns the trimmed URL on success, or None if it should be dropped.
+    Mirrors TrayApp._normalize_url but drops file:// (per audit note L12).
+    """
+    if not isinstance(url, str):
+        return None
+    candidate = url.strip()
+    if not candidate or len(candidate) > _MAX_URL_LENGTH:
+        return None
+    try:
+        parsed = urlparse(candidate)
+    except ValueError:
+        return None
+    scheme = parsed.scheme.lower()
+    if scheme not in _INBOUND_ALLOWED_SCHEMES:
+        return None
+    if not parsed.netloc:
+        return None
+    return candidate
+
 
 def _is_app_protocol_url(url: str) -> bool:
-    """Return True if the URL uses a non-standard app/system protocol (e.g. beatsaver://, calculator://)."""
+    """Return True if the URL uses a non-standard app/system protocol."""
     scheme = urlparse(url).scheme.lower()
     return bool(scheme) and scheme not in _STANDARD_SCHEMES
 
@@ -279,10 +318,13 @@ def add_trusted_domain(url: str) -> None:
     domain = _url_domain(url)
     if not domain:
         return
-    patterns = _load_trusted_domains()
-    if domain not in patterns:
-        patterns.append(domain)
-        _save_trusted_domains(patterns)
+    # Hold the file lock across load+modify+save so two concurrent prompts
+    # can't last-write-wins each other and drop one of the trust additions.
+    with _STATE_FILE_LOCK:
+        patterns = _load_trusted_domains()
+        if domain not in patterns:
+            patterns.append(domain)
+            _atomic_write_json(_trusted_domains_path(), patterns)
 
 
 def is_host_permanently_trusted(host_ip: str) -> bool:
@@ -290,10 +332,11 @@ def is_host_permanently_trusted(host_ip: str) -> bool:
 
 
 def add_trusted_host(host_ip: str) -> None:
-    hosts = _load_trusted_hosts()
-    if host_ip not in hosts:
-        hosts.append(host_ip)
-        _save_trusted_hosts(hosts)
+    with _STATE_FILE_LOCK:
+        hosts = _load_trusted_hosts()
+        if host_ip not in hosts:
+            hosts.append(host_ip)
+            _atomic_write_json(_trusted_hosts_path(), hosts)
 
 
 def _trusted_clients_path() -> str:
@@ -312,8 +355,7 @@ def _load_trusted_clients() -> list:
 
 
 def _save_trusted_clients(clients: list) -> None:
-    with open(_trusted_clients_path(), "w", encoding="utf-8") as f:
-        json.dump(clients, f, indent=2)
+    _atomic_write_json(_trusted_clients_path(), clients)
 
 
 def is_client_permanently_trusted(client_ip: str) -> bool:
@@ -321,11 +363,11 @@ def is_client_permanently_trusted(client_ip: str) -> bool:
 
 
 def add_trusted_client(client_ip: str) -> None:
-    clients = _load_trusted_clients()
-    if client_ip not in clients:
-        clients.append(client_ip)
-        _save_trusted_clients(clients)
-
+    with _STATE_FILE_LOCK:
+        clients = _load_trusted_clients()
+        if client_ip not in clients:
+            clients.append(client_ip)
+            _atomic_write_json(_trusted_clients_path(), clients)
 
 
 # -------------------- Client aliases --------------------
@@ -346,18 +388,18 @@ def load_client_aliases() -> dict:
 
 
 def save_client_aliases(aliases: dict) -> None:
-    with open(_client_aliases_path(), "w", encoding="utf-8") as f:
-        json.dump(aliases, f, indent=2)
+    _atomic_write_json(_client_aliases_path(), aliases)
 
 
 def set_client_alias(ip: str, alias: str) -> None:
-    aliases = load_client_aliases()
-    alias = alias.strip()
-    if alias:
-        aliases[ip] = alias
-    else:
-        aliases.pop(ip, None)
-    save_client_aliases(aliases)
+    with _STATE_FILE_LOCK:
+        aliases = load_client_aliases()
+        alias = alias.strip()
+        if alias:
+            aliases[ip] = alias
+        else:
+            aliases.pop(ip, None)
+        _atomic_write_json(_client_aliases_path(), aliases)
 
 
 def get_client_alias(ip: str) -> Optional[str]:
@@ -382,10 +424,7 @@ def now_ms() -> int:
 
 def _gen_session_token() -> str:
     """Generate a random per-connection session token used to bind link-
-    bearing UDP packets to a peer that completed the handshake. This raises
-    the bar for blind IP-spoofing attacks against the URL-auto-open path:
-    an off-path attacker has to guess a 128-bit value to forge an open_url
-    or client_url packet that the receiver will accept."""
+    bearing UDP packets to a peer that completed the handshake."""
     return secrets.token_hex(16)
 
 
@@ -401,10 +440,9 @@ def decode(data: bytes) -> Optional[dict]:
 
 
 class RelayCore:
-    """
-    Runs in an asyncio loop (background thread). Tray callbacks call into this
-    using thread-safe methods.
-    """
+    """Runs in an asyncio loop (background thread). Tray callbacks call into this
+    using thread-safe methods."""
+
     def __init__(self, listen_port: int, resume_mode: ResumeMode, ignore_client: bool,
                  enable_media_controls: bool = True, enable_links: bool = True,
                  media_controller=None):
@@ -418,7 +456,7 @@ class RelayCore:
         self.enable_links: bool = enable_links
         self.peer: Optional[Tuple[str, int]] = None
         self.peer_last_seen: float = 0.0
-        # HOST multi-client: maps each connected client addr → last_seen timestamp
+        # HOST multi-client: maps each connected client addr -> last_seen timestamp
         self.peers: Dict[Tuple[str, int], float] = {}
 
         self.sock: Optional[socket.socket] = None
@@ -434,6 +472,11 @@ class RelayCore:
         # pending RPCs: id -> Future
         self.pending = {}
 
+        # Set when _run cannot start (or restart) the UDP socket; surfaced via
+        # status_text() and the on_fatal_error callback so the tray app can warn
+        # the user instead of presenting a silently-broken icon.
+        self.fatal_error: Optional[str] = None
+
         # UI callback hooks (set by tray app)
         self.on_status_change = lambda: None
         self.on_resume_mode_change = lambda mode: None
@@ -442,19 +485,16 @@ class RelayCore:
         self.on_receive_url_from_client = lambda url, client_addr: None
         self.on_enable_media_controls_change = lambda enabled: None
         self.on_enable_links_change = lambda enabled: None
-        # Whether the host we're connected to has enable_links = True (received via connect_ack/policy)
+        self.on_fatal_error = lambda message: None
+        self.on_listen_port_error = lambda port, message: None
+        # Whether the host we're connected to has enable_links = True
         self.host_enable_links: bool = False
         # Host IPs that the client has trusted for the duration of this session
         self.session_trusted_hosts: set = set()
         # Client IPs that the host has trusted for the duration of this session
         self.session_trusted_clients: set = set()
 
-        # ---- Per-peer session tokens (basic anti-IP-spoofing for links) ----
-        # HOST: maps each connected client addr -> token issued by us in
-        # connect_ack. CLIENT: token received from our host. Only link-bearing
-        # messages (open_url / client_url) require this token; media-control
-        # traffic stays unauthenticated so peers that don't speak the token
-        # protocol can still synchronise playback.
+        # Per-peer session tokens (basic anti-IP-spoofing for links)
         self.peer_tokens: Dict[Tuple[str, int], str] = {}
         self.peer_token: Optional[str] = None
 
@@ -569,12 +609,32 @@ class RelayCore:
         else:
             self.loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self.loop)
-        self.loop.run_until_complete(self._run())
-        self.loop.close()
+        try:
+            self.loop.run_until_complete(self._run())
+        except OSError as exc:
+            # Most commonly: configured listen port is already in use. Without
+            # this, the network thread dies silently and the tray icon stays
+            # up looking functional but doing nothing.
+            msg = f"Cannot bind 0.0.0.0:{self.listen_port}: {exc}"
+            self.fatal_error = msg
+            try:
+                self.on_fatal_error(msg)
+            except Exception:
+                pass
+            try:
+                self.on_status_change()
+            except Exception:
+                pass
+        finally:
+            self.loop.close()
 
     async def _run(self):
         try:
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            except OSError:
+                pass
             self.sock.bind(("0.0.0.0", self.listen_port))
             self.sock.setblocking(False)
             self._log(f"Socket started on 0.0.0.0:{self.listen_port}.")
@@ -582,7 +642,6 @@ class RelayCore:
             self._log(f"Socket error while starting on 0.0.0.0:{self.listen_port}: {exc}")
             raise
 
-        # start tasks
         rx = asyncio.create_task(self._rx_loop())
         hb = asyncio.create_task(self._heartbeat_loop())
         gc = asyncio.create_task(self._peer_timeout_loop())
@@ -619,17 +678,18 @@ class RelayCore:
             pass
 
     def status_text(self) -> str:
+        if self.fatal_error:
+            return f"ERROR: {self.fatal_error}"
         if self.role == Role.HOST and self.peers:
             if len(self.peers) == 1:
                 addr = next(iter(self.peers))
-                return f"HOST connected → {client_display_name(addr[0], addr[1])}"
-            return f"HOST connected → {len(self.peers)} clients"
+                return f"HOST connected -> {client_display_name(addr[0], addr[1])}"
+            return f"HOST connected -> {len(self.peers)} clients"
         if self.role == Role.CLIENT and self.peer:
-            return f"CLIENT connected → {client_display_name(self.peer[0], self.peer[1])}"
+            return f"CLIENT connected -> {client_display_name(self.peer[0], self.peer[1])}"
         return f"{self.role.value.upper()} (no peer)"
 
     async def _send_policy_to_peer(self, source: str = "core"):
-        """Send host-authoritative policy (resume_mode) to all connected clients."""
         if self.role != Role.HOST:
             return
         if not self.peers:
@@ -647,10 +707,6 @@ class RelayCore:
     async def _send(self, addr: Tuple[str, int], msg: dict):
         if not self.sock:
             return
-        # Auto-attach the session token for this peer when we have one, so
-        # link-bearing packets we send can be authenticated on the receiver.
-        # Callers that already populated "tok" (e.g. connect_ack carrying
-        # the newly-issued token) are left untouched.
         if "tok" not in msg:
             token: Optional[str] = None
             if self.role == Role.HOST:
@@ -666,34 +722,9 @@ class RelayCore:
             return
 
     # Message types that MUST carry a valid session token to be accepted.
-    # Only link-bearing traffic is gated so legacy peers keep working for
-    # media control (their pre-existing IP-spoofing exposure on that path
-    # is unchanged by us). Both link directions are gated:
-    #   client_url (CLIENT→HOST): blocks a spoofed URL the host would
-    #     otherwise fan out to every connected client.
-    #   open_url   (HOST→CLIENT): blocks an unauthenticated host from
-    #     auto-opening URLs on a modern client. A legacy host never
-    #     issues a token, so peer_token stays None and open_url is
-    #     refused; a legacy client never inspects this field at all.
-    _AUTH_REQUIRED_TYPES = frozenset({"client_url", "open_url"})
+    _AUTH_REQUIRED_TYPES = frozenset({"client_url", "open_url", "resume_mode"})
 
     def _validate_source(self, addr: Tuple[str, int], msg: dict, mtype: Optional[str]) -> bool:
-        """Decide whether to accept an inbound packet.
-
-        The check is intentionally permissive: it only enforces the
-        session token on link-bearing packets (see _AUTH_REQUIRED_TYPES).
-        Everything else passes so legacy peers keep working — their
-        existing addr-based checks downstream still apply.
-
-        Rules:
-        - connect_request: always allowed (it bootstraps the handshake).
-        - connect_ack: only allowed from the address we just sent a
-          connect_request to, within a short window.
-        - client_url / open_url: must carry the per-peer session token
-          AND originate from the expected peer addr.
-        - Everything else: accepted. Per-handler addr checks downstream
-          (addr in self.peers, addr == self.peer) still apply.
-        """
         if mtype == "connect_request":
             return True
         if mtype == "connect_ack":
@@ -704,7 +735,6 @@ class RelayCore:
             )
         if mtype not in self._AUTH_REQUIRED_TYPES:
             return True
-        # Link-bearing message: require token + addr binding.
         incoming = msg.get("tok", "")
         if not isinstance(incoming, str) or not incoming:
             self._log(
@@ -727,9 +757,6 @@ class RelayCore:
                 )
                 return False
             return True
-        # CLIENT side: bind the token to the expected host address. Accept
-        # _last_connect_attempt too, since the role/peer fields may not be
-        # flipped to CLIENT yet for the very first post-ack packets.
         if self.peer_token:
             expected_addr = self.peer or self._last_connect_attempt
             if expected_addr and addr == expected_addr:
@@ -771,18 +798,10 @@ class RelayCore:
                 mtype = msg.get("t")
                 rid = msg.get("id")
 
-                # Drop spoofed / unauthenticated link packets before any
-                # further handling. _validate_source is permissive for
-                # media control traffic but blocks the URL paths that
-                # would otherwise feed the IP-based trust list.
                 if not self._validate_source(addr, msg, mtype):
                     continue
 
-                # resolve RPC futures
                 if rid and rid in self.pending and not self.pending[rid].done():
-                    # Capture the session token from a successful connect_ack
-                    # *before* unblocking _connect_out, so any follow-up
-                    # packets the host sends are recognised as ours.
                     if (
                         mtype == "connect_ack"
                         and msg.get("ok")
@@ -794,17 +813,14 @@ class RelayCore:
                     self.pending[rid].set_result(msg)
                     continue
 
-                # record peer liveness when relevant
                 if self.role == Role.HOST and addr in self.peers:
                     self.peers[addr] = time.time()
                 elif self.role == Role.CLIENT and self.peer and addr == self.peer:
                     self.peer_last_seen = time.time()
 
-                # handle messages
                 if mtype == "connect_request":
                     await self._handle_connect_request(addr, msg)
                 elif mtype == "connect_ack":
-                    # client receives this as part of connect_out flow (rpc handles it)
                     if (
                         msg.get("ok")
                         and not self.peer
@@ -834,7 +850,6 @@ class RelayCore:
                     elif self.role == Role.CLIENT and self.peer and addr == self.peer:
                         await self._send(addr, {"t": "pong", "ts": now_ms()})
                 elif mtype == "pong":
-                    # liveness updated above if addr==peer
                     pass
                 elif mtype == "get_state":
                     await self._handle_get_state(addr, msg)
@@ -845,7 +860,6 @@ class RelayCore:
                 elif mtype == "policy":
                     await self._handle_policy(addr, msg)
                 elif mtype == "request_toggle":
-                    # client asks host to arbitrate
                     if self.role == Role.HOST and addr in self.peers and not self.ignore_client:
                         hint = None
                         try:
@@ -885,20 +899,22 @@ class RelayCore:
                 continue
 
     async def _handle_connect_request(self, addr, msg):
-        # If we are connected as a CLIENT, we don't accept inbound connects.
         if self.role == Role.CLIENT:
             await self._send(addr, {"t": "connect_ack", "id": msg.get("id"), "ok": False, "reason": "busy_client", "ts": now_ms()})
             return
 
-        # Accept: remain/become HOST, add client to peers dict.
         self.role = Role.HOST
         normalized = (addr[0], addr[1])
         self.peers[normalized] = time.time()
-        self.peer = normalized
-        self.peer_last_seen = time.time()
-        # Issue a fresh per-connection token. Required only on the link
-        # delivery path; peers that don't echo it can still send media
-        # control commands.
+        # Only treat this client as the "primary" self.peer when we don't
+        # already have one. Re-assigning here would let any newly connecting
+        # client bump itself into the single-client compat path and bypass
+        # _handle_resume_mode's addr equality check.
+        if self.peer is None:
+            self.peer = normalized
+            self.peer_last_seen = time.time()
+        elif self.peer == normalized:
+            self.peer_last_seen = time.time()
         token = _gen_session_token()
         self.peer_tokens[normalized] = token
         await self._send(addr, {
@@ -910,14 +926,11 @@ class RelayCore:
             "ts": now_ms(),
         })
         await self._send(addr, {"t": "resume_mode", "mode": self.resume_mode.value, "ts": now_ms()})
-        # Broadcast policy to all clients (effective mode may have changed if count went from 1→2)
         await self._send_policy_to_peer(source="connect")
         self._log(f"Client connected from {addr[0]}:{addr[1]}. Total clients: {len(self.peers)}.")
         self._notify()
 
     async def _connect_out(self, ip: str, port: int):
-        # Resolve hostname to IP so self.peer always stores a numeric address,
-        # ensuring addr comparisons work when the user connects via domain name.
         try:
             resolved = await self.loop.run_in_executor(None, socket.gethostbyname, ip)
         except OSError:
@@ -928,7 +941,6 @@ class RelayCore:
         self._last_connect_attempt = addr
         self._last_connect_attempt_ts = time.time()
 
-        # Send request FIRST — do not mark connected yet
         resp = await self._rpc(
             addr,
             {"t": "connect_request", "ts": now_ms()},
@@ -936,23 +948,16 @@ class RelayCore:
         )
 
         if not resp or not resp.get("ok"):
-            # Stay / revert as host
             self._log(f"Connection attempt to {addr[0]}:{addr[1]} failed.")
             await self._disconnect("connect_failed")
             return
 
-        # Only now do we become a client
         self.role = Role.CLIENT
         self.peer = addr
         self.peer_last_seen = time.time()
         self._auto_connect_target = addr
         self._auto_connect_enabled = True
         self.host_enable_links = bool(resp.get("enable_links", True))
-        # Record the host's session token (if it issued one). _rx_loop also
-        # latches this on receipt of connect_ack, but set it here for
-        # symmetry. Absent token means the host doesn't speak the token
-        # protocol — media control keeps working, but we will refuse to
-        # auto-open any open_url packet it sends us.
         tok = resp.get("tok")
         if isinstance(tok, str) and tok:
             self.peer_token = tok
@@ -964,7 +969,6 @@ class RelayCore:
         was_client = self.role == Role.CLIENT
         _host_ip_before_disconnect = self.peer[0] if (was_client and self.peer) else None
         if self.role == Role.HOST and self.peers:
-            # Notify all connected clients then clear the list
             for addr in list(self.peers):
                 try:
                     await self._send(addr, {"t": "disconnect", "why": why, "ts": now_ms()})
@@ -991,11 +995,11 @@ class RelayCore:
             and why not in ("user", "kicked", "listen_port_changed")
         )
         if should_retry:
-            self.role = Role.CLIENT  # stay client so auto-connect keeps retrying
+            self.role = Role.CLIENT
         elif why in ("user", "kicked"):
-            self.role = Role.HOST  # revert to host when manually disconnected or kicked
+            self.role = Role.HOST
         elif was_client and self._auto_connect_enabled:
-            self.role = Role.CLIENT  # remain client to allow retry
+            self.role = Role.CLIENT
         else:
             self.role = Role.HOST
         if why == "kicked":
@@ -1006,7 +1010,7 @@ class RelayCore:
             self._ensure_auto_connect_task()
 
     async def _disconnect_client(self, addr: Tuple[str, int], why: str):
-        """Remove a single client from the HOST peers dict without affecting other clients."""
+        """Remove a single client from the HOST peers dict."""
         if addr not in self.peers:
             return
         try:
@@ -1015,16 +1019,11 @@ class RelayCore:
             pass
         del self.peers[addr]
         self.peer_tokens.pop(addr, None)
-        # Don't keep this client's IP in the session trust list once they're
-        # gone — a future connection from the same IP should re-prompt
-        # rather than silently inherit trust.
         self.session_trusted_clients.discard(addr[0])
         remaining = len(self.peers)
         self._log(f"Client {addr[0]}:{addr[1]} disconnected (reason: {why}). Remaining clients: {remaining}.")
-        # Update self.peer to reflect current state (used for single-client compat paths)
         self.peer = next(iter(self.peers), None)
         self.peer_last_seen = self.peers.get(self.peer, 0.0) if self.peer else 0.0
-        # If effective mode changed (multi→single), update policy for remaining client(s)
         if self.peers:
             await self._send_policy_to_peer(source="client_disconnect")
         self._notify()
@@ -1109,13 +1108,11 @@ class RelayCore:
     async def _handle_cmd(self, addr, msg):
         cmd = msg.get("cmd")
         if self.role == Role.HOST and self.ignore_client:
-            # ignore_client: reject and do NOT relay to other clients
             await self._send(addr, {"t": "ack", "id": msg.get("id"), "ts": now_ms(), "ok": False, "cmd": cmd})
             return
         if self.role == Role.CLIENT and not self.enable_media_controls:
             await self._send(addr, {"t": "ack", "id": msg.get("id"), "ts": now_ms(), "ok": False, "cmd": cmd})
             return
-        # HOST opt-out: don't toggle local playback, but still relay to other clients
         if self.role == Role.HOST and not self.enable_media_controls:
             await self._send(addr, {"t": "ack", "id": msg.get("id"), "ts": now_ms(), "ok": False, "cmd": cmd})
             if addr in self.peers:
@@ -1129,13 +1126,17 @@ class RelayCore:
         elif cmd in ("play", "pause", "stop", "next", "prev"):
             ok = await self.media.command(cmd)
         await self._send(addr, {"t": "ack", "id": msg.get("id"), "ts": now_ms(), "ok": ok, "cmd": cmd})
-        # HOST: relay command to all OTHER connected clients to keep them in sync
         if self.role == Role.HOST and addr in self.peers:
             for other_addr in list(self.peers):
                 if other_addr != addr:
                     await self._send(other_addr, {"t": "cmd", "cmd": cmd, "ts": now_ms(), "relayed": True})
 
     async def _handle_resume_mode(self, addr, msg):
+        # Resume-mode is HOST-authoritative (same as policy). If we are HOST,
+        # ignore client-initiated mode changes: they should arrive via policy
+        # request flow, not via this typed message that bypasses arbitration.
+        if self.role == Role.HOST:
+            return
         if self.peer and addr != self.peer:
             return
         mode_value = msg.get("mode", "")
@@ -1146,9 +1147,6 @@ class RelayCore:
         await self._apply_resume_mode(mode, notify=True)
 
     async def _handle_policy(self, addr, msg):
-        # Policy is HOST-authoritative (resume_mode).
-        # - If we are CLIENT, accept policy updates from our host.
-        # - If we are HOST, ignore policy coming from the peer.
         if self.peer and addr != self.peer:
             return
         if self.role == Role.HOST:
@@ -1198,7 +1196,6 @@ class RelayCore:
                 await self._send_policy_to_peer(source=source)
 
     async def _set_ignore_client(self, enabled: bool, source: str):
-        # Ignore client is controlled by the HOST only.
         if self.role == Role.CLIENT:
             self._log("Ignoring local ignore-client change (host-controlled).")
             return
@@ -1227,14 +1224,28 @@ class RelayCore:
     async def _set_listen_port(self, port: int):
         if port == self.listen_port:
             return
-        if self.role == Role.HOST and self.peers:
+        # Disconnect on either role: HOST tears down its peer list, CLIENT
+        # tears down its session so the host's stale (client_ip, OLD_port)
+        # tuple doesn't strand heartbeats / link auth against a port the
+        # client is no longer listening on.
+        if (self.role == Role.HOST and self.peers) or (
+            self.role == Role.CLIENT and self.peer
+        ):
             await self._disconnect("listen_port_changed")
 
         new_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
-            new_sock.bind(("0.0.0.0", port))
+            new_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         except OSError:
+            pass
+        try:
+            new_sock.bind(("0.0.0.0", port))
+        except OSError as exc:
             new_sock.close()
+            try:
+                self.on_listen_port_error(port, str(exc))
+            except Exception:
+                pass
             return
         new_sock.setblocking(False)
 
@@ -1259,12 +1270,7 @@ class RelayCore:
         return False
 
     async def _toggle_pressed(self, source: str, client_state_hint: Optional[State] = None,
-                               source_addr: Optional[Tuple[str, int]] = None):
-        """
-        If HOST: run arbitration (query peer state, decide explicit actions).
-        If CLIENT: send request_toggle to host unless in blind mode (then relay local intent).
-        """
-        # No peers: toggle locally. HOST opt-out skips peer relay, not local control.
+                              source_addr: Optional[Tuple[str, int]] = None):
         if self.role == Role.HOST and not self.peers:
             await self._toggle_local()
             return
@@ -1289,21 +1295,17 @@ class RelayCore:
             })
             return
 
-        # HOST opt-out: still toggle locally, but skip peer relay.
         if not self.enable_media_controls:
             await self._toggle_local()
             return
 
-        # HOST: use effective mode (forced BLIND when >1 client)
         if self._effective_resume_mode == ResumeMode.BLIND:
             await self._toggle_local()
-            # Relay to all clients; skip source_addr since it already toggled locally in BLIND mode
             for addr in list(self.peers):
                 if addr != source_addr:
                     await self._send(addr, {"t": "cmd", "cmd": "toggle", "ts": now_ms(), "source": source})
             return
 
-        # Single-client HOST arbitration:
         host_snap = await self.media.snapshot()
         client_state = State.NONE
         resp = await self._rpc(self.peer, {"t": "get_state", "ts": now_ms()}, timeout=0.5)
@@ -1323,10 +1325,6 @@ class RelayCore:
             await self._send(self.peer, {"t": "cmd", "cmd": client_cmd, "ts": now_ms()})
 
     async def _stop_pressed(self, source: str, source_addr: Optional[Tuple[str, int]] = None):
-        """
-        STOP is always explicit and safe: stop local, and tell peer(s) to stop.
-        If CLIENT: request host stop (so host can stop all).
-        """
         if self.role == Role.HOST and not self.peers:
             await self.media.command("stop")
             return
@@ -1345,18 +1343,16 @@ class RelayCore:
             await self._send(self.peer, {"t": "request_stop", "ts": now_ms(), "source": source})
             return
 
-        # HOST opt-out: still stop locally, but skip peer relay.
         if not self.enable_media_controls:
             await self.media.command("stop")
             return
 
-        # HOST: stop locally and send stop to all clients
         await self.media.command("stop")
         for addr in list(self.peers):
             await self._send(addr, {"t": "cmd", "cmd": "stop", "ts": now_ms()})
 
     async def _next_pressed(self, source: str, client_state_hint: Optional[State] = None,
-                             source_addr=None):
+                            source_addr=None):
         if self.role == Role.HOST and not self.peers:
             await self.media.command("next")
             return
@@ -1381,12 +1377,10 @@ class RelayCore:
             })
             return
 
-        # HOST opt-out: still advance locally, but skip peer relay.
         if not self.enable_media_controls:
             await self.media.command("next")
             return
 
-        # HOST: BLIND (or >1 client) — relay without arbitration
         if self._effective_resume_mode == ResumeMode.BLIND:
             await self.media.command("next")
             for addr in list(self.peers):
@@ -1394,7 +1388,6 @@ class RelayCore:
                     await self._send(addr, {"t": "cmd", "cmd": "next", "ts": now_ms(), "source": source})
             return
 
-        # Single-client HOST: query states and arbitrate
         host_snap = await self.media.snapshot()
         client_state = State.NONE
         resp = await self._rpc(self.peer, {"t": "get_state", "ts": now_ms()}, timeout=0.5)
@@ -1413,7 +1406,7 @@ class RelayCore:
             await self._send(self.peer, {"t": "cmd", "cmd": client_cmd, "ts": now_ms()})
 
     async def _prev_pressed(self, source: str, client_state_hint: Optional[State] = None,
-                             source_addr=None):
+                            source_addr=None):
         if self.role == Role.HOST and not self.peers:
             await self.media.command("prev")
             return
@@ -1438,12 +1431,10 @@ class RelayCore:
             })
             return
 
-        # HOST opt-out: still go back locally, but skip peer relay.
         if not self.enable_media_controls:
             await self.media.command("prev")
             return
 
-        # HOST: BLIND (or >1 client) — relay without arbitration
         if self._effective_resume_mode == ResumeMode.BLIND:
             await self.media.command("prev")
             for addr in list(self.peers):
@@ -1451,7 +1442,6 @@ class RelayCore:
                     await self._send(addr, {"t": "cmd", "cmd": "prev", "ts": now_ms(), "source": source})
             return
 
-        # Single-client HOST: query states and arbitrate
         host_snap = await self.media.snapshot()
         client_state = State.NONE
         resp = await self._rpc(self.peer, {"t": "get_state", "ts": now_ms()}, timeout=0.5)
@@ -1488,10 +1478,17 @@ class RelayCore:
         if not self.peer or addr != self.peer:
             return
         url = msg.get("url", "")
-        if not url:
+        if not url or not isinstance(url, str):
+            return
+        # Mirror outgoing normalisation on the receive path so a (trusted)
+        # peer that sends a garbage or unsupported URL doesn't reach
+        # webbrowser.open with raw input.
+        validated = _validate_incoming_url(url)
+        if validated is None:
+            self._log(f"Dropped open_url from {addr[0]}:{addr[1]}: failed validation.")
             return
         try:
-            self.on_open_url(url, addr[0])
+            self.on_open_url(validated, addr[0])
         except Exception:
             pass
 
@@ -1513,10 +1510,14 @@ class RelayCore:
         if addr not in self.peers:
             return
         url = msg.get("url", "")
-        if not url:
+        if not url or not isinstance(url, str):
+            return
+        validated = _validate_incoming_url(url)
+        if validated is None:
+            self._log(f"Dropped client_url from {addr[0]}:{addr[1]}: failed validation.")
             return
         try:
-            self.on_receive_url_from_client(url, addr)
+            self.on_receive_url_from_client(validated, addr)
         except Exception:
             pass
 
@@ -1546,7 +1547,6 @@ def make_icon(role: Role, connected: bool) -> Image.Image:
 def _resource_base_dir() -> str:
     if getattr(sys, "frozen", False):
         return getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
-    # Walk up from libraries/media_sync/ to the project root
     return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 

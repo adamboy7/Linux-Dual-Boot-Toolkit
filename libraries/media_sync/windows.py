@@ -221,7 +221,6 @@ class WinPromptThread:
                 except Exception:
                     pass
             self._root.withdraw()
-        except BaseException as exc:  # tk.Tk() can fail (e.g., no display)
             self._init_error = exc
             self._root = None
             self._ready.set()
@@ -313,11 +312,6 @@ class WinPromptThread:
 
 
 def get_or_create_prompter() -> Optional["WinPromptThread"]:
-    """Return a live `WinPromptThread`, restarting it if the previous one died.
-
-    Returns None if Tk is unavailable (e.g., no display) so callers can fall
-    back to per-call dialogs.
-    """
     global _WIN_PROMPTER
     with _PROMPTER_LOCK:
         if _WIN_PROMPTER is not None and _WIN_PROMPTER.is_alive():
@@ -593,7 +587,7 @@ class _WinKickDialog(simpledialog.Dialog):
         ip = addr[0]
         menu = tk.Menu(self, tearoff=0)
         menu.add_command(label="Copy IP", command=lambda: self._on_copy_ip(ip))
-        menu.add_command(label="Set Alias…", command=lambda: self._on_set_alias(addr))
+        menu.add_command(label="Set Alias...", command=lambda: self._on_set_alias(addr))
         menu.tk_popup(event.x_root, event.y_root)
 
     def _on_copy_ip(self, ip: str):
@@ -646,7 +640,8 @@ def _windows_pythonw_path() -> str:
     candidate = os.path.join(sys.exec_prefix, "pythonw.exe")
     if os.path.exists(candidate):
         return candidate
-    candidate = sys.executable.replace("python.exe", "pythonw.exe")
+    exe_dir = os.path.dirname(sys.executable)
+    candidate = os.path.join(exe_dir, "pythonw.exe")
     if os.path.exists(candidate):
         return candidate
     raise FileNotFoundError("pythonw.exe not found for Startup shortcut.")
@@ -660,7 +655,6 @@ def _ps_quote(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
-def _ensure_startup_shortcut(script_path: str | None = None) -> Tuple[str, Optional[str]]:
     startup_dir = _windows_startup_dir()
     os.makedirs(startup_dir, exist_ok=True)
 
@@ -694,7 +688,11 @@ def _ensure_startup_shortcut(script_path: str | None = None) -> Tuple[str, Optio
             f'shell.CurrentDirectory = "{_vbs_escape(script_dir)}"\n'
             f'shell.Run """" & "{_vbs_escape(pythonw_path)}" & """ """ & "{_vbs_escape(script_path)}" & """", 0, False\n'
         )
-        with open(vbs_path, "w", encoding="utf-8") as handle:
+        # wscript.exe reads VBS files as ANSI by default. UTF-16 LE with BOM
+        # is the safe alternative when a user's path contains non-ASCII chars
+        # - UTF-8 without BOM would otherwise be misinterpreted and the
+        # launched command path would be wrong.
+        with open(vbs_path, "w", encoding="utf-16") as handle:
             handle.write(vbs_body)
         target_path = os.path.join(os.getenv("WINDIR", "C:\\Windows"), "System32", "wscript.exe")
         args_value = f'"{vbs_path}"'
@@ -716,7 +714,7 @@ def _ensure_startup_shortcut(script_path: str | None = None) -> Tuple[str, Optio
     return shortcut_path, vbs_path
 
 
-def _create_shortcut_in_folder(dest_dir: str, script_path: str | None = None) -> str:
+def _create_shortcut_in_folder(dest_dir: str, script_path: Optional[str] = None) -> str:
     os.makedirs(dest_dir, exist_ok=True)
 
     frozen = getattr(sys, "frozen", False)
@@ -743,7 +741,9 @@ def _create_shortcut_in_folder(dest_dir: str, script_path: str | None = None) ->
             f'shell.CurrentDirectory = "{_vbs_escape(script_dir)}"\n'
             f'shell.Run """" & "{_vbs_escape(pythonw_path)}" & """ """ & "{_vbs_escape(script_path)}" & """", 0, False\n'
         )
-        with open(vbs_path, "w", encoding="utf-8") as handle:
+        # See _ensure_startup_shortcut: write VBS as UTF-16 LE with BOM so
+        # wscript handles non-ASCII paths correctly.
+        with open(vbs_path, "w", encoding="utf-16") as handle:
             handle.write(vbs_body)
         target_path = os.path.join(os.getenv("WINDIR", "C:\\Windows"), "System32", "wscript.exe")
         args_value = f'"{vbs_path}"'
@@ -767,10 +767,20 @@ def _create_shortcut_in_folder(dest_dir: str, script_path: str | None = None) ->
 
 def cleanup_old_exe(exe_path: str) -> None:
     old_path = exe_path + ".old"
-    try:
-        os.remove(old_path)
-    except OSError:
-        pass
+    if not os.path.exists(old_path):
+        return
+    # Defender (or another AV) often holds a transient lock on the just-
+    # written .exe immediately after rename. Retry with a small backoff so
+    # the .old file doesn't linger across launches.
+    import time as _time
+    delay = 0.2
+    for _ in range(6):
+        try:
+            os.remove(old_path)
+            return
+        except OSError:
+            _time.sleep(delay)
+            delay = min(delay * 2, 2.0)
 
 
 def perform_frozen_update(exe_path: str, new_path: str, old_path: str, env_vars_to_clear: list) -> None:

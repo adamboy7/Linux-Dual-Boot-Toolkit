@@ -79,15 +79,22 @@ def prompt_string(prompt: str, initial: str = "") -> Optional[str]:
     return _prompt_string_gtk(prompt, initial)
 
 
-def prompt_int(prompt: str, initial: int) -> Optional[int]:
-    """Cross-platform integer prompt dialog."""
+def prompt_int(prompt: str, initial: int):
+    """Cross-platform integer prompt dialog.
+
+    Returns None when the user cancelled, otherwise a ``(ok, value)`` tuple:
+    - ``(True, int)`` for a valid integer.
+    - ``(False, raw_str)`` for unparseable input so callers can surface an
+      explicit error rather than treating "abc" as "user cancelled".
+    """
     value = prompt_string(prompt, str(initial))
     if value is None:
         return None
+    text = value.strip()
     try:
-        return int(value)
+        return (True, int(text))
     except ValueError:
-        return None
+        return (False, text)
 
 
 def prompt_url_confirm(url: str, is_ip: bool) -> Optional[dict]:
@@ -131,8 +138,8 @@ def show_kick_dialog(core: "RelayCore") -> None:
 def prompt_host_url_confirm(url: str, is_ip: bool, client_ip: str) -> Optional[dict]:
     """Show a host-side URL dialog for a URL received from a client (cross-platform).
 
-    Returns a dict with ``forward`` and trust flags, or None if cancelled without
-    opening.
+    Returns a dict with ``forward`` and trust flags, or None if cancelled
+    without opening.
     """
     if sys.platform == "win32":
         from .windows import get_or_create_prompter, _ask_host_url_confirm_windows
