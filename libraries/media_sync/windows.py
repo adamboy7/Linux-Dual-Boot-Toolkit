@@ -221,6 +221,7 @@ class WinPromptThread:
                 except Exception:
                     pass
             self._root.withdraw()
+        except BaseException as exc:
             self._init_error = exc
             self._root = None
             self._ready.set()
@@ -312,6 +313,7 @@ class WinPromptThread:
 
 
 def get_or_create_prompter() -> Optional["WinPromptThread"]:
+    """Return a live WinPromptThread, restarting it if the previous one died."""
     global _WIN_PROMPTER
     with _PROMPTER_LOCK:
         if _WIN_PROMPTER is not None and _WIN_PROMPTER.is_alive():
@@ -655,6 +657,7 @@ def _ps_quote(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
+def _ensure_startup_shortcut(script_path: Optional[str] = None) -> Tuple[str, Optional[str]]:
     startup_dir = _windows_startup_dir()
     os.makedirs(startup_dir, exist_ok=True)
 
