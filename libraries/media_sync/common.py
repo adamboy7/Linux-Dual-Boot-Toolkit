@@ -1222,6 +1222,7 @@ class RelayCore:
             self.on_enable_links_change(enabled)
         except Exception:
             pass
+        await self._send_policy_to_peer(source="enable_links")
 
     async def _set_listen_port(self, port: int):
         if port == self.listen_port:
@@ -1497,6 +1498,8 @@ class RelayCore:
     async def _send_link_to_host(self, url: str):
         """CLIENT: send a URL to the host."""
         if self.role != Role.CLIENT or not self.peer:
+            return
+        if not self.host_enable_links:
             return
         msg = {"t": "client_url", "url": url, "ts": now_ms()}
         await self._send(self.peer, msg)
