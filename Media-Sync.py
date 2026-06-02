@@ -556,9 +556,10 @@ class TrayApp:
                 log.exception("core thread join failed")
 
     def _has_active_downloads(self) -> bool:
+        current = threading.current_thread()
         with self._download_threads_lock:
             self._download_threads = [t for t in self._download_threads if t.is_alive()]
-            return bool(self._download_threads)
+            return any(t for t in self._download_threads if t is not current)
 
     def _track_download_thread(self, target: Callable, name: str) -> threading.Thread:
         """Spawn a non-daemon worker for download/update work."""
