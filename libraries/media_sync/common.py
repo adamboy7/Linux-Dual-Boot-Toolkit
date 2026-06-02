@@ -864,7 +864,7 @@ class RelayCore:
                             hint = State(msg.get("state", "none"))
                         except Exception:
                             hint = None
-                        await self._toggle_pressed(source="peer", client_state_hint=hint, source_addr=addr)
+                        await self._toggle_pressed(source="peer", client_state_hint=hint, source_addr=None)
                 elif mtype == "request_stop":
                     if self.role == Role.HOST and addr in self.peers and not self.ignore_client:
                         await self._stop_pressed(source="peer", source_addr=addr)
@@ -875,7 +875,7 @@ class RelayCore:
                             hint = State(msg.get("state", "none"))
                         except Exception:
                             hint = None
-                        await self._next_pressed(source="peer", client_state_hint=hint, source_addr=addr)
+                        await self._next_pressed(source="peer", client_state_hint=hint, source_addr=None)
                 elif mtype == "request_prev":
                     if self.role == Role.HOST and addr in self.peers and not self.ignore_client:
                         hint = None
@@ -883,7 +883,7 @@ class RelayCore:
                             hint = State(msg.get("state", "none"))
                         except Exception:
                             hint = None
-                        await self._prev_pressed(source="peer", client_state_hint=hint, source_addr=addr)
+                        await self._prev_pressed(source="peer", client_state_hint=hint, source_addr=None)
                 elif mtype == "open_url":
                     await self._handle_open_url_msg(addr, msg)
                 elif mtype == "client_url":
