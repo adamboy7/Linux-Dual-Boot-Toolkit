@@ -59,8 +59,6 @@ def decide_actions(
     client: State,
     resume_mode: ResumeMode,
 ) -> Tuple[Optional[str], Optional[str]]:
-    """
-    Returns (host_cmd, client_cmd) for a single "toggle press" arbitration.
     """Returns (host_cmd, client_cmd) for a single 'toggle press' arbitration."""
     if host == State.PLAYING or client == State.PLAYING:
         if host == State.PLAYING and client == State.PLAYING:
