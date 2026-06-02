@@ -70,10 +70,10 @@ def build_media_key_listener(core: RelayCore, swallow: bool, enabled: bool = Tru
 def prompt_string(prompt: str, initial: str = "") -> Optional[str]:
     """Cross-platform string prompt dialog."""
     if sys.platform == "win32":
-        from . import windows as _w
-        if _w._WIN_PROMPTER is not None:
-            return _w._WIN_PROMPTER.ask_string(prompt, initial)
-        from .windows import _ask_string_windows
+        from .windows import get_or_create_prompter, _ask_string_windows
+        prompter = get_or_create_prompter()
+        if prompter is not None:
+            return prompter.ask_string(prompt, initial)
         return _ask_string_windows(prompt, initial)
     from .linux import _prompt_string_gtk
     return _prompt_string_gtk(prompt, initial)
@@ -96,10 +96,10 @@ def prompt_url_confirm(url: str, is_ip: bool) -> Optional[dict]:
     Returns a dict with ``accepted=True`` and trust flags, or None if rejected.
     """
     if sys.platform == "win32":
-        from . import windows as _w
-        if _w._WIN_PROMPTER is not None:
-            return _w._WIN_PROMPTER.ask_url_confirm(url, is_ip)
-        from .windows import _ask_url_confirm_windows
+        from .windows import get_or_create_prompter, _ask_url_confirm_windows
+        prompter = get_or_create_prompter()
+        if prompter is not None:
+            return prompter.ask_url_confirm(url, is_ip)
         return _ask_url_confirm_windows(url, is_ip)
     from .linux import _prompt_url_confirm_gtk
     return _prompt_url_confirm_gtk(url, is_ip)
@@ -117,11 +117,11 @@ def show_kick_dialog(core: "RelayCore") -> None:
         set_client_alias(ip, alias)
         core._notify()
     if sys.platform == "win32":
-        from . import windows as _w
-        if _w._WIN_PROMPTER is not None:
-            _w._WIN_PROMPTER.show_kick_dialog(peers_snapshot, kick_fn, get_aliases_fn, set_alias_fn)
+        from .windows import get_or_create_prompter, _show_kick_windows
+        prompter = get_or_create_prompter()
+        if prompter is not None:
+            prompter.show_kick_dialog(peers_snapshot, kick_fn, get_aliases_fn, set_alias_fn)
         else:
-            from .windows import _show_kick_windows
             _show_kick_windows(peers_snapshot, kick_fn, get_aliases_fn, set_alias_fn)
     else:
         from .linux import _show_kick_gtk
@@ -135,10 +135,10 @@ def prompt_host_url_confirm(url: str, is_ip: bool, client_ip: str) -> Optional[d
     opening.
     """
     if sys.platform == "win32":
-        from . import windows as _w
-        if _w._WIN_PROMPTER is not None:
-            return _w._WIN_PROMPTER.ask_host_url_confirm(url, is_ip, client_ip)
-        from .windows import _ask_host_url_confirm_windows
+        from .windows import get_or_create_prompter, _ask_host_url_confirm_windows
+        prompter = get_or_create_prompter()
+        if prompter is not None:
+            return prompter.ask_host_url_confirm(url, is_ip, client_ip)
         return _ask_host_url_confirm_windows(url, is_ip, client_ip)
     from .linux import _prompt_host_url_confirm_gtk
     return _prompt_host_url_confirm_gtk(url, is_ip, client_ip)

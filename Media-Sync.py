@@ -58,9 +58,10 @@ except ImportError: # pragma: no cover - tkinter missing
 if sys.platform == "win32":
     import libraries.media_sync.windows as _win_mod
     from libraries.media_sync.windows import (
-        WinPromptThread,
         _create_shortcut_in_folder,
         _ensure_startup_shortcut,
+        get_or_create_prompter,
+        stop_prompter,
     )
 
 
@@ -94,6 +95,37 @@ def _ui_show(kind: str, title: str, message: str) -> Optional[bool]:
     except Exception:
         log.exception("Tk dialog failed (%s): %s", kind, message)
     return None
+
+
+def _ui_save_file(
+    title: str,
+    initialfile: str,
+    defaultextension: Optional[str] = None,
+) -> Optional[str]:
+    """Show a save-file dialog with a per-call hidden Tk root.
+
+    Used as the non-Windows fallback for `_do_download_release`. On Windows,
+    callers should marshal through `WinPromptThread` instead.
+    """
+    if not _TK_AVAILABLE:
+        log.warning("tkinter is unavailable; cannot prompt for save location")
+        return None
+    try:
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            kwargs = dict(title=title, initialfile=initialfile, parent=root)
+            if defaultextension:
+                kwargs["defaultextension"] = defaultextension
+            return filedialog.asksaveasfilename(**kwargs) or None
+        finally:
+            try:
+                root.destroy()
+            except Exception:
+                log.exception("Failed to destroy save-dialog root")
+    except Exception:
+        log.exception("Save dialog failed")
+        return None
 
 
 class TrayApp:
@@ -146,8 +178,7 @@ class TrayApp:
         )
 
         if sys.platform == "win32":
-            if _win_mod._WIN_PROMPTER is None:
-                _win_mod._WIN_PROMPTER = WinPromptThread()
+            get_or_create_prompter()
 
         self.icon = pystray.Icon(APP_NAME, self._tray_icon(), APP_NAME, menu=self._build_menu())
 
@@ -496,9 +527,9 @@ class TrayApp:
             self.icon.stop()
         except Exception:
             log.exception("tray icon.stop() failed during shutdown")
-        if sys.platform == "win32" and _win_mod._WIN_PROMPTER is not None:
+        if sys.platform == "win32":
             try:
-                _win_mod._WIN_PROMPTER.stop()
+                stop_prompter()
             except Exception:
                 log.exception("WinPrompter stop failed during shutdown")
         if join_core:
@@ -675,23 +706,21 @@ class TrayApp:
                 return
 
             tag = release.get("tag_name", "unknown")
-            root = tk.Tk()
-            root.withdraw()
-            try:
-                ext = os.path.splitext(asset["name"])[1]
-                dialog_kwargs = dict(
-                    title=f"Save {APP_NAME} {tag}",
-                    initialfile=asset["name"],
-                    parent=root,
-                )
-                if ext:
-                    dialog_kwargs["defaultextension"] = ext
-                save_path = filedialog.asksaveasfilename(**dialog_kwargs)
-            finally:
-                try:
-                    root.destroy()
-                except Exception:
-                    log.exception("Failed to destroy save-dialog root")
+            ext = os.path.splitext(asset["name"])[1] or None
+            save_title = f"Save {APP_NAME} {tag}"
+            save_path: Optional[str] = None
+            if sys.platform == "win32":
+                prompter = get_or_create_prompter()
+                if prompter is not None:
+                    save_path = prompter.ask_save_file(
+                        title=save_title,
+                        initialfile=asset["name"],
+                        defaultextension=ext,
+                    )
+                else:
+                    save_path = _ui_save_file(save_title, asset["name"], ext)
+            else:
+                save_path = _ui_save_file(save_title, asset["name"], ext)
             if not save_path:
                 return
 
@@ -765,29 +794,70 @@ class TrayApp:
     def _add_to_startup(self, icon=None, item=None):
         if sys.platform != "win32":
             return
-        confirm = messagebox.askyesno(APP_NAME, "Add MediaRelay to startup?")
+        prompter = get_or_create_prompter()
+        confirm = (
+            prompter.show_message("askyesno", APP_NAME, "Add MediaRelay to startup?")
+            if prompter is not None
+            else _ui_show("askyesno", APP_NAME, "Add MediaRelay to startup?")
+        )
         if not confirm:
             return
         try:
             shortcut_path, _vbs_path = _ensure_startup_shortcut()
-            messagebox.showinfo(APP_NAME, f"Startup shortcut created:\n{shortcut_path}")
+            msg = f"Startup shortcut created:\n{shortcut_path}"
+            if prompter is not None:
+                prompter.show_message("info", APP_NAME, msg)
+            else:
+                _ui_show("info", APP_NAME, msg)
         except Exception as exc:
-            messagebox.showerror(APP_NAME, f"Failed to add startup shortcut:\n{exc}")
+            err = f"Failed to add startup shortcut:\n{exc}"
+            if prompter is not None:
+                prompter.show_message("error", APP_NAME, err)
+            else:
+                _ui_show("error", APP_NAME, err)
 
     def _create_shortcut(self, icon=None, item=None):
         if sys.platform != "win32":
             return
-        root = tk.Tk()
-        root.withdraw()
-        dest_dir = filedialog.askdirectory(title="Choose folder for shortcut")
-        root.destroy()
+        prompter = get_or_create_prompter()
+        if prompter is not None:
+            dest_dir = prompter.ask_directory(title="Choose folder for shortcut")
+        else:
+            dest_dir = self._ask_directory_fallback("Choose folder for shortcut")
         if not dest_dir:
             return
         try:
             shortcut_path = _create_shortcut_in_folder(dest_dir)
-            messagebox.showinfo(APP_NAME, f"Shortcut created:\n{shortcut_path}")
+            msg = f"Shortcut created:\n{shortcut_path}"
+            if prompter is not None:
+                prompter.show_message("info", APP_NAME, msg)
+            else:
+                _ui_show("info", APP_NAME, msg)
         except Exception as exc:
-            messagebox.showerror(APP_NAME, f"Failed to create shortcut:\n{exc}")
+            err = f"Failed to create shortcut:\n{exc}"
+            if prompter is not None:
+                prompter.show_message("error", APP_NAME, err)
+            else:
+                _ui_show("error", APP_NAME, err)
+
+    @staticmethod
+    def _ask_directory_fallback(title: str) -> Optional[str]:
+        """Per-call hidden-root askdirectory; used only when prompter is dead."""
+        if not _TK_AVAILABLE:
+            return None
+        try:
+            root = tk.Tk()
+            root.withdraw()
+            try:
+                return filedialog.askdirectory(title=title, parent=root) or None
+            finally:
+                try:
+                    root.destroy()
+                except Exception:
+                    log.exception("Failed to destroy directory-dialog root")
+        except Exception:
+            log.exception("Directory dialog failed")
+            return None
 
     @staticmethod
     def _normalize_url(url: str) -> Optional[str]:

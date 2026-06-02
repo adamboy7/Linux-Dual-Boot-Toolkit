@@ -15,6 +15,7 @@ from typing import Optional, Tuple
 from .common import APP_NAME, _RESP_HOST_FORWARD, _RESP_HOST_OPEN, _app_icon_path, _is_app_protocol_url, _resource_base_dir
 
 _WIN_PROMPTER = None
+_PROMPTER_LOCK = threading.Lock()
 
 # -------------------- Media controller --------------------
 
@@ -195,25 +196,46 @@ class WindowsMediaKeyListener:
 # -------------------- Prompt dialogs --------------------
 
 class WinPromptThread:
-    def __init__(self):
+    def __init__(self, init_timeout: float = 5.0):
         self._queue = queue.Queue()
         self._ready = threading.Event()
-        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._init_error: Optional[BaseException] = None
+        self._root: Optional[tk.Tk] = None
+        self._thread = threading.Thread(target=self._run, daemon=True, name="WinPromptThread")
         self._thread.start()
-        self._ready.wait()
+        if not self._ready.wait(timeout=init_timeout):
+            raise RuntimeError("WinPromptThread failed to initialize within timeout")
+        if self._init_error is not None:
+            raise RuntimeError(f"WinPromptThread init failed: {self._init_error}")
+
+    def is_alive(self) -> bool:
+        return bool(self._thread and self._thread.is_alive() and self._root is not None)
 
     def _run(self):
-        self._root = tk.Tk()
-        icon_path = _app_icon_path()
-        if os.path.exists(icon_path):
-            try:
-                self._root.iconbitmap(icon_path)
-            except Exception:
-                pass
-        self._root.withdraw()
+        try:
+            self._root = tk.Tk()
+            icon_path = _app_icon_path()
+            if os.path.exists(icon_path):
+                try:
+                    self._root.iconbitmap(icon_path)
+                except Exception:
+                    pass
+            self._root.withdraw()
+        except BaseException as exc:  # tk.Tk() can fail (e.g., no display)
+            self._init_error = exc
+            self._root = None
+            self._ready.set()
+            return
         self._ready.set()
         self._root.after(50, self._process_queue)
-        self._root.mainloop()
+        try:
+            self._root.mainloop()
+        finally:
+            try:
+                self._root.destroy()
+            except Exception:
+                pass
+            self._root = None
 
     def _process_queue(self):
         while True:
@@ -250,9 +272,75 @@ class WinPromptThread:
             lambda root: _show_kick_windows(peers, kick_fn, get_aliases_fn, set_alias_fn, parent=root)
         )
 
+    def ask_save_file(
+        self,
+        title: str,
+        initialfile: str,
+        defaultextension: Optional[str] = None,
+    ) -> Optional[str]:
+        def _do(root):
+            kwargs = dict(title=title, initialfile=initialfile, parent=root)
+            if defaultextension:
+                kwargs["defaultextension"] = defaultextension
+            return filedialog.asksaveasfilename(**kwargs) or None
+        return self._enqueue(_do)
+
+    def ask_directory(self, title: str) -> Optional[str]:
+        return self._enqueue(
+            lambda root: filedialog.askdirectory(title=title, parent=root) or None
+        )
+
+    def show_message(self, kind: str, title: str, message: str) -> Optional[bool]:
+        def _do(root):
+            if kind == "error":
+                messagebox.showerror(title, message, parent=root)
+                return None
+            if kind == "info":
+                messagebox.showinfo(title, message, parent=root)
+                return None
+            if kind == "askyesno":
+                return bool(messagebox.askyesno(title, message, parent=root))
+            return None
+        return self._enqueue(_do)
+
     def stop(self):
-        if self._root:
-            self._root.after(0, self._root.quit)
+        root = self._root
+        if root is not None:
+            try:
+                root.after(0, root.quit)
+            except Exception:
+                pass
+
+
+def get_or_create_prompter() -> Optional["WinPromptThread"]:
+    """Return a live `WinPromptThread`, restarting it if the previous one died.
+
+    Returns None if Tk is unavailable (e.g., no display) so callers can fall
+    back to per-call dialogs.
+    """
+    global _WIN_PROMPTER
+    with _PROMPTER_LOCK:
+        if _WIN_PROMPTER is not None and _WIN_PROMPTER.is_alive():
+            return _WIN_PROMPTER
+        try:
+            _WIN_PROMPTER = WinPromptThread()
+        except Exception:
+            _WIN_PROMPTER = None
+        return _WIN_PROMPTER
+
+
+def stop_prompter() -> None:
+    """Stop and clear the module-level prompter, if any."""
+    global _WIN_PROMPTER
+    with _PROMPTER_LOCK:
+        prompter = _WIN_PROMPTER
+        _WIN_PROMPTER = None
+    if prompter is None:
+        return
+    try:
+        prompter.stop()
+    except Exception:
+        pass
 
 
 class _IconQueryString(simpledialog._QueryString):
