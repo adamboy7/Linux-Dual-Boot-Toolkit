@@ -456,6 +456,8 @@ class RelayCore:
         self.peer_last_seen: float = 0.0
         # HOST multi-client: maps each connected client addr -> last_seen timestamp
         self.peers: Dict[Tuple[str, int], float] = {}
+        self.peer_latency: Dict[Tuple[str, int], float] = {}
+        self._ping_sent_at: Dict[Tuple[str, int], int] = {}
 
         self.sock: Optional[socket.socket] = None
         self.loop: Optional[asyncio.AbstractEventLoop] = None
@@ -843,12 +845,17 @@ class RelayCore:
                     elif self.role == Role.CLIENT and self.peer and addr == self.peer:
                         await self._disconnect(msg.get("why", "peer"))
                 elif mtype == "ping":
+                    ts = msg.get("ts")
+                    pong = {"t": "pong"} if ts is None else {"t": "pong", "ts": ts}
                     if self.role == Role.HOST and addr in self.peers:
-                        await self._send(addr, {"t": "pong", "ts": now_ms()})
+                        await self._send(addr, pong)
                     elif self.role == Role.CLIENT and self.peer and addr == self.peer:
-                        await self._send(addr, {"t": "pong", "ts": now_ms()})
+                        await self._send(addr, pong)
                 elif mtype == "pong":
-                    pass
+                    if self.role == Role.HOST and addr in self.peers:
+                        sent = self._ping_sent_at.pop(addr, None)
+                        if sent is not None:
+                            self.peer_latency[addr] = now_ms() - sent
                 elif mtype == "get_state":
                     await self._handle_get_state(addr, msg)
                 elif mtype == "cmd":
@@ -1016,6 +1023,8 @@ class RelayCore:
         except Exception:
             pass
         del self.peers[addr]
+        self.peer_latency.pop(addr, None)
+        self._ping_sent_at.pop(addr, None)
         self.peer_tokens.pop(addr, None)
         self.session_trusted_clients.discard(addr[0])
         remaining = len(self.peers)
@@ -1046,7 +1055,8 @@ class RelayCore:
             if self.role == Role.HOST:
                 for addr in list(self.peers):
                     try:
-                        await self._send(addr, {"t": "ping", "ts": now_ms()})
+                        self._ping_sent_at[addr] = now_ms()
+                        await self._send(addr, {"t": "ping", "ts": self._ping_sent_at[addr]})
                     except Exception:
                         pass
             elif self.peer:

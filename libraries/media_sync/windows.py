@@ -267,9 +267,9 @@ class WinPromptThread:
     def ask_host_url_confirm(self, url: str, is_ip: bool, client_ip: str) -> Optional[dict]:
         return self._enqueue(lambda root: _ask_host_url_confirm_windows(url, is_ip, client_ip, parent=root))
 
-    def show_kick_dialog(self, peers: dict, kick_fn, get_aliases_fn, set_alias_fn) -> None:
+    def show_kick_dialog(self, peers: dict, kick_fn, get_aliases_fn, set_alias_fn, get_latency_fn=None) -> None:
         self._enqueue(
-            lambda root: _show_kick_windows(peers, kick_fn, get_aliases_fn, set_alias_fn, parent=root)
+            lambda root: _show_kick_windows(peers, kick_fn, get_aliases_fn, set_alias_fn, parent=root, get_latency_fn=get_latency_fn)
         )
 
     def ask_save_file(
@@ -521,10 +521,11 @@ def _ask_host_url_confirm_windows(url: str, is_ip: bool, client_ip: str, parent=
 # -------------------- Kick clients dialog --------------------
 
 class _WinKickDialog(simpledialog.Dialog):
-    def __init__(self, parent, peers: dict, get_aliases_fn, set_alias_fn):
+    def __init__(self, parent, peers: dict, get_aliases_fn, set_alias_fn, get_latency_fn=None):
         self._peers = peers
         self._get_aliases = get_aliases_fn
         self._set_alias = set_alias_fn
+        self._get_latency = get_latency_fn or (lambda: {})
         self._live_addrs: list = list(peers.keys())
         self._kicked_addrs: list = []
         super().__init__(parent, title=APP_NAME)
@@ -539,23 +540,38 @@ class _WinKickDialog(simpledialog.Dialog):
         tk.Label(master, text="Connected clients:", anchor="w").grid(
             row=0, column=0, columnspan=2, sticky="w", padx=8, pady=(8, 2)
         )
-        self._listbox = tk.Listbox(master, selectmode=tk.SINGLE, height=8, width=36)
+        self._listbox = tk.Listbox(master, selectmode=tk.SINGLE, height=8, width=46)
         self._listbox.grid(row=1, column=0, sticky="nsew", padx=(8, 0), pady=(0, 8))
         scrollbar = tk.Scrollbar(master, orient=tk.VERTICAL, command=self._listbox.yview)
         scrollbar.grid(row=1, column=1, sticky="ns", padx=(0, 8), pady=(0, 8))
         self._listbox.configure(yscrollcommand=scrollbar.set)
         self._listbox.bind("<Button-3>", self._on_right_click)
         self._rebuild_list()
+        self.after(1000, self._tick)
         return self._listbox
 
     def _rebuild_list(self):
+        sel = self._listbox.curselection()
+        sel_idx = sel[0] if sel else None
         self._listbox.delete(0, tk.END)
         aliases = self._get_aliases()
+        latency = self._get_latency()
         for addr in self._live_addrs:
             ip, port = addr
             alias = aliases.get(ip)
-            label = f"{alias}:{port}" if alias else f"{ip}:{port}"
+            lat = latency.get(addr)
+            suffix = f"  ({int(lat)} ms)" if lat is not None else ""
+            label = f"{alias}:{port}{suffix}" if alias else f"{ip}:{port}{suffix}"
             self._listbox.insert(tk.END, label)
+        if sel_idx is not None and sel_idx < self._listbox.size():
+            self._listbox.selection_set(sel_idx)
+
+    def _tick(self):
+        try:
+            self._rebuild_list()
+            self.after(1000, self._tick)
+        except tk.TclError:
+            pass
 
     def buttonbox(self):
         box = tk.Frame(self)
@@ -615,9 +631,9 @@ class _WinKickDialog(simpledialog.Dialog):
         return self._kicked_addrs
 
 
-def _show_kick_windows(peers: dict, kick_fn, get_aliases_fn, set_alias_fn, parent=None) -> None:
+def _show_kick_windows(peers: dict, kick_fn, get_aliases_fn, set_alias_fn, parent=None, get_latency_fn=None) -> None:
     try:
-        dlg = _WinKickDialog(parent, peers, get_aliases_fn, set_alias_fn)
+        dlg = _WinKickDialog(parent, peers, get_aliases_fn, set_alias_fn, get_latency_fn=get_latency_fn)
         for addr in dlg.get_result():
             try:
                 kick_fn(addr)

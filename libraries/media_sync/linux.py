@@ -11,7 +11,7 @@ from typing import Optional
 import gi
 gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
-from gi.repository import Gdk, Gtk
+from gi.repository import Gdk, GLib, Gtk
 
 from libraries.permissions.linux import ensure_root_linux
 from .common import APP_NAME, _RESP_HOST_FORWARD, _RESP_HOST_OPEN, _app_icon_path, _is_app_protocol_url
@@ -385,7 +385,7 @@ def _prompt_host_url_confirm_gtk(url: str, is_ip: bool, client_ip: str) -> Optio
     return result
 
 
-def _show_kick_gtk(peers: dict, kick_fn, get_aliases_fn, set_alias_fn) -> None:
+def _show_kick_gtk(peers: dict, kick_fn, get_aliases_fn, set_alias_fn, get_latency_fn=None) -> None:
     dialog = Gtk.Dialog(title=APP_NAME)
     icon_path = _app_icon_path()
     if os.path.exists(icon_path):
@@ -406,13 +406,20 @@ def _show_kick_gtk(peers: dict, kick_fn, get_aliases_fn, set_alias_fn) -> None:
     current_addrs = list(peers.keys())
 
     def _rebuild_store():
+        sel_model, sel_iter = tree.get_selection().get_selected()
+        sel_idx = sel_model.get_path(sel_iter).get_indices()[0] if sel_iter else None
         store.clear()
         aliases = get_aliases_fn()
+        latency = get_latency_fn() if get_latency_fn else {}
         for addr in current_addrs:
             ip, port = addr
             alias = aliases.get(ip)
-            label = f"{alias}:{port}" if alias else f"{ip}:{port}"
+            lat = latency.get(addr)
+            suffix = f"  ({int(lat)} ms)" if lat is not None else ""
+            label = f"{alias}:{port}{suffix}" if alias else f"{ip}:{port}{suffix}"
             store.append([label, f"{ip}:{port}"])
+        if sel_idx is not None and sel_idx < len(current_addrs):
+            tree.get_selection().select_path(Gtk.TreePath.new_from_indices([sel_idx]))
 
     _rebuild_store()
 
@@ -497,6 +504,13 @@ def _show_kick_gtk(peers: dict, kick_fn, get_aliases_fn, set_alias_fn) -> None:
             _rebuild_store()
 
     kick_btn.connect("clicked", _on_kick)
+
+    def _tick():
+        _rebuild_store()
+        return True
+
+    timer_id = GLib.timeout_add(1000, _tick)
+    dialog.connect("destroy", lambda w: GLib.source_remove(timer_id))
 
     dialog.add_button("Close", Gtk.ResponseType.CLOSE)
     dialog.show_all()

@@ -119,6 +119,7 @@ def show_kick_dialog(core: "RelayCore") -> None:
         return
     kick_fn = core.ui_kick_client
     get_aliases_fn = load_client_aliases
+    get_latency_fn = lambda: dict(core.peer_latency)
 
     def set_alias_fn(ip: str, alias: str) -> None:
         set_client_alias(ip, alias)
@@ -127,12 +128,12 @@ def show_kick_dialog(core: "RelayCore") -> None:
         from .windows import get_or_create_prompter, _show_kick_windows
         prompter = get_or_create_prompter()
         if prompter is not None:
-            prompter.show_kick_dialog(peers_snapshot, kick_fn, get_aliases_fn, set_alias_fn)
+            prompter.show_kick_dialog(peers_snapshot, kick_fn, get_aliases_fn, set_alias_fn, get_latency_fn)
         else:
-            _show_kick_windows(peers_snapshot, kick_fn, get_aliases_fn, set_alias_fn)
+            _show_kick_windows(peers_snapshot, kick_fn, get_aliases_fn, set_alias_fn, get_latency_fn)
     else:
         from .linux import _show_kick_gtk
-        _show_kick_gtk(peers_snapshot, kick_fn, get_aliases_fn, set_alias_fn)
+        _show_kick_gtk(peers_snapshot, kick_fn, get_aliases_fn, set_alias_fn, get_latency_fn)
 
 
 def prompt_host_url_confirm(url: str, is_ip: bool, client_ip: str) -> Optional[dict]:
