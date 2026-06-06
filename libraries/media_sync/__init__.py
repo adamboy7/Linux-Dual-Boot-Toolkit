@@ -122,6 +122,20 @@ def prompt_url_confirm(url: str, is_ip: bool, show_protocol_trust: bool = True, 
     return _prompt_url_confirm_gtk(url, is_ip, show_protocol_trust, show_peer_trust)
 
 
+def show_trust_manager_dialog() -> None:
+    """Open the Trust Manager dialog (cross-platform)."""
+    if sys.platform == "win32":
+        from .windows import get_or_create_prompter
+        prompter = get_or_create_prompter()
+        if prompter is not None:
+            prompter.show_trust_manager()
+        else:
+            log.warning("WinPromptThread unavailable; cannot show trust manager")
+    else:
+        from .linux import _show_trust_manager_gtk
+        _show_trust_manager_gtk()
+
+
 def show_kick_dialog(core: "RelayCore") -> None:
     """Open the Kick Clients dialog (cross-platform, HOST only)."""
     peers_snapshot = dict(core.peers)
@@ -187,6 +201,7 @@ __all__ = [
     "save_config",
     "set_client_alias",
     "show_kick_dialog",
+    "show_trust_manager_dialog",
     "is_domain_trusted",
     "add_trusted_domain",
     "is_host_permanently_trusted",

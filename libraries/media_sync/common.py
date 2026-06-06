@@ -412,6 +412,36 @@ def add_trusted_client(client_ip: str) -> None:
             _atomic_write_json(_trusted_clients_path(), clients)
 
 
+def remove_trusted_host(host_ip: str) -> None:
+    with _STATE_FILE_LOCK:
+        hosts = _load_trusted_hosts()
+        try:
+            hosts.remove(host_ip)
+        except ValueError:
+            return
+        _atomic_write_json(_trusted_hosts_path(), hosts)
+
+
+def remove_trusted_client(client_ip: str) -> None:
+    with _STATE_FILE_LOCK:
+        clients = _load_trusted_clients()
+        try:
+            clients.remove(client_ip)
+        except ValueError:
+            return
+        _atomic_write_json(_trusted_clients_path(), clients)
+
+
+def remove_trusted_domain(domain: str) -> None:
+    with _STATE_FILE_LOCK:
+        patterns = _load_trusted_domains()
+        try:
+            patterns.remove(domain)
+        except ValueError:
+            return
+        _atomic_write_json(_trusted_domains_path(), patterns)
+
+
 # -------------------- Client aliases --------------------
 
 def _client_aliases_path() -> str:

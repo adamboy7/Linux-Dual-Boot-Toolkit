@@ -45,6 +45,7 @@ from libraries.media_sync import (
     prompt_url_confirm,
     save_config,
     show_kick_dialog,
+    show_trust_manager_dialog,
 )
 
 log = logging.getLogger(APP_NAME)
@@ -365,6 +366,7 @@ class TrayApp:
                     enabled=lambda item: self.core.peer is not None and self.core.host_enable_links,
                 )
             )
+        tools_items.append(Item("Trust Manager...", self._trust_manager_action))
         tools_items.append(Item("Listening Port...", self._configure_listen_port))
         if sys.platform == "win32":
             tools_items.append(Item("Add to startup", self._add_to_startup))
@@ -1206,6 +1208,12 @@ class TrayApp:
 
     def _kick_action(self, icon=None, item=None):
         threading.Thread(target=show_kick_dialog, args=(self.core,), daemon=True).start()
+
+    def _trust_manager_action(self, icon=None, item=None):
+        def show():
+            show_trust_manager_dialog()
+            self.core._notify()
+        threading.Thread(target=show, daemon=True).start()
 
     def _handle_open_url_from_core(self, url: str, host_ip: str):
         """Called from the asyncio thread when the client receives a URL from the host."""

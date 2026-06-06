@@ -14,7 +14,22 @@ gi.require_version("Gdk", "3.0")
 from gi.repository import Gdk, GLib, Gtk
 
 from libraries.permissions.linux import ensure_root_linux
-from .common import APP_NAME, _RESP_HOST_FORWARD, _RESP_HOST_OPEN, _app_icon_path, _is_app_protocol_url
+from .common import (
+    APP_NAME,
+    _RESP_HOST_FORWARD,
+    _RESP_HOST_OPEN,
+    _STATE_FILE_LOCK,
+    _app_icon_path,
+    _atomic_write_json,
+    _is_app_protocol_url,
+    _load_trusted_clients,
+    _load_trusted_domains,
+    _load_trusted_hosts,
+    _trusted_clients_path,
+    _trusted_domains_path,
+    _trusted_hosts_path,
+    load_client_aliases,
+)
 
 EVDEV_AVAILABLE = importlib.util.find_spec("evdev") is not None
 if EVDEV_AVAILABLE:
@@ -521,6 +536,142 @@ def _show_kick_gtk(peers: dict, kick_fn, get_aliases_fn, set_alias_fn, get_laten
     dialog.add_button("Close", Gtk.ResponseType.CLOSE)
     dialog.show_all()
     dialog.run()
+    dialog.destroy()
+
+
+def _show_trust_manager_gtk() -> None:
+    dialog = Gtk.Dialog(title=APP_NAME)
+    icon_path = _app_icon_path()
+    if os.path.exists(icon_path):
+        try:
+            dialog.set_icon_from_file(icon_path)
+        except Exception:
+            pass
+
+    hosts = _load_trusted_hosts()
+    domains = _load_trusted_domains()
+    clients = _load_trusted_clients()
+
+    PLACEHOLDER = "(Nothing here yet)"
+
+    notebook = Gtk.Notebook()
+    dialog.get_content_area().set_border_width(8)
+    dialog.get_content_area().add(notebook)
+
+    def _make_tab(label_text):
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_min_content_height(160)
+        scroll.set_min_content_width(280)
+        scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        store = Gtk.ListStore(str, str)  # display, raw key
+        tree = Gtk.TreeView(model=store)
+        tree.set_headers_visible(False)
+        renderer = Gtk.CellRendererText()
+        col = Gtk.TreeViewColumn(label_text, renderer, text=0)
+        tree.append_column(col)
+        scroll.add(tree)
+        lbl = Gtk.Label(label=label_text)
+        notebook.append_page(scroll, lbl)
+        return store, tree, renderer
+
+    hosts_store, hosts_tree, _ = _make_tab("Hosts")
+    url_store, url_tree, url_renderer = _make_tab("URL")
+    clients_store, clients_tree, _ = _make_tab("Clients")
+
+    def _fill_store(store, items, alias_map=None, is_url=False):
+        store.clear()
+        if not items:
+            row = store.append([PLACEHOLDER, ""])
+            return
+        for raw in items:
+            if alias_map is not None:
+                alias = alias_map.get(raw)
+                display = f"{alias} ({raw})" if alias else raw
+            else:
+                display = raw
+            store.append([display, raw])
+
+    def _refresh_hosts():
+        _fill_store(hosts_store, hosts, alias_map=load_client_aliases())
+
+    def _refresh_url():
+        _fill_store(url_store, domains)
+
+    def _refresh_clients():
+        _fill_store(clients_store, clients, alias_map=load_client_aliases())
+
+    def _url_cell_func(_col, renderer, model, it, _data):
+        raw = model.get_value(it, 1)
+        if raw == "file":
+            renderer.set_property("foreground", "red")
+            renderer.set_property("foreground-set", True)
+        elif raw == "":
+            renderer.set_property("foreground", "gray")
+            renderer.set_property("foreground-set", True)
+        else:
+            renderer.set_property("foreground-set", False)
+
+    url_tree.get_column(0).set_cell_data_func(url_renderer, _url_cell_func)
+
+    def _placeholder_cell_func(col, renderer, model, it, _data):
+        raw = model.get_value(it, 1)
+        if raw == "":
+            renderer.set_property("foreground", "gray")
+            renderer.set_property("foreground-set", True)
+        else:
+            renderer.set_property("foreground-set", False)
+
+    hosts_tree.get_column(0).set_cell_data_func(
+        hosts_tree.get_column(0).get_cells()[0], _placeholder_cell_func
+    )
+    clients_tree.get_column(0).set_cell_data_func(
+        clients_tree.get_column(0).get_cells()[0], _placeholder_cell_func
+    )
+
+    _refresh_hosts()
+    _refresh_url()
+    _refresh_clients()
+
+    def _make_right_click(tree, data_list, refresh_fn):
+        def _on_button_press(widget, event):
+            if event.button != 3:
+                return
+            path_info = tree.get_path_at_pos(int(event.x), int(event.y))
+            if not path_info:
+                return
+            path = path_info[0]
+            idx = path.get_indices()[0]
+            model = tree.get_model()
+            it = model.get_iter(path)
+            raw = model.get_value(it, 1)
+            if raw == "":
+                return
+            tree.get_selection().select_path(path)
+            menu = Gtk.Menu()
+            item = Gtk.MenuItem(label="Remove")
+            def _on_remove(_item, _idx=idx):
+                if _idx < len(data_list):
+                    data_list.pop(_idx)
+                    refresh_fn()
+            item.connect("activate", _on_remove)
+            menu.append(item)
+            menu.show_all()
+            menu.popup_at_pointer(event)
+        tree.connect("button-press-event", _on_button_press)
+
+    _make_right_click(hosts_tree, hosts, _refresh_hosts)
+    _make_right_click(url_tree, domains, _refresh_url)
+    _make_right_click(clients_tree, clients, _refresh_clients)
+
+    dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
+    dialog.add_button("OK", Gtk.ResponseType.OK)
+    dialog.show_all()
+    response = dialog.run()
+    if response == Gtk.ResponseType.OK:
+        with _STATE_FILE_LOCK:
+            _atomic_write_json(_trusted_hosts_path(), hosts)
+            _atomic_write_json(_trusted_domains_path(), domains)
+            _atomic_write_json(_trusted_clients_path(), clients)
     dialog.destroy()
 
 

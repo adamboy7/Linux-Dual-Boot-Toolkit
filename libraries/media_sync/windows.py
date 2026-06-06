@@ -12,7 +12,24 @@ from ctypes import wintypes
 from tkinter import filedialog, messagebox, simpledialog
 from typing import Optional, Tuple
 
-from .common import APP_NAME, _RESP_HOST_FORWARD, _RESP_HOST_OPEN, _app_icon_path, _is_app_protocol_url, _resource_base_dir, _strip_pyi_env
+from .common import (
+    APP_NAME,
+    _RESP_HOST_FORWARD,
+    _RESP_HOST_OPEN,
+    _STATE_FILE_LOCK,
+    _app_icon_path,
+    _atomic_write_json,
+    _is_app_protocol_url,
+    _load_trusted_clients,
+    _load_trusted_domains,
+    _load_trusted_hosts,
+    _resource_base_dir,
+    _strip_pyi_env,
+    _trusted_clients_path,
+    _trusted_domains_path,
+    _trusted_hosts_path,
+    load_client_aliases,
+)
 
 _WIN_PROMPTER = None
 _PROMPTER_LOCK = threading.Lock()
@@ -273,6 +290,9 @@ class WinPromptThread:
         self._enqueue(
             lambda root: _show_kick_windows(peers, kick_fn, get_aliases_fn, set_alias_fn, parent=root, get_latency_fn=get_latency_fn)
         )
+
+    def show_trust_manager(self) -> None:
+        self._enqueue(lambda root: _show_trust_manager_windows(parent=root))
 
     def ask_save_file(
         self,
@@ -637,6 +657,166 @@ class _WinKickDialog(simpledialog.Dialog):
 
     def get_result(self) -> list:
         return self._kicked_addrs
+
+
+class _WinTrustManagerDialog(simpledialog.Dialog):
+    _PLACEHOLDER = "(Nothing here yet)"
+
+    def __init__(self, parent):
+        # Load before super().__init__ because it calls body()
+        self._hosts = _load_trusted_hosts()
+        self._domains = _load_trusted_domains()
+        self._clients = _load_trusted_clients()
+        super().__init__(parent, title=APP_NAME)
+
+    def body(self, master):
+        icon_path = _app_icon_path()
+        if os.path.exists(icon_path):
+            try:
+                self.iconbitmap(icon_path)
+            except Exception:
+                pass
+
+        from tkinter import ttk
+        notebook = ttk.Notebook(master)
+        notebook.pack(fill=tk.BOTH, expand=True, padx=4, pady=(4, 0))
+
+        hosts_frame = tk.Frame(notebook)
+        notebook.add(hosts_frame, text="Hosts")
+        self._hosts_lb = self._make_listbox_tab(hosts_frame, self._on_hosts_right_click)
+        self._refresh_hosts()
+
+        url_frame = tk.Frame(notebook)
+        notebook.add(url_frame, text="URL")
+        self._url_lb = self._make_listbox_tab(url_frame, self._on_url_right_click)
+        self._refresh_url()
+
+        clients_frame = tk.Frame(notebook)
+        notebook.add(clients_frame, text="Clients")
+        self._clients_lb = self._make_listbox_tab(clients_frame, self._on_clients_right_click)
+        self._refresh_clients()
+
+        return notebook
+
+    def buttonbox(self):
+        box = tk.Frame(self)
+        tk.Button(box, text="OK", width=8, command=self.ok).pack(side=tk.LEFT, padx=4, pady=5)
+        tk.Button(box, text="Cancel", width=8, command=self.cancel).pack(side=tk.LEFT, padx=4, pady=5)
+        self.bind("<Escape>", self.cancel)
+        box.pack()
+
+    def _make_listbox_tab(self, parent, right_click_handler):
+        frame = tk.Frame(parent)
+        frame.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+        frame.grid_rowconfigure(0, weight=1)
+        frame.grid_columnconfigure(0, weight=1)
+        lb = tk.Listbox(frame, selectmode=tk.SINGLE, height=10, width=46)
+        lb.grid(row=0, column=0, sticky="nsew")
+        sb = tk.Scrollbar(frame, orient=tk.VERTICAL, command=lb.yview)
+        sb.grid(row=0, column=1, sticky="ns")
+        lb.configure(yscrollcommand=sb.set)
+        lb.bind("<Button-3>", right_click_handler)
+        return lb
+
+    def _refresh_hosts(self):
+        self._hosts_lb.delete(0, tk.END)
+        if not self._hosts:
+            self._hosts_lb.insert(tk.END, self._PLACEHOLDER)
+            self._hosts_lb.itemconfig(0, fg="gray")
+            return
+        aliases = load_client_aliases()
+        for ip in self._hosts:
+            alias = aliases.get(ip)
+            self._hosts_lb.insert(tk.END, f"{alias} ({ip})" if alias else ip)
+
+    def _refresh_url(self):
+        self._url_lb.delete(0, tk.END)
+        if not self._domains:
+            self._url_lb.insert(tk.END, self._PLACEHOLDER)
+            self._url_lb.itemconfig(0, fg="gray")
+            return
+        for domain in self._domains:
+            self._url_lb.insert(tk.END, domain)
+            if domain == "file":
+                self._url_lb.itemconfig(tk.END, fg="red")
+
+    def _refresh_clients(self):
+        self._clients_lb.delete(0, tk.END)
+        if not self._clients:
+            self._clients_lb.insert(tk.END, self._PLACEHOLDER)
+            self._clients_lb.itemconfig(0, fg="gray")
+            return
+        aliases = load_client_aliases()
+        for ip in self._clients:
+            alias = aliases.get(ip)
+            self._clients_lb.insert(tk.END, f"{alias} ({ip})" if alias else ip)
+
+    def _on_hosts_right_click(self, event):
+        if not self._hosts:
+            return
+        idx = self._hosts_lb.nearest(event.y)
+        if idx < 0 or idx >= len(self._hosts):
+            return
+        self._hosts_lb.selection_clear(0, tk.END)
+        self._hosts_lb.selection_set(idx)
+        ip = self._hosts[idx]
+        menu = tk.Menu(self, tearoff=0)
+        menu.add_command(label="Remove", command=lambda: self._remove_host(idx))
+        menu.tk_popup(event.x_root, event.y_root)
+
+    def _remove_host(self, idx: int):
+        if idx < len(self._hosts):
+            self._hosts.pop(idx)
+            self._refresh_hosts()
+
+    def _on_url_right_click(self, event):
+        if not self._domains:
+            return
+        idx = self._url_lb.nearest(event.y)
+        if idx < 0 or idx >= len(self._domains):
+            return
+        self._url_lb.selection_clear(0, tk.END)
+        self._url_lb.selection_set(idx)
+        domain = self._domains[idx]
+        menu = tk.Menu(self, tearoff=0)
+        menu.add_command(label="Remove", command=lambda: self._remove_domain(idx))
+        menu.tk_popup(event.x_root, event.y_root)
+
+    def _remove_domain(self, idx: int):
+        if idx < len(self._domains):
+            self._domains.pop(idx)
+            self._refresh_url()
+
+    def _on_clients_right_click(self, event):
+        if not self._clients:
+            return
+        idx = self._clients_lb.nearest(event.y)
+        if idx < 0 or idx >= len(self._clients):
+            return
+        self._clients_lb.selection_clear(0, tk.END)
+        self._clients_lb.selection_set(idx)
+        ip = self._clients[idx]
+        menu = tk.Menu(self, tearoff=0)
+        menu.add_command(label="Remove", command=lambda: self._remove_client(idx))
+        menu.tk_popup(event.x_root, event.y_root)
+
+    def _remove_client(self, idx: int):
+        if idx < len(self._clients):
+            self._clients.pop(idx)
+            self._refresh_clients()
+
+    def apply(self):
+        with _STATE_FILE_LOCK:
+            _atomic_write_json(_trusted_hosts_path(), self._hosts)
+            _atomic_write_json(_trusted_domains_path(), self._domains)
+            _atomic_write_json(_trusted_clients_path(), self._clients)
+
+
+def _show_trust_manager_windows(parent=None) -> None:
+    try:
+        _WinTrustManagerDialog(parent)
+    except Exception:
+        pass
 
 
 def _show_kick_windows(peers: dict, kick_fn, get_aliases_fn, set_alias_fn, parent=None, get_latency_fn=None) -> None:
