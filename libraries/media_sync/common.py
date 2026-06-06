@@ -126,6 +126,7 @@ def load_config() -> dict:
             "ignore_client": False,
             "enable_media_controls": True,
             "enable_links": True,
+            "latency_correction": False,
             "installed_version": "Unknown",
         }
     try:
@@ -141,6 +142,9 @@ def load_config() -> dict:
             migrated = True
         if "enable_links" not in cfg:
             cfg["enable_links"] = False
+            migrated = True
+        if "latency_correction" not in cfg:
+            cfg["latency_correction"] = False
             migrated = True
         if "installed_version" not in cfg:
             cfg["installed_version"] = "Unknown"
@@ -158,6 +162,7 @@ def load_config() -> dict:
             "ignore_client": False,
             "enable_media_controls": True,
             "enable_links": True,
+            "latency_correction": False,
             "installed_version": "Unknown",
         }
 
@@ -443,6 +448,7 @@ class RelayCore:
 
     def __init__(self, listen_port: int, resume_mode: ResumeMode, ignore_client: bool,
                  enable_media_controls: bool = True, enable_links: bool = True,
+                 latency_correction: bool = False,
                  media_controller=None):
         self.listen_port = listen_port
         self.media = media_controller
@@ -452,6 +458,7 @@ class RelayCore:
         self.ignore_client: bool = ignore_client
         self.enable_media_controls: bool = enable_media_controls
         self.enable_links: bool = enable_links
+        self.latency_correction: bool = latency_correction
         self.peer: Optional[Tuple[str, int]] = None
         self.peer_last_seen: float = 0.0
         # HOST multi-client: maps each connected client addr -> last_seen timestamp
@@ -485,6 +492,7 @@ class RelayCore:
         self.on_receive_url_from_client = lambda url, client_addr: None
         self.on_enable_media_controls_change = lambda enabled: None
         self.on_enable_links_change = lambda enabled: None
+        self.on_latency_correction_change = lambda enabled: None
         self.on_fatal_error = lambda message: None
         self.on_listen_port_error = lambda port, message: None
         # Whether the host we're connected to has enable_links = True
@@ -567,6 +575,12 @@ class RelayCore:
         if self.loop:
             self.loop.call_soon_threadsafe(
                 lambda: asyncio.create_task(self._set_enable_links(bool(enabled)))
+            )
+
+    def ui_set_latency_correction(self, enabled: bool):
+        if self.loop:
+            self.loop.call_soon_threadsafe(
+                lambda: asyncio.create_task(self._set_latency_correction(bool(enabled)))
             )
 
     def start_auto_connect(self, ip: str, port: int):
@@ -1241,6 +1255,21 @@ class RelayCore:
             pass
         await self._send_policy_to_peer(source="enable_links")
 
+    async def _set_latency_correction(self, enabled: bool):
+        # HOST-only knob. CLIENTs silently ignore so a stale tray menu can't
+        # flip a no-op flag on a client and then surprise the user when they
+        # re-host.
+        if self.role == Role.CLIENT:
+            self._log("Ignoring local latency-correction change (host-only feature).")
+            return
+        if enabled == self.latency_correction:
+            return
+        self.latency_correction = enabled
+        try:
+            self.on_latency_correction_change(enabled)
+        except Exception:
+            pass
+
     async def _set_listen_port(self, port: int):
         if port == self.listen_port:
             return
@@ -1280,6 +1309,65 @@ class RelayCore:
             except Exception:
                 self._log("Socket error while stopping.")
         self._notify()
+
+    def _one_way_latency_ms(self, addr: Tuple[str, int]) -> float:
+        """Estimate one-way latency to ``addr`` in ms from measured RTT.
+
+        ``peer_latency`` is populated by the ping/pong heartbeat as a
+        round-trip in ms; halve it for a one-way estimate. Peers without a
+        measurement yet are treated as 0ms (assume best case so we don't
+        over-delay an unknown link).
+        """
+        rtt = self.peer_latency.get(addr, 0.0) or 0.0
+        return max(0.0, float(rtt) / 2.0)
+
+    async def _dispatch_with_latency_correction(self, sends, local_action=None):
+        """HOST: stagger ``sends`` and ``local_action`` so they take effect together.
+
+        ``sends`` is an iterable of ``(addr, msg)`` tuples to deliver to peers.
+        ``local_action`` is an optional zero-arg callable that returns a
+        coroutine (e.g. ``self._toggle_local`` or ``lambda: self.media.command(
+        "stop")``) for the host's own playback change.
+
+        With ``latency_correction`` off, sends fire immediately and
+        ``local_action`` runs synchronously - matches the prior behavior.
+
+        With it on, each peer ``addr`` waits ``(worst_one_way -
+        one_way[addr])`` ms before its packet leaves, and the local action
+        waits ``worst_one_way`` ms, so every endpoint should toggle at
+        approximately the same wall-clock instant (network jitter aside).
+        """
+        sends_list = list(sends)
+        if not self.latency_correction:
+            for addr, msg in sends_list:
+                await self._send(addr, msg)
+            if local_action is not None:
+                await local_action()
+            return
+
+        # Worst-case is taken across the targets only. A connected but
+        # untargeted peer (e.g. the source of a relayed cmd that's been
+        # excluded) shouldn't dictate how long we delay the others.
+        one_ways = {addr: self._one_way_latency_ms(addr) for addr, _ in sends_list}
+        worst = max(one_ways.values(), default=0.0)
+
+        async def send_after(addr, msg):
+            delay_ms = max(0.0, worst - one_ways.get(addr, 0.0))
+            if delay_ms > 0:
+                await asyncio.sleep(delay_ms / 1000.0)
+            await self._send(addr, msg)
+
+        async def local_after():
+            if worst > 0:
+                await asyncio.sleep(worst / 1000.0)
+            if local_action is not None:
+                await local_action()
+
+        tasks = [asyncio.create_task(send_after(a, m)) for a, m in sends_list]
+        if local_action is not None:
+            tasks.append(asyncio.create_task(local_after()))
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _toggle_local(self) -> bool:
         snap = await self.media.snapshot()
@@ -1325,10 +1413,15 @@ class RelayCore:
             return
 
         if self._effective_resume_mode == ResumeMode.BLIND:
-            await self._toggle_local()
-            for addr in list(self.peers):
-                if addr != source_addr:
-                    await self._send(addr, {"t": "cmd", "cmd": "toggle", "ts": now_ms(), "source": source})
+            ts = now_ms()
+            sends = [
+                (addr, {"t": "cmd", "cmd": "toggle", "ts": ts, "source": source})
+                for addr in list(self.peers)
+                if addr != source_addr
+            ]
+            await self._dispatch_with_latency_correction(
+                sends, local_action=self._toggle_local
+            )
             return
 
         host_snap = await self.media.snapshot()
@@ -1344,10 +1437,11 @@ class RelayCore:
 
         host_cmd, client_cmd = decide_actions(host_snap.state, client_state, self.resume_mode)
 
-        if host_cmd:
-            await self.media.command(host_cmd)
+        sends = []
         if client_cmd:
-            await self._send(self.peer, {"t": "cmd", "cmd": client_cmd, "ts": now_ms()})
+            sends.append((self.peer, {"t": "cmd", "cmd": client_cmd, "ts": now_ms()}))
+        local_action = (lambda: self.media.command(host_cmd)) if host_cmd else None
+        await self._dispatch_with_latency_correction(sends, local_action=local_action)
 
     async def _stop_pressed(self, source: str, source_addr: Optional[Tuple[str, int]] = None):
         if self.role == Role.HOST and not self.peers:
@@ -1371,9 +1465,14 @@ class RelayCore:
             await self.media.command("stop")
             return
 
-        await self.media.command("stop")
-        for addr in list(self.peers):
-            await self._send(addr, {"t": "cmd", "cmd": "stop", "ts": now_ms()})
+        ts = now_ms()
+        sends = [
+            (addr, {"t": "cmd", "cmd": "stop", "ts": ts})
+            for addr in list(self.peers)
+        ]
+        await self._dispatch_with_latency_correction(
+            sends, local_action=lambda: self.media.command("stop")
+        )
 
     async def _next_pressed(self, source: str, client_state_hint: Optional[State] = None,
                             source_addr=None):
@@ -1411,10 +1510,15 @@ class RelayCore:
             return
 
         if self._effective_resume_mode == ResumeMode.BLIND:
-            await self.media.command("next")
-            for addr in list(self.peers):
-                if addr != source_addr:
-                    await self._send(addr, {"t": "cmd", "cmd": "next", "ts": now_ms(), "source": source})
+            ts = now_ms()
+            sends = [
+                (addr, {"t": "cmd", "cmd": "next", "ts": ts, "source": source})
+                for addr in list(self.peers)
+                if addr != source_addr
+            ]
+            await self._dispatch_with_latency_correction(
+                sends, local_action=lambda: self.media.command("next")
+            )
             return
 
         host_snap = await self.media.snapshot()
@@ -1429,10 +1533,11 @@ class RelayCore:
             client_state = client_state_hint
 
         host_cmd, client_cmd = decide_track_action(host_snap.state, client_state, self.resume_mode, "next")
-        if host_cmd:
-            await self.media.command(host_cmd)
+        sends = []
         if client_cmd:
-            await self._send(self.peer, {"t": "cmd", "cmd": client_cmd, "ts": now_ms()})
+            sends.append((self.peer, {"t": "cmd", "cmd": client_cmd, "ts": now_ms()}))
+        local_action = (lambda: self.media.command(host_cmd)) if host_cmd else None
+        await self._dispatch_with_latency_correction(sends, local_action=local_action)
 
     async def _prev_pressed(self, source: str, client_state_hint: Optional[State] = None,
                             source_addr=None):
@@ -1470,10 +1575,15 @@ class RelayCore:
             return
 
         if self._effective_resume_mode == ResumeMode.BLIND:
-            await self.media.command("prev")
-            for addr in list(self.peers):
-                if addr != source_addr:
-                    await self._send(addr, {"t": "cmd", "cmd": "prev", "ts": now_ms(), "source": source})
+            ts = now_ms()
+            sends = [
+                (addr, {"t": "cmd", "cmd": "prev", "ts": ts, "source": source})
+                for addr in list(self.peers)
+                if addr != source_addr
+            ]
+            await self._dispatch_with_latency_correction(
+                sends, local_action=lambda: self.media.command("prev")
+            )
             return
 
         host_snap = await self.media.snapshot()
@@ -1488,10 +1598,11 @@ class RelayCore:
             client_state = client_state_hint
 
         host_cmd, client_cmd = decide_track_action(host_snap.state, client_state, self.resume_mode, "prev")
-        if host_cmd:
-            await self.media.command(host_cmd)
+        sends = []
         if client_cmd:
-            await self._send(self.peer, {"t": "cmd", "cmd": client_cmd, "ts": now_ms()})
+            sends.append((self.peer, {"t": "cmd", "cmd": client_cmd, "ts": now_ms()}))
+        local_action = (lambda: self.media.command(host_cmd)) if host_cmd else None
+        await self._dispatch_with_latency_correction(sends, local_action=local_action)
 
     async def _send_link(self, url: str, exclude_addr=None):
         """HOST: broadcast a URL to all connected clients, optionally skipping one."""

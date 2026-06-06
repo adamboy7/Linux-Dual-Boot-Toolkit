@@ -159,6 +159,7 @@ class TrayApp:
         ignore_client = bool(self.cfg.get("ignore_client", False))
         enable_media_controls = bool(self.cfg.get("enable_media_controls", True))
         enable_links = bool(self.cfg.get("enable_links", True))
+        latency_correction = bool(self.cfg.get("latency_correction", False))
         media_controller = build_media_controller()
         if media_controller is None:
             log.warning(
@@ -170,6 +171,7 @@ class TrayApp:
             ignore_client=ignore_client,
             enable_media_controls=enable_media_controls,
             enable_links=enable_links,
+            latency_correction=latency_correction,
             media_controller=media_controller,
         )
         with self._tray_state_lock:
@@ -181,6 +183,7 @@ class TrayApp:
         self.core.on_receive_url_from_client = self._handle_url_from_client
         self.core.on_enable_media_controls_change = self._set_enable_media_controls_from_core
         self.core.on_enable_links_change = self._set_enable_links_from_core
+        self.core.on_latency_correction_change = self._set_latency_correction_from_core
         self.core.on_fatal_error = self._handle_core_fatal_error
         self.core.on_listen_port_error = self._handle_listen_port_error
         self.media_key_listener = build_media_key_listener(
@@ -210,6 +213,7 @@ class TrayApp:
             self.core.enable_media_controls,
             self.core.enable_links,
             self.core.ignore_client,
+            self.core.latency_correction,
             self.core.resume_mode,
             peers_key,
         )
@@ -272,6 +276,13 @@ class TrayApp:
                     "Ignore Client",
                     self._toggle_ignore_client,
                     checked=lambda item: self.core.ignore_client,
+                )
+            )
+            controls_items.append(
+                Item(
+                    "Latency Correction",
+                    self._toggle_latency_correction,
+                    checked=lambda item: self.core.latency_correction,
                 )
             )
         items += [
@@ -396,6 +407,7 @@ class TrayApp:
             "ignore_client": self.cfg.get("ignore_client", False),
             "enable_media_controls": self.cfg.get("enable_media_controls", True),
             "enable_links": self.cfg.get("enable_links", True),
+            "latency_correction": self.cfg.get("latency_correction", False),
         }
         if state == self._last_saved_state:
             return
@@ -427,6 +439,7 @@ class TrayApp:
             "ignore_client": self.cfg.get("ignore_client", False),
             "enable_media_controls": self.cfg.get("enable_media_controls", True),
             "enable_links": self.cfg.get("enable_links", True),
+            "latency_correction": self.cfg.get("latency_correction", False),
         }
         if state == self._last_saved_state:
             return
@@ -477,6 +490,14 @@ class TrayApp:
 
     def _toggle_ignore_client(self, icon=None, item=None):
         self.core.ui_set_ignore_client(not self.core.ignore_client)
+
+    def _set_latency_correction_from_core(self, enabled: bool):
+        self._apply_cfg_and_rebuild(
+            "latency_correction", bool(enabled), "latency_correction"
+        )
+
+    def _toggle_latency_correction(self, icon=None, item=None):
+        self.core.ui_set_latency_correction(not self.core.latency_correction)
 
     def _toggle_enable_media_controls(self, icon=None, item=None):
         new_val = not self.core.enable_media_controls
