@@ -79,6 +79,11 @@ def _ui_show(kind: str, title: str, message: str) -> Optional[bool]:
         prompter = get_or_create_prompter()
         if prompter is not None:
             return prompter.show_message(kind, title, message)
+        log.warning(
+            "WinPromptThread unavailable; cannot show %s dialog: %s - %s",
+            kind, title, message,
+        )
+        return None
     try:
         root = tk.Tk()
         root.withdraw()
@@ -113,6 +118,12 @@ def _ui_save_file(
     """
     if not _TK_AVAILABLE:
         log.warning("tkinter is unavailable; cannot prompt for save location")
+        return None
+    if sys.platform == "win32":
+        log.warning(
+            "WinPromptThread unavailable; refusing per-call Tk save dialog "
+            "from a worker thread"
+        )
         return None
     try:
         root = tk.Tk()
@@ -1033,6 +1044,12 @@ class TrayApp:
     def _ask_directory_fallback(title: str) -> Optional[str]:
         """Per-call hidden-root askdirectory; used only when prompter is dead."""
         if not _TK_AVAILABLE:
+            return None
+        if sys.platform == "win32":
+            log.warning(
+                "WinPromptThread unavailable; refusing per-call Tk directory "
+                "dialog from a worker thread"
+            )
             return None
         try:
             root = tk.Tk()

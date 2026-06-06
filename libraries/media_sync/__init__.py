@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import logging
 import sys
 from typing import Optional
+
+log = logging.getLogger(__name__)
 
 from .common import (
     APP_NAME,
@@ -71,11 +74,12 @@ def build_media_key_listener(core: RelayCore, swallow: bool, enabled: bool = Tru
 def prompt_string(prompt: str, initial: str = "") -> Optional[str]:
     """Cross-platform string prompt dialog."""
     if sys.platform == "win32":
-        from .windows import get_or_create_prompter, _ask_string_windows
+        from .windows import get_or_create_prompter
         prompter = get_or_create_prompter()
         if prompter is not None:
             return prompter.ask_string(prompt, initial)
-        return _ask_string_windows(prompt, initial)
+        log.warning("WinPromptThread unavailable; cannot prompt for string: %s", prompt)
+        return None
     from .linux import _prompt_string_gtk
     return _prompt_string_gtk(prompt, initial)
 
@@ -106,11 +110,12 @@ def prompt_url_confirm(url: str, is_ip: bool, show_protocol_trust: bool = True, 
     Pass ``show_peer_trust=False`` to hide the session/host trust checkboxes (e.g. for file://).
     """
     if sys.platform == "win32":
-        from .windows import get_or_create_prompter, _ask_url_confirm_windows
+        from .windows import get_or_create_prompter
         prompter = get_or_create_prompter()
         if prompter is not None:
             return prompter.ask_url_confirm(url, is_ip, show_protocol_trust, show_peer_trust)
-        return _ask_url_confirm_windows(url, is_ip, show_protocol_trust, show_peer_trust)
+        log.warning("WinPromptThread unavailable; cannot confirm URL: %s", url)
+        return None
     from .linux import _prompt_url_confirm_gtk
     return _prompt_url_confirm_gtk(url, is_ip, show_protocol_trust, show_peer_trust)
 
@@ -128,12 +133,12 @@ def show_kick_dialog(core: "RelayCore") -> None:
         set_client_alias(ip, alias)
         core._notify()
     if sys.platform == "win32":
-        from .windows import get_or_create_prompter, _show_kick_windows
+        from .windows import get_or_create_prompter
         prompter = get_or_create_prompter()
         if prompter is not None:
             prompter.show_kick_dialog(peers_snapshot, kick_fn, get_aliases_fn, set_alias_fn, get_latency_fn)
         else:
-            _show_kick_windows(peers_snapshot, kick_fn, get_aliases_fn, set_alias_fn, get_latency_fn)
+            log.warning("WinPromptThread unavailable; cannot show kick dialog")
     else:
         from .linux import _show_kick_gtk
         _show_kick_gtk(peers_snapshot, kick_fn, get_aliases_fn, set_alias_fn, get_latency_fn)
@@ -148,11 +153,14 @@ def prompt_host_url_confirm(url: str, is_ip: bool, client_ip: str, show_protocol
     Pass ``show_peer_trust=False`` to hide the session/client trust checkboxes (e.g. for file://).
     """
     if sys.platform == "win32":
-        from .windows import get_or_create_prompter, _ask_host_url_confirm_windows
+        from .windows import get_or_create_prompter
         prompter = get_or_create_prompter()
         if prompter is not None:
             return prompter.ask_host_url_confirm(url, is_ip, client_ip, show_protocol_trust, show_peer_trust)
-        return _ask_host_url_confirm_windows(url, is_ip, client_ip, show_protocol_trust, show_peer_trust)
+        log.warning(
+            "WinPromptThread unavailable; cannot confirm host-side URL: %s", url
+        )
+        return None
     from .linux import _prompt_host_url_confirm_gtk
     return _prompt_host_url_confirm_gtk(url, is_ip, client_ip, show_protocol_trust, show_peer_trust)
 
