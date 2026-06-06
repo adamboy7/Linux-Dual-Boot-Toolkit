@@ -263,7 +263,7 @@ def _prompt_string_gtk(prompt: str, initial: str = "") -> Optional[str]:
     return value
 
 
-def _prompt_url_confirm_gtk(url: str, is_ip: bool, show_protocol_trust: bool = True) -> Optional[dict]:
+def _prompt_url_confirm_gtk(url: str, is_ip: bool, show_protocol_trust: bool = True, show_peer_trust: bool = True) -> Optional[dict]:
     dialog = Gtk.Dialog(title=APP_NAME)
     icon_path = _app_icon_path()
     if os.path.exists(icon_path):
@@ -295,10 +295,13 @@ def _prompt_url_confirm_gtk(url: str, is_ip: bool, show_protocol_trust: bool = T
         chk_domain = Gtk.CheckButton(label=domain_label)
         box.add(chk_domain)
 
-    chk_session = Gtk.CheckButton(label="Trust this session")
-    chk_host = Gtk.CheckButton(label="Trust this host")
-    box.add(chk_session)
-    box.add(chk_host)
+    chk_session = None
+    chk_host = None
+    if show_peer_trust:
+        chk_session = Gtk.CheckButton(label="Trust this session")
+        chk_host = Gtk.CheckButton(label="Trust this host")
+        box.add(chk_session)
+        box.add(chk_host)
 
     dialog.show_all()
     response = dialog.run()
@@ -306,8 +309,8 @@ def _prompt_url_confirm_gtk(url: str, is_ip: bool, show_protocol_trust: bool = T
         result = {
             "accepted": True,
             "trust_domain": chk_domain.get_active() if chk_domain else False,
-            "trust_session": chk_session.get_active(),
-            "trust_host": chk_host.get_active(),
+            "trust_session": chk_session.get_active() if chk_session else False,
+            "trust_host": chk_host.get_active() if chk_host else False,
         }
     else:
         result = None
@@ -315,7 +318,7 @@ def _prompt_url_confirm_gtk(url: str, is_ip: bool, show_protocol_trust: bool = T
     return result
 
 
-def _prompt_host_url_confirm_gtk(url: str, is_ip: bool, client_ip: str, show_protocol_trust: bool = True) -> Optional[dict]:
+def _prompt_host_url_confirm_gtk(url: str, is_ip: bool, client_ip: str, show_protocol_trust: bool = True, show_peer_trust: bool = True) -> Optional[dict]:
     dialog = Gtk.Dialog(title=APP_NAME)
     icon_path = _app_icon_path()
     if os.path.exists(icon_path):
@@ -351,10 +354,13 @@ def _prompt_host_url_confirm_gtk(url: str, is_ip: bool, client_ip: str, show_pro
         chk_domain = Gtk.CheckButton(label=domain_label)
         box.add(chk_domain)
 
-    chk_session = Gtk.CheckButton(label="Trust this client (session)")
-    chk_client = Gtk.CheckButton(label="Trust this client (always)")
-    box.add(chk_session)
-    box.add(chk_client)
+    chk_session = None
+    chk_client = None
+    if show_peer_trust:
+        chk_session = Gtk.CheckButton(label="Trust this client (session)")
+        chk_client = Gtk.CheckButton(label="Trust this client (always)")
+        box.add(chk_session)
+        box.add(chk_client)
 
     dialog.show_all()
 
@@ -378,8 +384,8 @@ def _prompt_host_url_confirm_gtk(url: str, is_ip: bool, client_ip: str, show_pro
         result = {
             "forward": forwarded,
             "trust_domain": chk_domain.get_active() if chk_domain else False,
-            "trust_session": chk_session.get_active(),
-            "trust_client": chk_client.get_active(),
+            "trust_session": chk_session.get_active() if chk_session else False,
+            "trust_client": chk_client.get_active() if chk_client else False,
         }
     dialog.destroy()
     return result

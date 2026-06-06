@@ -29,7 +29,7 @@ The **Resume Mode** controls how a toggle press is handled. In **Host Only** and
 ### URL Sharing
 - Send a URL from one PC to the other via the tray menu
 - Recipient gets a prompt to open, trust (permanently or for this session), or deny the link
-- Trusted domains and protocols are remembered; untrusted sources are blocked
+- Trusted domains and protocols are remembered; untrusted sources bring up a user side confirmation
 - All URL schemes are supported â€” including custom app protocols such as `beatsaver://`, `steam://`, or `calculator://`
 - Trusting a protocol allows future links using that protocol to open automatically, even from untrusted peers
 - `file://` links have additional restrictions: they are silently refused from untrusted peers, always prompt even from trusted peers, and can never be set to auto-open through the UI
@@ -169,7 +169,7 @@ By design, the app never lets you trust the `file://` protocol through the UI â€
 2. Open `trusted_domains.json` in the config directory.
 3. Add `"file"` to the JSON array, e.g.:
    ```json
-   ["example.com", "file"]
+   ["youtube.com", "beatsaver", "file"]
    ```
 4. Save the file and restart the app.
 

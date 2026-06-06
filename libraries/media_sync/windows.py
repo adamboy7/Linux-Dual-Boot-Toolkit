@@ -261,11 +261,11 @@ class WinPromptThread:
     def ask_string(self, prompt: str, initial: str = "") -> Optional[str]:
         return self._enqueue(lambda root: _ask_string_windows(prompt, initial, parent=root))
 
-    def ask_url_confirm(self, url: str, is_ip: bool, show_protocol_trust: bool = True) -> Optional[dict]:
-        return self._enqueue(lambda root: _ask_url_confirm_windows(url, is_ip, show_protocol_trust, parent=root))
+    def ask_url_confirm(self, url: str, is_ip: bool, show_protocol_trust: bool = True, show_peer_trust: bool = True) -> Optional[dict]:
+        return self._enqueue(lambda root: _ask_url_confirm_windows(url, is_ip, show_protocol_trust, show_peer_trust, parent=root))
 
-    def ask_host_url_confirm(self, url: str, is_ip: bool, client_ip: str, show_protocol_trust: bool = True) -> Optional[dict]:
-        return self._enqueue(lambda root: _ask_host_url_confirm_windows(url, is_ip, client_ip, show_protocol_trust, parent=root))
+    def ask_host_url_confirm(self, url: str, is_ip: bool, client_ip: str, show_protocol_trust: bool = True, show_peer_trust: bool = True) -> Optional[dict]:
+        return self._enqueue(lambda root: _ask_host_url_confirm_windows(url, is_ip, client_ip, show_protocol_trust, show_peer_trust, parent=root))
 
     def show_kick_dialog(self, peers: dict, kick_fn, get_aliases_fn, set_alias_fn, get_latency_fn=None) -> None:
         self._enqueue(
@@ -369,10 +369,11 @@ def _ask_string_windows(prompt: str, initial: str, parent: Optional[tk.Misc] = N
 
 
 class _WinUrlConfirmDialog(simpledialog.Dialog):
-    def __init__(self, parent, url: str, is_ip: bool, show_protocol_trust: bool = True):
+    def __init__(self, parent, url: str, is_ip: bool, show_protocol_trust: bool = True, show_peer_trust: bool = True):
         self.url = url
         self.is_ip = is_ip
         self._show_protocol_trust = show_protocol_trust
+        self._show_peer_trust = show_peer_trust
         self._accepted = False
         self._trust_domain = tk.BooleanVar(value=False)
         self._trust_session = tk.BooleanVar(value=False)
@@ -402,12 +403,13 @@ class _WinUrlConfirmDialog(simpledialog.Dialog):
                 row=row, column=0, sticky="w", padx=8
             )
             row += 1
-        tk.Checkbutton(master, text="Trust this session", variable=self._trust_session).grid(
-            row=row, column=0, sticky="w", padx=8
-        )
-        tk.Checkbutton(master, text="Trust this host", variable=self._trust_host).grid(
-            row=row + 1, column=0, sticky="w", padx=8, pady=(0, 8)
-        )
+        if self._show_peer_trust:
+            tk.Checkbutton(master, text="Trust this session", variable=self._trust_session).grid(
+                row=row, column=0, sticky="w", padx=8
+            )
+            tk.Checkbutton(master, text="Trust this host", variable=self._trust_host).grid(
+                row=row + 1, column=0, sticky="w", padx=8, pady=(0, 8)
+            )
         return None
 
     def buttonbox(self):
@@ -432,20 +434,21 @@ class _WinUrlConfirmDialog(simpledialog.Dialog):
         }
 
 
-def _ask_url_confirm_windows(url: str, is_ip: bool, show_protocol_trust: bool = True, parent=None) -> Optional[dict]:
+def _ask_url_confirm_windows(url: str, is_ip: bool, show_protocol_trust: bool = True, show_peer_trust: bool = True, parent=None) -> Optional[dict]:
     try:
-        dlg = _WinUrlConfirmDialog(parent, url, is_ip, show_protocol_trust)
+        dlg = _WinUrlConfirmDialog(parent, url, is_ip, show_protocol_trust, show_peer_trust)
         return dlg.get_result()
     except Exception:
         return None
 
 
 class _WinHostUrlConfirmDialog(simpledialog.Dialog):
-    def __init__(self, parent, url: str, is_ip: bool, client_ip: str, show_protocol_trust: bool = True):
+    def __init__(self, parent, url: str, is_ip: bool, client_ip: str, show_protocol_trust: bool = True, show_peer_trust: bool = True):
         self.url = url
         self.is_ip = is_ip
         self.client_ip = client_ip
         self._show_protocol_trust = show_protocol_trust
+        self._show_peer_trust = show_peer_trust
         self._was_opened = False
         self._forwarded = False
         self._trust_domain = tk.BooleanVar(value=False)
@@ -473,12 +476,13 @@ class _WinHostUrlConfirmDialog(simpledialog.Dialog):
                 row=row, column=0, sticky="w", padx=8
             )
             row += 1
-        tk.Checkbutton(master, text="Trust this client (session)", variable=self._trust_session).grid(
-            row=row, column=0, sticky="w", padx=8
-        )
-        tk.Checkbutton(master, text="Trust this client (always)", variable=self._trust_client).grid(
-            row=row + 1, column=0, sticky="w", padx=8, pady=(0, 8)
-        )
+        if self._show_peer_trust:
+            tk.Checkbutton(master, text="Trust this client (session)", variable=self._trust_session).grid(
+                row=row, column=0, sticky="w", padx=8
+            )
+            tk.Checkbutton(master, text="Trust this client (always)", variable=self._trust_client).grid(
+                row=row + 1, column=0, sticky="w", padx=8, pady=(0, 8)
+            )
         return None
 
     def buttonbox(self):
@@ -512,9 +516,9 @@ class _WinHostUrlConfirmDialog(simpledialog.Dialog):
         }
 
 
-def _ask_host_url_confirm_windows(url: str, is_ip: bool, client_ip: str, show_protocol_trust: bool = True, parent=None) -> Optional[dict]:
+def _ask_host_url_confirm_windows(url: str, is_ip: bool, client_ip: str, show_protocol_trust: bool = True, show_peer_trust: bool = True, parent=None) -> Optional[dict]:
     try:
-        dlg = _WinHostUrlConfirmDialog(parent, url, is_ip, client_ip, show_protocol_trust)
+        dlg = _WinHostUrlConfirmDialog(parent, url, is_ip, client_ip, show_protocol_trust, show_peer_trust)
         return dlg.get_result()
     except Exception:
         return None

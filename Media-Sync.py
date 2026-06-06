@@ -1117,7 +1117,7 @@ class TrayApp:
                 webbrowser.open(url)
                 return
 
-        result = prompt_url_confirm(url, is_ip, show_protocol_trust=not is_file)
+        result = prompt_url_confirm(url, is_ip, show_protocol_trust=not is_file, show_peer_trust=not is_file)
         if not result or not result.get("accepted"):
             return
 
@@ -1172,7 +1172,7 @@ class TrayApp:
                 self.core.ui_send_link(url, exclude_addr=client_addr)
                 return
 
-        result = prompt_host_url_confirm(url, is_ip, client_display, show_protocol_trust=not is_file)
+        result = prompt_host_url_confirm(url, is_ip, client_display, show_protocol_trust=not is_file, show_peer_trust=not is_file)
         if not result or not result.get("accepted"):
             return
 
