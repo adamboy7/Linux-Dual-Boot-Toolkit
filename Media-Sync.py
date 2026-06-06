@@ -219,16 +219,21 @@ class TrayApp:
         )
 
     @staticmethod
-    def _is_valid_ip(ip: str) -> bool:
-        # Restricted to IPv4 because the relay socket binds AF_INET only and
-        # _connect_out resolves via socket.gethostbyname (IPv4-only). Accepting
-        # IPv6 here would let users pass validation, then fail opaquely at
-        # connect time.
+    def _is_valid_host(host: str) -> bool:
+        # Accept a raw IPv4 address or a hostname. IPv6 literals are excluded
+        # because the relay socket binds AF_INET only and socket.gethostbyname
+        # is IPv4-only; passing an IPv6 literal would fail opaquely at connect.
         try:
-            ipaddress.IPv4Address(ip)
+            ipaddress.IPv4Address(host)
             return True
         except (ValueError, ipaddress.AddressValueError):
-            return False
+            pass
+        import re
+        return bool(re.match(
+            r'^(?:[A-Za-z0-9](?:[A-Za-z0-9\-]{0,61}[A-Za-z0-9])?\.)*'
+            r'[A-Za-z0-9](?:[A-Za-z0-9\-]{0,61}[A-Za-z0-9])?$',
+            host,
+        ))
 
     @staticmethod
     def _is_valid_port(port: object) -> bool:
@@ -245,7 +250,7 @@ class TrayApp:
             self.cfg.get("auto_connect")
             and self.cfg.get("last_role") == Role.CLIENT.value
             and ip
-            and self._is_valid_ip(ip)
+            and self._is_valid_host(ip)
             and self._is_valid_port(self.cfg.get("peer_port"))
         )
 
@@ -568,14 +573,14 @@ class TrayApp:
         self.core.ui_set_listen_port(port)
 
     def _connect(self, icon=None, item=None):
-        ip = prompt_string("Host IPv4:", self.cfg.get("peer_ip", ""))
+        ip = prompt_string("Host IP or hostname:", self.cfg.get("peer_ip", ""))
         if ip is None:
             return
         ip = ip.strip()
         if not ip:
             return
-        if not self._is_valid_ip(ip):
-            _ui_show("error", APP_NAME, f"{ip!r} is not a valid IPv4 address.")
+        if not self._is_valid_host(ip):
+            _ui_show("error", APP_NAME, f"{ip!r} is not a valid IPv4 address or hostname.")
             return
         port_result = prompt_int("Host Port:", int(self.cfg.get("peer_port", DEFAULT_PORT)))
         if port_result is None:
