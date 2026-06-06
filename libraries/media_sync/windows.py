@@ -29,6 +29,7 @@ from .common import (
     _trusted_domains_path,
     _trusted_hosts_path,
     load_client_aliases,
+    set_client_alias,
 )
 
 _WIN_PROMPTER = None
@@ -751,6 +752,21 @@ class _WinTrustManagerDialog(simpledialog.Dialog):
             alias = aliases.get(ip)
             self._clients_lb.insert(tk.END, f"{alias} ({ip})" if alias else ip)
 
+    def _copy_to_clipboard(self, text: str):
+        self.clipboard_clear()
+        self.clipboard_append(text)
+
+    def _on_set_alias(self, ip: str, refresh_fn):
+        aliases = load_client_aliases()
+        current = aliases.get(ip, "")
+        new_alias = simpledialog.askstring(
+            APP_NAME, f"Set alias for {ip}:", initialvalue=current, parent=self
+        )
+        if new_alias is None:
+            return
+        set_client_alias(ip, new_alias)
+        refresh_fn()
+
     def _on_hosts_right_click(self, event):
         if not self._hosts:
             return
@@ -761,6 +777,8 @@ class _WinTrustManagerDialog(simpledialog.Dialog):
         self._hosts_lb.selection_set(idx)
         ip = self._hosts[idx]
         menu = tk.Menu(self, tearoff=0)
+        menu.add_command(label="Copy IP", command=lambda: self._copy_to_clipboard(ip))
+        menu.add_command(label="Set Alias...", command=lambda: self._on_set_alias(ip, self._refresh_hosts))
         menu.add_command(label="Remove", command=lambda: self._remove_host(idx))
         menu.tk_popup(event.x_root, event.y_root)
 
@@ -797,6 +815,8 @@ class _WinTrustManagerDialog(simpledialog.Dialog):
         self._clients_lb.selection_set(idx)
         ip = self._clients[idx]
         menu = tk.Menu(self, tearoff=0)
+        menu.add_command(label="Copy IP", command=lambda: self._copy_to_clipboard(ip))
+        menu.add_command(label="Set Alias...", command=lambda: self._on_set_alias(ip, self._refresh_clients))
         menu.add_command(label="Remove", command=lambda: self._remove_client(idx))
         menu.tk_popup(event.x_root, event.y_root)
 

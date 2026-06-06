@@ -29,6 +29,7 @@ from .common import (
     _trusted_domains_path,
     _trusted_hosts_path,
     load_client_aliases,
+    set_client_alias,
 )
 
 EVDEV_AVAILABLE = importlib.util.find_spec("evdev") is not None
@@ -632,7 +633,7 @@ def _show_trust_manager_gtk() -> None:
     _refresh_url()
     _refresh_clients()
 
-    def _make_right_click(tree, data_list, refresh_fn):
+    def _make_right_click(tree, data_list, refresh_fn, copy_ip=False, set_alias=False):
         def _on_button_press(widget, event):
             if event.button != 3:
                 return
@@ -648,20 +649,38 @@ def _show_trust_manager_gtk() -> None:
                 return
             tree.get_selection().select_path(path)
             menu = Gtk.Menu()
-            item = Gtk.MenuItem(label="Remove")
+            if copy_ip:
+                copy_item = Gtk.MenuItem(label="Copy IP")
+                def _on_copy(_item, _raw=raw):
+                    Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD).set_text(_raw, -1)
+                copy_item.connect("activate", _on_copy)
+                menu.append(copy_item)
+            if set_alias:
+                alias_item = Gtk.MenuItem(label="Set Alias…")
+                def _on_set_alias(_item, _raw=raw):
+                    aliases = load_client_aliases()
+                    current = aliases.get(_raw, "")
+                    new_alias = _prompt_string_gtk(f"Set alias for {_raw}:", current)
+                    if new_alias is None:
+                        return
+                    set_client_alias(_raw, new_alias)
+                    refresh_fn()
+                alias_item.connect("activate", _on_set_alias)
+                menu.append(alias_item)
+            remove_item = Gtk.MenuItem(label="Remove")
             def _on_remove(_item, _idx=idx):
                 if _idx < len(data_list):
                     data_list.pop(_idx)
                     refresh_fn()
-            item.connect("activate", _on_remove)
-            menu.append(item)
+            remove_item.connect("activate", _on_remove)
+            menu.append(remove_item)
             menu.show_all()
             menu.popup_at_pointer(event)
         tree.connect("button-press-event", _on_button_press)
 
-    _make_right_click(hosts_tree, hosts, _refresh_hosts)
+    _make_right_click(hosts_tree, hosts, _refresh_hosts, copy_ip=True, set_alias=True)
     _make_right_click(url_tree, domains, _refresh_url)
-    _make_right_click(clients_tree, clients, _refresh_clients)
+    _make_right_click(clients_tree, clients, _refresh_clients, copy_ip=True, set_alias=True)
 
     dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
     dialog.add_button("OK", Gtk.ResponseType.OK)
