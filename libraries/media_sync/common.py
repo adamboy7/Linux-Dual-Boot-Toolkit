@@ -17,7 +17,7 @@ import webbrowser
 from dataclasses import dataclass
 from enum import Enum
 from typing import Dict, Optional, Tuple
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse, quote, unquote
 
 import pystray
 from pystray import MenuItem as Item, Menu as Menu
@@ -285,7 +285,20 @@ def _validate_incoming_url(url: str) -> Optional[str]:
     elif scheme == "file":
         if not parsed.path:
             return None
-    return candidate
+    return _encode_file_url(candidate) if scheme == "file" else candidate
+
+
+def _encode_file_url(url: str) -> str:
+    """Normalize a file:// URL by percent-encoding the path component.
+
+    Decodes first to avoid double-encoding already-encoded sequences, then
+    re-encodes everything except RFC 3986 path-safe characters.
+    """
+    parsed = urlparse(url)
+    if parsed.scheme.lower() != "file":
+        return url
+    normalized_path = quote(unquote(parsed.path), safe="/:@!$&'()*+,;=")
+    return urlunparse(parsed._replace(path=normalized_path))
 
 
 def _is_app_protocol_url(url: str) -> bool:

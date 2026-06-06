@@ -22,6 +22,7 @@ from libraries.media_sync import (
     RelayCore,
     ResumeMode,
     Role,
+    _encode_file_url,
     _is_ip_url,
     add_trusted_client,
     add_trusted_domain,
@@ -1070,6 +1071,8 @@ class TrayApp:
             return None
         if scheme == "file" and not parsed.path:
             return None
+        if scheme == "file":
+            candidate = _encode_file_url(candidate)
         return candidate
 
     def _send_link_action(self, icon=None, item=None):
@@ -1098,6 +1101,7 @@ class TrayApp:
         is_ip = _is_ip_url(url)
         scheme = urllib.parse.urlparse(url).scheme.lower()
         is_file = scheme == "file"
+        open_url = _encode_file_url(url) if is_file else url
         host_trusted = (
             host_ip in self.core.session_trusted_hosts
             or is_host_permanently_trusted(host_ip)
@@ -1109,16 +1113,16 @@ class TrayApp:
                 return
             # Power-user escape: "file" manually added to trusted_domains.json allows auto-open.
             if is_domain_trusted(url):
-                webbrowser.open(url)
+                webbrowser.open(open_url)
                 return
             # Trusted host, protocol not trusted: always prompt.
         else:
             # Non-file: auto-open if the host or protocol/domain is trusted.
             if host_trusted:
-                webbrowser.open(url)
+                webbrowser.open(open_url)
                 return
             if not is_ip and is_domain_trusted(url):
-                webbrowser.open(url)
+                webbrowser.open(open_url)
                 return
 
         result = prompt_url_confirm(url, is_ip, show_protocol_trust=not is_file, show_peer_trust=not is_file)
@@ -1133,7 +1137,7 @@ class TrayApp:
         if result.get("trust_domain") and not is_ip and not is_file:
             add_trusted_domain(url)
 
-        webbrowser.open(url)
+        webbrowser.open(open_url)
 
     def _handle_url_from_client(self, url: str, client_addr):
         """Called from the asyncio thread when the host receives a URL from a client."""
@@ -1150,6 +1154,7 @@ class TrayApp:
         is_ip = _is_ip_url(url)
         scheme = urllib.parse.urlparse(url).scheme.lower()
         is_file = scheme == "file"
+        open_url = _encode_file_url(url) if is_file else url
         client_trusted = (
             client_ip in self.core.session_trusted_clients
             or is_client_permanently_trusted(client_ip)
@@ -1161,19 +1166,19 @@ class TrayApp:
                 return
             # Power-user escape: "file" manually added to trusted_domains.json allows auto-open.
             if is_domain_trusted(url):
-                webbrowser.open(url)
-                self.core.ui_send_link(url, exclude_addr=client_addr)
+                webbrowser.open(open_url)
+                self.core.ui_send_link(open_url, exclude_addr=client_addr)
                 return
             # Trusted client, protocol not trusted: always prompt.
         else:
             # Non-file: auto-open and forward if the client or protocol/domain is trusted.
             if client_trusted:
-                webbrowser.open(url)
-                self.core.ui_send_link(url, exclude_addr=client_addr)
+                webbrowser.open(open_url)
+                self.core.ui_send_link(open_url, exclude_addr=client_addr)
                 return
             if not is_ip and is_domain_trusted(url):
-                webbrowser.open(url)
-                self.core.ui_send_link(url, exclude_addr=client_addr)
+                webbrowser.open(open_url)
+                self.core.ui_send_link(open_url, exclude_addr=client_addr)
                 return
 
         result = prompt_host_url_confirm(url, is_ip, client_display, show_protocol_trust=not is_file, show_peer_trust=not is_file)
@@ -1188,9 +1193,9 @@ class TrayApp:
         if result.get("trust_domain") and not is_ip and not is_file:
             add_trusted_domain(url)
 
-        webbrowser.open(url)
+        webbrowser.open(open_url)
         if result.get("forward"):
-            self.core.ui_send_link(url, exclude_addr=client_addr)
+            self.core.ui_send_link(open_url, exclude_addr=client_addr)
 
     def _send_link_to_host_action(self, icon=None, item=None):
         url = prompt_string("URL to send to host:")
