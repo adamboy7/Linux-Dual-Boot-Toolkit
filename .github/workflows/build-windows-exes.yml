@@ -82,6 +82,29 @@ jobs:
             dist/MediaRelay.exe
 
       # -------------------------
+      # Generate SHA256SUMS for release artifacts
+      # -------------------------
+      # The auto-updater in Media-Sync.py looks for a SHA256SUMS asset
+      # alongside the .exe and refuses to install a download whose hash
+      # doesn't match. The file format is one line per artifact in
+      # `sha256sum` style: "<hex>  <filename>".
+      - name: Generate SHA256SUMS
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          $sums = @()
+          foreach ($name in @('Bluetooth-GUI.exe','MediaRelay.exe')) {
+            $path = Join-Path 'dist' $name
+            if (Test-Path $path) {
+              $hash = (Get-FileHash -Algorithm SHA256 -Path $path).Hash.ToLower()
+              $sums += "$hash  $name"
+            }
+          }
+          $sums | Set-Content -Path 'dist/SHA256SUMS' -Encoding ascii -NoNewline:$false
+          Write-Host "--- dist/SHA256SUMS ---"
+          Get-Content 'dist/SHA256SUMS'
+
+      # -------------------------
       # Publish to GitHub Release (tag builds only)
       # -------------------------
       - name: Publish EXEs to GitHub Release
@@ -91,3 +114,4 @@ jobs:
           files: |
             dist/Bluetooth-GUI.exe
             dist/MediaRelay.exe
+            dist/SHA256SUMS

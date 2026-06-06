@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import ipaddress
+import hashlib
+import hmac
 import json
 import logging
 import os
@@ -764,6 +766,52 @@ class TrayApp:
             return
         self._restart()
 
+    @staticmethod
+    def _sha256_of_file(path: str) -> str:
+        """Stream a file through SHA-256 and return the lowercase hex digest."""
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                h.update(chunk)
+        return h.hexdigest().lower()
+
+    @staticmethod
+    def _fetch_expected_sha256(assets: list, asset_name: str) -> Optional[str]:
+        """Look up the expected SHA-256 for ``asset_name`` in a release.
+
+        Returns the lowercase hex digest, or None if no SHA256SUMS asset is
+        published or it doesn't list the asset. The file is expected to be
+        one ``<hex>  <filename>`` line per artifact, matching the standard
+        ``sha256sum`` output format.
+        """
+        sums_asset = next(
+            (a for a in assets if a.get("name", "").lower() == "sha256sums"),
+            None,
+        )
+        if sums_asset is None:
+            return None
+        try:
+            req = urllib.request.Request(
+                sums_asset["browser_download_url"],
+                headers={"User-Agent": "MediaRelay-updater"},
+            )
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                body = resp.read().decode("utf-8", errors="replace")
+        except Exception:
+            log.exception("Failed to fetch SHA256SUMS")
+            return None
+        for line in body.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split(None, 1)
+            if len(parts) != 2:
+                continue
+            digest, name = parts[0].lower(), parts[1].lstrip("*").strip()
+            if name == asset_name and len(digest) == 64:
+                return digest
+        return None
+
     def _do_frozen_update(self):
         api_url = "https://api.github.com/repos/adamboy7/Linux-Dual-Boot-Toolkit/releases/latest"
         new_path: Optional[str] = None
@@ -852,6 +900,28 @@ class TrayApp:
                     f"Downloaded asset size mismatch: expected {total}, got {downloaded}"
                 )
 
+            # Defense-in-depth: verify the downloaded asset against the
+            # SHA256SUMS file published alongside the release. HTTPS rules
+            # out passive MITM, but a compromised release artifact (e.g.
+            # a token stolen from CI) would otherwise install silently.
+            expected_hash = self._fetch_expected_sha256(assets, asset["name"])
+            if expected_hash is None:
+                if not _ui_show(
+                    "askyesno",
+                    APP_NAME,
+                    "No SHA256SUMS file was published with this release, "
+                    "so the download cannot be verified.\n\nInstall anyway?",
+                ):
+                    raise IOError("Update aborted: no checksum available.")
+            else:
+                actual_hash = self._sha256_of_file(new_path)
+                if not hmac.compare_digest(actual_hash, expected_hash):
+                    raise IOError(
+                        "Downloaded asset checksum mismatch.\n"
+                        f"  expected: {expected_hash}\n"
+                        f"  actual:   {actual_hash}"
+                    )
+
             if sys.platform == "win32":
                 _win_mod.perform_frozen_update(
                     exe_path, new_path, old_path,
@@ -920,7 +990,12 @@ class TrayApp:
                 release = json.loads(resp.read())
 
             if sys.platform == "win32":
-                asset = next((a for a in release["assets"] if a["name"].endswith(".exe")), None)
+                asset = next(
+                    (a for a in release["assets"]
+                     if a["name"].lower().startswith(APP_NAME.lower())
+                     and a["name"].lower().endswith(".exe")),
+                    None,
+                )
             else:
                 asset = next((a for a in release["assets"] if not a["name"].endswith(".exe")), None)
 
