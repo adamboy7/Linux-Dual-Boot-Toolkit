@@ -869,7 +869,9 @@ class RelayCore:
                     if self.role == Role.HOST and addr in self.peers:
                         sent = self._ping_sent_at.pop(addr, None)
                         if sent is not None:
-                            self.peer_latency[addr] = now_ms() - sent
+                            rtt = now_ms() - sent
+                            prev = self.peer_latency.get(addr)
+                            self.peer_latency[addr] = rtt if prev is None else 0.25 * rtt + 0.75 * prev
                 elif mtype == "get_state":
                     await self._handle_get_state(addr, msg)
                 elif mtype == "cmd":
