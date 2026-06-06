@@ -865,32 +865,44 @@ class RelayCore:
                 elif mtype == "policy":
                     await self._handle_policy(addr, msg)
                 elif mtype == "request_toggle":
-                    if self.role == Role.HOST and addr in self.peers and not self.ignore_client:
-                        hint = None
-                        try:
-                            hint = State(msg.get("state", "none"))
-                        except Exception:
+                    if self.role == Role.HOST and addr in self.peers:
+                        if not self.ignore_client:
                             hint = None
-                        await self._toggle_pressed(source="peer", client_state_hint=hint, source_addr=None)
+                            try:
+                                hint = State(msg.get("state", "none"))
+                            except Exception:
+                                hint = None
+                            await self._toggle_pressed(source="peer", client_state_hint=hint, source_addr=None)
+                        elif self._effective_resume_mode == ResumeMode.BLIND:
+                            await self._send(addr, {"t": "cmd", "cmd": "toggle", "ts": now_ms()})
                 elif mtype == "request_stop":
-                    if self.role == Role.HOST and addr in self.peers and not self.ignore_client:
-                        await self._stop_pressed(source="peer", source_addr=addr)
+                    if self.role == Role.HOST and addr in self.peers:
+                        if not self.ignore_client:
+                            await self._stop_pressed(source="peer", source_addr=addr)
+                        elif self._effective_resume_mode == ResumeMode.BLIND:
+                            await self._send(addr, {"t": "cmd", "cmd": "stop", "ts": now_ms()})
                 elif mtype == "request_next":
-                    if self.role == Role.HOST and addr in self.peers and not self.ignore_client:
-                        hint = None
-                        try:
-                            hint = State(msg.get("state", "none"))
-                        except Exception:
+                    if self.role == Role.HOST and addr in self.peers:
+                        if not self.ignore_client:
                             hint = None
-                        await self._next_pressed(source="peer", client_state_hint=hint, source_addr=None)
+                            try:
+                                hint = State(msg.get("state", "none"))
+                            except Exception:
+                                hint = None
+                            await self._next_pressed(source="peer", client_state_hint=hint, source_addr=None)
+                        elif self._effective_resume_mode == ResumeMode.BLIND:
+                            await self._send(addr, {"t": "cmd", "cmd": "next", "ts": now_ms()})
                 elif mtype == "request_prev":
-                    if self.role == Role.HOST and addr in self.peers and not self.ignore_client:
-                        hint = None
-                        try:
-                            hint = State(msg.get("state", "none"))
-                        except Exception:
+                    if self.role == Role.HOST and addr in self.peers:
+                        if not self.ignore_client:
                             hint = None
-                        await self._prev_pressed(source="peer", client_state_hint=hint, source_addr=None)
+                            try:
+                                hint = State(msg.get("state", "none"))
+                            except Exception:
+                                hint = None
+                            await self._prev_pressed(source="peer", client_state_hint=hint, source_addr=None)
+                        elif self._effective_resume_mode == ResumeMode.BLIND:
+                            await self._send(addr, {"t": "cmd", "cmd": "prev", "ts": now_ms()})
                 elif mtype == "open_url":
                     await self._handle_open_url_msg(addr, msg)
                 elif mtype == "client_url":
@@ -1291,8 +1303,13 @@ class RelayCore:
                 await self._toggle_local()
                 return
             if self.resume_mode == ResumeMode.BLIND:
-                await self._toggle_local()
-                await self._send(self.peer, {"t": "cmd", "cmd": "toggle", "ts": now_ms(), "source": source})
+                snap = await self.media.snapshot()
+                await self._send(self.peer, {
+                    "t": "request_toggle",
+                    "ts": now_ms(),
+                    "source": source,
+                    "state": snap.state.value,
+                })
                 return
             snap = await self.media.snapshot()
             await self._send(self.peer, {
@@ -1345,8 +1362,7 @@ class RelayCore:
                 await self.media.command("stop")
                 return
             if self.resume_mode == ResumeMode.BLIND:
-                await self.media.command("stop")
-                await self._send(self.peer, {"t": "cmd", "cmd": "stop", "ts": now_ms(), "source": source})
+                await self._send(self.peer, {"t": "request_stop", "ts": now_ms(), "source": source})
                 return
             await self._send(self.peer, {"t": "request_stop", "ts": now_ms(), "source": source})
             return
@@ -1373,8 +1389,13 @@ class RelayCore:
                 await self.media.command("next")
                 return
             if self.resume_mode == ResumeMode.BLIND:
-                await self.media.command("next")
-                await self._send(self.peer, {"t": "cmd", "cmd": "next", "ts": now_ms(), "source": source})
+                snap = await self.media.snapshot()
+                await self._send(self.peer, {
+                    "t": "request_next",
+                    "ts": now_ms(),
+                    "source": source,
+                    "state": snap.state.value,
+                })
                 return
             snap = await self.media.snapshot()
             await self._send(self.peer, {
@@ -1427,8 +1448,13 @@ class RelayCore:
                 await self.media.command("prev")
                 return
             if self.resume_mode == ResumeMode.BLIND:
-                await self.media.command("prev")
-                await self._send(self.peer, {"t": "cmd", "cmd": "prev", "ts": now_ms(), "source": source})
+                snap = await self.media.snapshot()
+                await self._send(self.peer, {
+                    "t": "request_prev",
+                    "ts": now_ms(),
+                    "source": source,
+                    "state": snap.state.value,
+                })
                 return
             snap = await self.media.snapshot()
             await self._send(self.peer, {
