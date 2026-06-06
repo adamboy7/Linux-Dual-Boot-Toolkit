@@ -1059,9 +1059,13 @@ class TrayApp:
             parsed = urllib.parse.urlparse(candidate)
         except ValueError:
             return None
+        if not parsed.scheme:
+            candidate = "https://" + candidate
+            try:
+                parsed = urllib.parse.urlparse(candidate)
+            except ValueError:
+                return None
         scheme = parsed.scheme.lower()
-        if not scheme:
-            return None
         if scheme in {"http", "https"} and not parsed.netloc:
             return None
         if scheme == "file" and not parsed.path:
