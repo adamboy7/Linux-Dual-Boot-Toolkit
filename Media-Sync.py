@@ -68,14 +68,16 @@ if sys.platform == "win32":
 def _ui_show(kind: str, title: str, message: str) -> Optional[bool]:
     """Show a tk messagebox safely from any thread.
 
-    Creates a hidden root for this call only, so we don't share Tk state across
-    threads (mitigates Tk-from-non-main-thread issues for one-shot dialogs).
     Returns the dialog result for ``askyesno``, otherwise None. Logs and
     returns None if Tk is missing.
     """
     if not _TK_AVAILABLE:
         log.warning("[%s] %s: %s", kind, title, message)
         return None
+    if sys.platform == "win32":
+        prompter = get_or_create_prompter()
+        if prompter is not None:
+            return prompter.show_message(kind, title, message)
     try:
         root = tk.Tk()
         root.withdraw()
