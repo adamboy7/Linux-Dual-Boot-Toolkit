@@ -12,7 +12,7 @@ from ctypes import wintypes
 from tkinter import filedialog, messagebox, simpledialog
 from typing import Optional, Tuple
 
-from .common import APP_NAME, _RESP_HOST_FORWARD, _RESP_HOST_OPEN, _app_icon_path, _is_app_protocol_url, _resource_base_dir
+from .common import APP_NAME, _RESP_HOST_FORWARD, _RESP_HOST_OPEN, _app_icon_path, _is_app_protocol_url, _resource_base_dir, _strip_pyi_env
 
 _WIN_PROMPTER = None
 _PROMPTER_LOCK = threading.Lock()
@@ -36,10 +36,12 @@ class WindowsMediaController:
 
         if status == PlaybackStatus.PLAYING:
             s = State.PLAYING
-        elif status in (PlaybackStatus.PAUSED, PlaybackStatus.STOPPED):
+        elif status == PlaybackStatus.PAUSED:
             s = State.PAUSED
+        elif status == PlaybackStatus.STOPPED:
+            s = State.NONE
         else:
-            s = State.PAUSED
+            s = State.NONE
 
         title = ""
         app = ""
@@ -807,6 +809,18 @@ def cleanup_old_exe(exe_path: str) -> None:
             _time.sleep(delay)
             delay = min(delay * 2, 2.0)
 
+    try:
+        MOVEFILE_DELAY_UNTIL_REBOOT = 0x4
+        kernel32 = ctypes.windll.kernel32
+        move_file_ex = kernel32.MoveFileExW
+        move_file_ex.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD]
+        move_file_ex.restype = wintypes.BOOL
+        if not move_file_ex(old_path, None, MOVEFILE_DELAY_UNTIL_REBOOT):
+            err = ctypes.get_last_error()
+            print(f"[MediaRelay] cleanup_old_exe: MoveFileExW failed (err={err}).")
+    except Exception as exc:
+        print(f"[MediaRelay] cleanup_old_exe: reboot-delete fallback failed: {exc}")
+
 
 def perform_frozen_update(exe_path: str, new_path: str, old_path: str, env_vars_to_clear: list) -> None:
     if os.path.exists(old_path):
@@ -814,11 +828,7 @@ def perform_frozen_update(exe_path: str, new_path: str, old_path: str, env_vars_
     os.rename(exe_path, old_path)
     os.rename(new_path, exe_path)
 
-    _env = {
-        k: v
-        for k, v in os.environ.items()
-        if not (k.startswith("_PYI_") or k in env_vars_to_clear)
-    }
+    _env = _strip_pyi_env(os.environ, extra=tuple(env_vars_to_clear))
     _meipass = getattr(sys, "_MEIPASS", None)
     if _meipass:
         _env["PATH"] = os.pathsep.join(
@@ -828,7 +838,7 @@ def perform_frozen_update(exe_path: str, new_path: str, old_path: str, env_vars_
 
     exe_dir = os.path.dirname(exe_path) or "."
     bat_path = os.path.join(tempfile.gettempdir(), "_mediarelay_restart.bat")
-    with open(bat_path, "w") as f:
+    with open(bat_path, "w", newline="") as f:
         f.write(
             "@echo off\r\n"
             "set \"_PYI_PARENT_PROCESS_LEVEL=\"\r\n"

@@ -26,6 +26,23 @@ from PIL import Image, ImageDraw
 APP_NAME = "MediaRelay"
 DEFAULT_PORT = 50123
 
+_PYI_BOOTSTRAP_EXTRA_ENV = ("_PYIBoot_MEIPASS", "_MEIPASS2")
+
+
+def _strip_pyi_env(environ: dict, extra: tuple = ()) -> dict:
+    """Return a copy of ``environ`` with PyInstaller bootstrap vars removed.
+
+    Drops any key starting with ``_PYI_`` plus the canonical extras
+    (``_PYIBoot_MEIPASS``, ``_MEIPASS2``) and any caller-supplied keys.
+    """
+    drop = set(_PYI_BOOTSTRAP_EXTRA_ENV)
+    drop.update(extra)
+    return {
+        k: v
+        for k, v in environ.items()
+        if not (k.startswith("_PYI_") or k in drop)
+    }
+
 _RESP_HOST_OPEN = 10
 _RESP_HOST_FORWARD = 11
 
@@ -255,6 +272,12 @@ def _is_ip_url(url: str) -> bool:
 
 _STANDARD_SCHEMES = {"http", "https", "ftp", "ftps", "mailto", "file", "data", "ws", "wss"}
 
+# Schemes that execute code rather than dereference a resource. webbrowser.open
+# happily hands these to the default browser, which will run them. Trust gates
+# everything else, but these are dangerous enough that even a "trusted" peer
+# shouldn't be allowed to ship them.
+_FORBIDDEN_URL_SCHEMES = {"javascript", "data", "vbscript"}
+
 # Hard cap on the length of any URL we accept off the wire. Anything longer
 # than this is treated as garbage and dropped before reaching webbrowser.open.
 _MAX_URL_LENGTH = 8192
@@ -276,6 +299,9 @@ def _validate_incoming_url(url: str) -> Optional[str]:
         return None
     scheme = parsed.scheme.lower()
     if not scheme:
+        return None
+    # Hard reject script-execution schemes regardless of trust state.
+    if scheme in _FORBIDDEN_URL_SCHEMES:
         return None
     # Web schemes require a host; file:// requires a path; app protocols need
     # only a non-empty scheme (e.g. calculator:// has neither netloc nor path).
@@ -486,6 +512,8 @@ class RelayCore:
         self._auto_connect_enabled = False
         self._auto_connect_task: Optional[asyncio.Task] = None
         self._auto_connect_target: Optional[Tuple[str, int]] = None
+        self._auto_connect_host: Optional[str] = None
+        self._auto_connect_attempts: int = 0
         self._last_connect_attempt: Optional[Tuple[str, int]] = None
         self._last_connect_attempt_ts: float = 0.0
 
@@ -510,6 +538,7 @@ class RelayCore:
         self.on_listen_port_error = lambda port, message: None
         # Whether the host we're connected to has enable_links = True
         self.host_enable_links: bool = False
+        self.peer_multi_client: bool = False
         # Host IPs that the client has trusted for the duration of this session
         self.session_trusted_hosts: set = set()
         # Client IPs that the host has trusted for the duration of this session
@@ -538,9 +567,28 @@ class RelayCore:
         return t
 
     def stop(self):
+        if self.loop and not self.loop.is_closed():
+            async def _graceful_disconnect():
+                try:
+                    await self._disconnect("user")
+                except Exception:
+                    pass
+                finally:
+                    self._stop_evt.set()
+            try:
+                self.loop.call_soon_threadsafe(
+                    lambda: asyncio.create_task(_graceful_disconnect())
+                )
+                return
+            except RuntimeError:
+                # Loop already closed; fall through to the synchronous path.
+                pass
         self._stop_evt.set()
         if self.loop:
-            self.loop.call_soon_threadsafe(lambda: None)
+            try:
+                self.loop.call_soon_threadsafe(lambda: None)
+            except RuntimeError:
+                pass
 
     def ui_connect(self, ip: str, port: int):
         if self.loop:
@@ -597,13 +645,16 @@ class RelayCore:
             )
 
     def start_auto_connect(self, ip: str, port: int):
+        self._auto_connect_host = str(ip)
         self._auto_connect_target = (ip, int(port))
         self._auto_connect_enabled = True
+        self._auto_connect_attempts = 0
         if self.loop:
             self.loop.call_soon_threadsafe(self._ensure_auto_connect_task)
 
     def disable_auto_connect(self):
         self._auto_connect_enabled = False
+        self._auto_connect_attempts = 0
         if self.loop:
             self.loop.call_soon_threadsafe(self._cancel_auto_connect_task)
 
@@ -721,11 +772,13 @@ class RelayCore:
             return
         if not self.peers:
             return
+        multi_client = len(self.peers) > 1
         msg = {
             "t": "policy",
             "ts": now_ms(),
             "resume_mode": self._effective_resume_mode.value,
             "enable_links": self.enable_links,
+            "multi_client": multi_client,
             "source": source,
         }
         for addr in list(self.peers):
@@ -971,12 +1024,13 @@ class RelayCore:
             "enable_links": self.enable_links,
             "ts": now_ms(),
         })
-        await self._send(addr, {"t": "resume_mode", "mode": self.resume_mode.value, "ts": now_ms()})
         await self._send_policy_to_peer(source="connect")
         self._log(f"Client connected from {addr[0]}:{addr[1]}. Total clients: {len(self.peers)}.")
         self._notify()
 
     async def _connect_out(self, ip: str, port: int):
+        if self._auto_connect_host is None:
+            self._auto_connect_host = str(ip)
         try:
             resolved = await self.loop.run_in_executor(None, socket.gethostbyname, ip)
         except OSError:
@@ -1003,6 +1057,7 @@ class RelayCore:
         self.peer_last_seen = time.time()
         self._auto_connect_target = addr
         self._auto_connect_enabled = True
+        self._auto_connect_attempts = 0
         self.host_enable_links = bool(resp.get("enable_links", True))
         tok = resp.get("tok")
         if isinstance(tok, str) and tok:
@@ -1123,15 +1178,35 @@ class RelayCore:
             if self.peer:
                 await asyncio.sleep(1.0)
                 continue
-            if not self._auto_connect_target:
+            if not self._auto_connect_target and not self._auto_connect_host:
                 return
-            ip, port = self._auto_connect_target
-            self._log(f"Retrying connection to {ip}:{port}.")
-            await self._connect_out(ip, port)
+            target_host: str
+            port: int
+            if self._auto_connect_host and self._auto_connect_target:
+                target_host = self._auto_connect_host
+                port = self._auto_connect_target[1]
+            elif self._auto_connect_target:
+                target_host, port = self._auto_connect_target
+            else:
+                # _auto_connect_host is non-None here.
+                assert self._auto_connect_host is not None
+                target_host = self._auto_connect_host
+                port = DEFAULT_PORT
+            self._log(f"Retrying connection to {target_host}:{port}.")
+            await self._connect_out(target_host, port)
             if self.peer:
+                self._auto_connect_attempts = 0
                 await asyncio.sleep(1.0)
             else:
-                await asyncio.sleep(30.0)
+                self._auto_connect_attempts += 1
+                attempt = self._auto_connect_attempts
+                if attempt <= 3:
+                    delay = 5.0
+                elif attempt <= 6:
+                    delay = 10.0
+                else:
+                    delay = 30.0
+                await asyncio.sleep(delay)
 
     async def _handle_get_state(self, addr, msg):
         if self.role == Role.CLIENT and not self.enable_media_controls:
@@ -1181,17 +1256,23 @@ class RelayCore:
                     await self._send(other_addr, {"t": "cmd", "cmd": cmd, "ts": now_ms(), "relayed": True})
 
     async def _handle_resume_mode(self, addr, msg):
-        # Resume-mode is HOST-authoritative (same as policy). If we are HOST,
-        # ignore client-initiated mode changes: they should arrive via policy
-        # request flow, not via this typed message that bypasses arbitration.
-        if self.role == Role.HOST:
-            return
-        if self.peer and addr != self.peer:
-            return
         mode_value = msg.get("mode", "")
         try:
             mode = ResumeMode(mode_value)
         except Exception:
+            return
+        if self.role == Role.HOST:
+            # In single-client mode the CLIENT may set resume_mode on the
+            # host; with multiple clients the mode is locked to BLIND and
+            # we silently drop any CLIENT-initiated change.
+            if addr not in self.peers:
+                return
+            if len(self.peers) > 1:
+                return
+            await self._apply_resume_mode(mode, notify=True)
+            await self._send_policy_to_peer(source="client_resume_mode")
+            return
+        if self.peer and addr != self.peer:
             return
         await self._apply_resume_mode(mode, notify=True)
 
@@ -1216,6 +1297,13 @@ class RelayCore:
                 self.host_enable_links = new_val
                 self._notify()
 
+        multi_client_val = msg.get("multi_client")
+        if multi_client_val is not None:
+            new_multi = bool(multi_client_val)
+            if new_multi != self.peer_multi_client:
+                self.peer_multi_client = new_multi
+                self._notify()
+
     async def _apply_resume_mode(self, resume_mode: ResumeMode, notify: bool):
         if resume_mode == self.resume_mode:
             return
@@ -1237,12 +1325,17 @@ class RelayCore:
                 pass
 
     async def _set_resume_mode(self, resume_mode: ResumeMode, source: str):
+        if self.role == Role.CLIENT:
+            if self.peer_multi_client:
+                return
+            if self.peer:
+                await self._send(self.peer, {"t": "resume_mode", "mode": resume_mode.value, "ts": now_ms(), "source": source})
+                return
+            await self._apply_resume_mode(resume_mode, notify=True)
+            return
         await self._apply_resume_mode(resume_mode, notify=True)
         if self.peer:
-            if self.role == Role.CLIENT:
-                await self._send(self.peer, {"t": "resume_mode", "mode": resume_mode.value, "ts": now_ms(), "source": source})
-            else:
-                await self._send_policy_to_peer(source=source)
+            await self._send_policy_to_peer(source=source)
 
     async def _set_ignore_client(self, enabled: bool, source: str):
         if self.role == Role.CLIENT:
@@ -1288,14 +1381,25 @@ class RelayCore:
     async def _set_listen_port(self, port: int):
         if port == self.listen_port:
             return
+        snapshot_peers = list(self.peers) if self.role == Role.HOST else (
+            [self.peer] if (self.role == Role.CLIENT and self.peer) else []
+        )
+
+        prev_auto_connect_enabled = self._auto_connect_enabled
+        self._auto_connect_enabled = False
+        self._cancel_auto_connect_task()
+
         # Disconnect on either role: HOST tears down its peer list, CLIENT
         # tears down its session so the host's stale (client_ip, OLD_port)
         # tuple doesn't strand heartbeats / link auth against a port the
         # client is no longer listening on.
-        if (self.role == Role.HOST and self.peers) or (
-            self.role == Role.CLIENT and self.peer
-        ):
+        if snapshot_peers:
             await self._disconnect("listen_port_changed")
+            for addr in snapshot_peers:
+                try:
+                    await self._send(addr, {"t": "disconnect", "why": "listen_port_changed", "ts": now_ms()})
+                except Exception:
+                    pass
 
         new_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
@@ -1323,6 +1427,9 @@ class RelayCore:
                 self._log("Socket stopped.")
             except Exception:
                 self._log("Socket error while stopping.")
+        if prev_auto_connect_enabled:
+            self._auto_connect_enabled = True
+            self._ensure_auto_connect_task()
         self._notify()
 
     def _one_way_latency_ms(self, addr: Tuple[str, int]) -> float:

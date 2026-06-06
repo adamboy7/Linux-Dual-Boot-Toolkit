@@ -24,6 +24,7 @@ from libraries.media_sync import (
     Role,
     _encode_file_url,
     _is_ip_url,
+    _strip_pyi_env,
     add_trusted_client,
     add_trusted_domain,
     add_trusted_host,
@@ -314,18 +315,21 @@ class TrayApp:
                         lambda: self._set_resume_mode(ResumeMode.HOST_ONLY),
                         checked=lambda item: self.core.resume_mode == ResumeMode.HOST_ONLY,
                         radio=True,
+                        enabled=lambda item: not self._resume_mode_locked(),
                     ),
                     Item(
                         "Resume client only",
                         lambda: self._set_resume_mode(ResumeMode.CLIENT_ONLY),
                         checked=lambda item: self.core.resume_mode == ResumeMode.CLIENT_ONLY,
                         radio=True,
+                        enabled=lambda item: not self._resume_mode_locked(),
                     ),
                     Item(
                         "Blind relay",
                         lambda: self._set_resume_mode(ResumeMode.BLIND),
                         checked=lambda item: self.core.resume_mode == ResumeMode.BLIND,
                         radio=True,
+                        enabled=lambda item: not self._resume_mode_locked(),
                     ),
                 ),
             ),
@@ -503,6 +507,20 @@ class TrayApp:
 
     def _set_resume_mode(self, resume_mode: ResumeMode):
         self.core.ui_set_resume_mode(resume_mode)
+
+    def _resume_mode_locked(self) -> bool:
+        """True when resume-mode menu items should be greyed out.
+
+        Locked whenever more than one client shares the host: the host
+        forces BLIND, and clients are told only that they aren't alone so
+        they can grey out the same options without learning who else is
+        connected.
+        """
+        if self.core.role == Role.HOST and len(self.core.peers) > 1:
+            return True
+        if self.core.role == Role.CLIENT and self.core.peer_multi_client:
+            return True
+        return False
 
     def _set_ignore_client_from_core(self, enabled: bool):
         self._apply_cfg_and_rebuild("ignore_client", bool(enabled), "ignore_client")
@@ -962,7 +980,11 @@ class TrayApp:
             popen_kwargs["start_new_session"] = True
             popen_kwargs["close_fds"] = True
         try:
-            subprocess.Popen([sys.executable] + sys.argv, **popen_kwargs)
+            if getattr(sys, "frozen", False):
+                spawn_args = list(sys.argv)
+            else:
+                spawn_args = [sys.executable] + list(sys.argv)
+            subprocess.Popen(spawn_args, **popen_kwargs)
         except Exception:
             log.exception("Failed to spawn restart process")
         os._exit(0)
@@ -970,10 +992,7 @@ class TrayApp:
     @staticmethod
     def _build_restart_env() -> dict:
         """Strip PyInstaller bootstrap state from the env before re-exec."""
-        _env = {
-            k: v for k, v in os.environ.items()
-            if not (k.startswith("_PYI_") or k == "_PYIBoot_MEIPASS" or k == "_MEIPASS2")
-        }
+        _env = _strip_pyi_env(os.environ)
         if not getattr(sys, "frozen", False):
             return _env
         _meipass = getattr(sys, "_MEIPASS", None)
@@ -1077,7 +1096,15 @@ class TrayApp:
             parsed = urllib.parse.urlparse(candidate)
         except ValueError:
             return None
-        if not parsed.scheme:
+        looks_like_host_port = (
+            bool(parsed.scheme)
+            and parsed.scheme.replace("-", "").replace("_", "").isalnum()
+            and not parsed.scheme[:1].isdigit()
+            and parsed.path.isdigit()
+            and not parsed.netloc
+            and "/" not in parsed.scheme
+        )
+        if not parsed.scheme or looks_like_host_port:
             candidate = "https://" + candidate
             try:
                 parsed = urllib.parse.urlparse(candidate)
@@ -1221,6 +1248,17 @@ class TrayApp:
         validated = self._normalize_url(url)
         if validated is None:
             _ui_show("error", APP_NAME, f"Not a valid URL: {url!r}")
+            return
+        if not self.core.peer:
+            _ui_show("info", APP_NAME, "Not connected to a host.")
+            return
+        if not self.core.host_enable_links:
+            _ui_show(
+                "info",
+                APP_NAME,
+                "The host has disabled incoming links. Ask them to enable "
+                "links before trying again.",
+            )
             return
         self.core.ui_send_link_to_host(validated)
 
