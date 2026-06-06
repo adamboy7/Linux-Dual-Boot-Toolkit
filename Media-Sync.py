@@ -1100,12 +1100,12 @@ class TrayApp:
         )
 
         if is_file:
+            # Untrusted host: refuse silently regardless of domain trust.
+            if not host_trusted:
+                return
             # Power-user escape: "file" manually added to trusted_domains.json allows auto-open.
             if is_domain_trusted(url):
                 webbrowser.open(url)
-                return
-            # Without explicit protocol trust, untrusted host = refuse silently.
-            if not host_trusted:
                 return
             # Trusted host, protocol not trusted: always prompt.
         else:
@@ -1152,13 +1152,13 @@ class TrayApp:
         )
 
         if is_file:
+            # Untrusted client: refuse silently regardless of domain trust.
+            if not client_trusted:
+                return
             # Power-user escape: "file" manually added to trusted_domains.json allows auto-open.
             if is_domain_trusted(url):
                 webbrowser.open(url)
                 self.core.ui_send_link(url, exclude_addr=client_addr)
-                return
-            # Without explicit protocol trust, untrusted client = refuse silently.
-            if not client_trusted:
                 return
             # Trusted client, protocol not trusted: always prompt.
         else:
