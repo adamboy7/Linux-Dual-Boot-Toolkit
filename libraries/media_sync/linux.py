@@ -263,7 +263,7 @@ def _prompt_string_gtk(prompt: str, initial: str = "") -> Optional[str]:
     return value
 
 
-def _prompt_url_confirm_gtk(url: str, is_ip: bool) -> Optional[dict]:
+def _prompt_url_confirm_gtk(url: str, is_ip: bool, show_protocol_trust: bool = True) -> Optional[dict]:
     dialog = Gtk.Dialog(title=APP_NAME)
     icon_path = _app_icon_path()
     if os.path.exists(icon_path):
@@ -290,7 +290,7 @@ def _prompt_url_confirm_gtk(url: str, is_ip: bool) -> Optional[dict]:
     box.add(lbl_url)
 
     chk_domain = None
-    if not is_ip:
+    if not is_ip and show_protocol_trust:
         domain_label = "Trust this protocol" if _is_app_protocol_url(url) else "Trust this domain"
         chk_domain = Gtk.CheckButton(label=domain_label)
         box.add(chk_domain)
@@ -315,7 +315,7 @@ def _prompt_url_confirm_gtk(url: str, is_ip: bool) -> Optional[dict]:
     return result
 
 
-def _prompt_host_url_confirm_gtk(url: str, is_ip: bool, client_ip: str) -> Optional[dict]:
+def _prompt_host_url_confirm_gtk(url: str, is_ip: bool, client_ip: str, show_protocol_trust: bool = True) -> Optional[dict]:
     dialog = Gtk.Dialog(title=APP_NAME)
     icon_path = _app_icon_path()
     if os.path.exists(icon_path):
@@ -346,7 +346,7 @@ def _prompt_host_url_confirm_gtk(url: str, is_ip: bool, client_ip: str) -> Optio
     box.add(lbl_url)
 
     chk_domain = None
-    if not is_ip:
+    if not is_ip and show_protocol_trust:
         domain_label = "Trust this protocol" if _is_app_protocol_url(url) else "Trust this domain"
         chk_domain = Gtk.CheckButton(label=domain_label)
         box.add(chk_domain)

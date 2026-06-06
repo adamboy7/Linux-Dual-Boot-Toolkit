@@ -1057,9 +1057,12 @@ class TrayApp:
             parsed = urllib.parse.urlparse(candidate)
         except ValueError:
             return None
-        if parsed.scheme.lower() not in {"http", "https", "ftp", "file"}:
+        scheme = parsed.scheme.lower()
+        if not scheme:
             return None
-        if not parsed.netloc and not (parsed.scheme.lower() == "file" and parsed.path):
+        if scheme in {"http", "https"} and not parsed.netloc:
+            return None
+        if scheme == "file" and not parsed.path:
             return None
         return candidate
 
@@ -1087,19 +1090,32 @@ class TrayApp:
     def _process_open_url(self, url: str, host_ip: str):
         """Worker thread: check trust settings, prompt if necessary, then open URL."""
         is_ip = _is_ip_url(url)
+        scheme = urllib.parse.urlparse(url).scheme.lower()
+        is_file = scheme == "file"
+        host_trusted = (
+            host_ip in self.core.session_trusted_hosts
+            or is_host_permanently_trusted(host_ip)
+        )
 
-        # Auto-open if already trusted
-        if host_ip in self.core.session_trusted_hosts:
-            webbrowser.open(url)
-            return
-        if is_host_permanently_trusted(host_ip):
-            webbrowser.open(url)
-            return
-        if not is_ip and is_domain_trusted(url):
-            webbrowser.open(url)
-            return
+        if is_file:
+            # Power-user escape: "file" manually added to trusted_domains.json allows auto-open.
+            if is_domain_trusted(url):
+                webbrowser.open(url)
+                return
+            # Without explicit protocol trust, untrusted host = refuse silently.
+            if not host_trusted:
+                return
+            # Trusted host, protocol not trusted: always prompt.
+        else:
+            # Non-file: auto-open if the host or protocol/domain is trusted.
+            if host_trusted:
+                webbrowser.open(url)
+                return
+            if not is_ip and is_domain_trusted(url):
+                webbrowser.open(url)
+                return
 
-        result = prompt_url_confirm(url, is_ip)
+        result = prompt_url_confirm(url, is_ip, show_protocol_trust=not is_file)
         if not result or not result.get("accepted"):
             return
 
@@ -1107,7 +1123,8 @@ class TrayApp:
             self.core.session_trusted_hosts.add(host_ip)
         if result.get("trust_host"):
             add_trusted_host(host_ip)
-        if result.get("trust_domain") and not is_ip:
+        # Never persist protocol trust for file:// — it must always prompt.
+        if result.get("trust_domain") and not is_ip and not is_file:
             add_trusted_domain(url)
 
         webbrowser.open(url)
@@ -1125,22 +1142,35 @@ class TrayApp:
         client_ip = client_addr[0]
         client_display = get_client_alias(client_ip) or client_ip
         is_ip = _is_ip_url(url)
+        scheme = urllib.parse.urlparse(url).scheme.lower()
+        is_file = scheme == "file"
+        client_trusted = (
+            client_ip in self.core.session_trusted_clients
+            or is_client_permanently_trusted(client_ip)
+        )
 
-        # Auto-open and forward if already trusted
-        if client_ip in self.core.session_trusted_clients:
-            webbrowser.open(url)
-            self.core.ui_send_link(url, exclude_addr=client_addr)
-            return
-        if is_client_permanently_trusted(client_ip):
-            webbrowser.open(url)
-            self.core.ui_send_link(url, exclude_addr=client_addr)
-            return
-        if not is_ip and is_domain_trusted(url):
-            webbrowser.open(url)
-            self.core.ui_send_link(url, exclude_addr=client_addr)
-            return
+        if is_file:
+            # Power-user escape: "file" manually added to trusted_domains.json allows auto-open.
+            if is_domain_trusted(url):
+                webbrowser.open(url)
+                self.core.ui_send_link(url, exclude_addr=client_addr)
+                return
+            # Without explicit protocol trust, untrusted client = refuse silently.
+            if not client_trusted:
+                return
+            # Trusted client, protocol not trusted: always prompt.
+        else:
+            # Non-file: auto-open and forward if the client or protocol/domain is trusted.
+            if client_trusted:
+                webbrowser.open(url)
+                self.core.ui_send_link(url, exclude_addr=client_addr)
+                return
+            if not is_ip and is_domain_trusted(url):
+                webbrowser.open(url)
+                self.core.ui_send_link(url, exclude_addr=client_addr)
+                return
 
-        result = prompt_host_url_confirm(url, is_ip, client_display)
+        result = prompt_host_url_confirm(url, is_ip, client_display, show_protocol_trust=not is_file)
         if not result or not result.get("accepted"):
             return
 
@@ -1148,7 +1178,8 @@ class TrayApp:
             self.core.session_trusted_clients.add(client_ip)
         if result.get("trust_client"):
             add_trusted_client(client_ip)
-        if result.get("trust_domain") and not is_ip:
+        # Never persist protocol trust for file:// — it must always prompt.
+        if result.get("trust_domain") and not is_ip and not is_file:
             add_trusted_domain(url)
 
         webbrowser.open(url)

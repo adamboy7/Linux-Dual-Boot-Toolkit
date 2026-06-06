@@ -259,17 +259,11 @@ _STANDARD_SCHEMES = {"http", "https", "ftp", "ftps", "mailto", "file", "data", "
 # than this is treated as garbage and dropped before reaching webbrowser.open.
 _MAX_URL_LENGTH = 8192
 
-# Schemes accepted on the receive path. Intentionally narrower than
-# _STANDARD_SCHEMES; in particular `file://` is excluded so a (trusted) peer
-# cannot trick the local UI into opening an arbitrary local path.
-_INBOUND_ALLOWED_SCHEMES = frozenset({"http", "https", "ftp"})
-
-
 def _validate_incoming_url(url: str) -> Optional[str]:
     """Sanity-check a URL received from a peer before forwarding to the UI.
 
     Returns the trimmed URL on success, or None if it should be dropped.
-    Mirrors TrayApp._normalize_url but drops file:// (per audit note L12).
+    All schemes are accepted here; file:// trust-gating happens downstream.
     """
     if not isinstance(url, str):
         return None
@@ -281,10 +275,16 @@ def _validate_incoming_url(url: str) -> Optional[str]:
     except ValueError:
         return None
     scheme = parsed.scheme.lower()
-    if scheme not in _INBOUND_ALLOWED_SCHEMES:
+    if not scheme:
         return None
-    if not parsed.netloc:
-        return None
+    # Web schemes require a host; file:// requires a path; app protocols need
+    # only a non-empty scheme (e.g. calculator:// has neither netloc nor path).
+    if scheme in {"http", "https"}:
+        if not parsed.netloc:
+            return None
+    elif scheme == "file":
+        if not parsed.path:
+            return None
     return candidate
 
 
@@ -295,10 +295,10 @@ def _is_app_protocol_url(url: str) -> bool:
 
 
 def _url_domain(url: str) -> str:
-    """Extract the hostname from a URL, or the scheme for app protocol URLs."""
+    """Extract the hostname from a URL, or the scheme for app protocol / file:// URLs."""
     try:
         parsed = urlparse(url if "://" in url else "http://" + url)
-        if _is_app_protocol_url(url):
+        if _is_app_protocol_url(url) or parsed.scheme.lower() == "file":
             return parsed.scheme.lower()
         return parsed.hostname or ""
     except Exception:

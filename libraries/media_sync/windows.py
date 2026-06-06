@@ -261,11 +261,11 @@ class WinPromptThread:
     def ask_string(self, prompt: str, initial: str = "") -> Optional[str]:
         return self._enqueue(lambda root: _ask_string_windows(prompt, initial, parent=root))
 
-    def ask_url_confirm(self, url: str, is_ip: bool) -> Optional[dict]:
-        return self._enqueue(lambda root: _ask_url_confirm_windows(url, is_ip, parent=root))
+    def ask_url_confirm(self, url: str, is_ip: bool, show_protocol_trust: bool = True) -> Optional[dict]:
+        return self._enqueue(lambda root: _ask_url_confirm_windows(url, is_ip, show_protocol_trust, parent=root))
 
-    def ask_host_url_confirm(self, url: str, is_ip: bool, client_ip: str) -> Optional[dict]:
-        return self._enqueue(lambda root: _ask_host_url_confirm_windows(url, is_ip, client_ip, parent=root))
+    def ask_host_url_confirm(self, url: str, is_ip: bool, client_ip: str, show_protocol_trust: bool = True) -> Optional[dict]:
+        return self._enqueue(lambda root: _ask_host_url_confirm_windows(url, is_ip, client_ip, show_protocol_trust, parent=root))
 
     def show_kick_dialog(self, peers: dict, kick_fn, get_aliases_fn, set_alias_fn, get_latency_fn=None) -> None:
         self._enqueue(
@@ -369,9 +369,10 @@ def _ask_string_windows(prompt: str, initial: str, parent: Optional[tk.Misc] = N
 
 
 class _WinUrlConfirmDialog(simpledialog.Dialog):
-    def __init__(self, parent, url: str, is_ip: bool):
+    def __init__(self, parent, url: str, is_ip: bool, show_protocol_trust: bool = True):
         self.url = url
         self.is_ip = is_ip
+        self._show_protocol_trust = show_protocol_trust
         self._accepted = False
         self._trust_domain = tk.BooleanVar(value=False)
         self._trust_session = tk.BooleanVar(value=False)
@@ -395,7 +396,7 @@ class _WinUrlConfirmDialog(simpledialog.Dialog):
             row=2, column=0, sticky="w", padx=8, pady=(2, 10)
         )
         row = 3
-        if not self.is_ip:
+        if not self.is_ip and self._show_protocol_trust:
             domain_label = "Trust this protocol" if _is_app_protocol_url(self.url) else "Trust this domain"
             tk.Checkbutton(master, text=domain_label, variable=self._trust_domain).grid(
                 row=row, column=0, sticky="w", padx=8
@@ -431,19 +432,20 @@ class _WinUrlConfirmDialog(simpledialog.Dialog):
         }
 
 
-def _ask_url_confirm_windows(url: str, is_ip: bool, parent=None) -> Optional[dict]:
+def _ask_url_confirm_windows(url: str, is_ip: bool, show_protocol_trust: bool = True, parent=None) -> Optional[dict]:
     try:
-        dlg = _WinUrlConfirmDialog(parent, url, is_ip)
+        dlg = _WinUrlConfirmDialog(parent, url, is_ip, show_protocol_trust)
         return dlg.get_result()
     except Exception:
         return None
 
 
 class _WinHostUrlConfirmDialog(simpledialog.Dialog):
-    def __init__(self, parent, url: str, is_ip: bool, client_ip: str):
+    def __init__(self, parent, url: str, is_ip: bool, client_ip: str, show_protocol_trust: bool = True):
         self.url = url
         self.is_ip = is_ip
         self.client_ip = client_ip
+        self._show_protocol_trust = show_protocol_trust
         self._was_opened = False
         self._forwarded = False
         self._trust_domain = tk.BooleanVar(value=False)
@@ -465,7 +467,7 @@ class _WinHostUrlConfirmDialog(simpledialog.Dialog):
             row=1, column=0, sticky="w", padx=8, pady=(2, 10)
         )
         row = 2
-        if not self.is_ip:
+        if not self.is_ip and self._show_protocol_trust:
             domain_label = "Trust this protocol" if _is_app_protocol_url(self.url) else "Trust this domain"
             tk.Checkbutton(master, text=domain_label, variable=self._trust_domain).grid(
                 row=row, column=0, sticky="w", padx=8
@@ -510,9 +512,9 @@ class _WinHostUrlConfirmDialog(simpledialog.Dialog):
         }
 
 
-def _ask_host_url_confirm_windows(url: str, is_ip: bool, client_ip: str, parent=None) -> Optional[dict]:
+def _ask_host_url_confirm_windows(url: str, is_ip: bool, client_ip: str, show_protocol_trust: bool = True, parent=None) -> Optional[dict]:
     try:
-        dlg = _WinHostUrlConfirmDialog(parent, url, is_ip, client_ip)
+        dlg = _WinHostUrlConfirmDialog(parent, url, is_ip, client_ip, show_protocol_trust)
         return dlg.get_result()
     except Exception:
         return None

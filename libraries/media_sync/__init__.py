@@ -97,19 +97,20 @@ def prompt_int(prompt: str, initial: int):
         return (False, text)
 
 
-def prompt_url_confirm(url: str, is_ip: bool) -> Optional[dict]:
+def prompt_url_confirm(url: str, is_ip: bool, show_protocol_trust: bool = True) -> Optional[dict]:
     """Show a URL open-confirmation dialog (cross-platform).
 
     Returns a dict with ``accepted=True`` and trust flags, or None if rejected.
+    Pass ``show_protocol_trust=False`` to hide the protocol-trust checkbox (e.g. for file://).
     """
     if sys.platform == "win32":
         from .windows import get_or_create_prompter, _ask_url_confirm_windows
         prompter = get_or_create_prompter()
         if prompter is not None:
-            return prompter.ask_url_confirm(url, is_ip)
-        return _ask_url_confirm_windows(url, is_ip)
+            return prompter.ask_url_confirm(url, is_ip, show_protocol_trust)
+        return _ask_url_confirm_windows(url, is_ip, show_protocol_trust)
     from .linux import _prompt_url_confirm_gtk
-    return _prompt_url_confirm_gtk(url, is_ip)
+    return _prompt_url_confirm_gtk(url, is_ip, show_protocol_trust)
 
 
 def show_kick_dialog(core: "RelayCore") -> None:
@@ -136,20 +137,21 @@ def show_kick_dialog(core: "RelayCore") -> None:
         _show_kick_gtk(peers_snapshot, kick_fn, get_aliases_fn, set_alias_fn, get_latency_fn)
 
 
-def prompt_host_url_confirm(url: str, is_ip: bool, client_ip: str) -> Optional[dict]:
+def prompt_host_url_confirm(url: str, is_ip: bool, client_ip: str, show_protocol_trust: bool = True) -> Optional[dict]:
     """Show a host-side URL dialog for a URL received from a client (cross-platform).
 
     Returns a dict with ``forward`` and trust flags, or None if cancelled
     without opening.
+    Pass ``show_protocol_trust=False`` to hide the protocol-trust checkbox (e.g. for file://).
     """
     if sys.platform == "win32":
         from .windows import get_or_create_prompter, _ask_host_url_confirm_windows
         prompter = get_or_create_prompter()
         if prompter is not None:
-            return prompter.ask_host_url_confirm(url, is_ip, client_ip)
-        return _ask_host_url_confirm_windows(url, is_ip, client_ip)
+            return prompter.ask_host_url_confirm(url, is_ip, client_ip, show_protocol_trust)
+        return _ask_host_url_confirm_windows(url, is_ip, client_ip, show_protocol_trust)
     from .linux import _prompt_host_url_confirm_gtk
-    return _prompt_host_url_confirm_gtk(url, is_ip, client_ip)
+    return _prompt_host_url_confirm_gtk(url, is_ip, client_ip, show_protocol_trust)
 
 
 __all__ = [
