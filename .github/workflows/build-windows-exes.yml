@@ -1,4 +1,4 @@
-name: Build Windows EXEs
+name: Build EXEs
 
 on:
   workflow_dispatch:
@@ -11,6 +11,7 @@ on:
       - 'Bluetooth-GUI.spec'
       - 'Media-Sync.py'
       - 'MediaRelay.spec'
+      - 'MediaRelay-linux.spec'
       - 'libraries/**'
       - '.github/workflows/build-windows-exes.yml'
 
@@ -20,15 +21,19 @@ on:
       - 'Bluetooth-GUI.spec'
       - 'Media-Sync.py'
       - 'MediaRelay.spec'
+      - 'MediaRelay-linux.spec'
       - 'libraries/**'
       - '.github/workflows/build-windows-exes.yml'
 
 jobs:
+  # =========================================================
+  # Windows builds — Bluetooth GUI + MediaRelay
+  # =========================================================
   build-windows:
     runs-on: windows-latest
 
     permissions:
-      contents: write
+      contents: read
 
     steps:
       - name: Checkout
@@ -50,68 +55,115 @@ jobs:
           pip install pyinstaller pystray pillow winrt-Windows.Foundation winrt-Windows.Media winrt-Windows.Media.Control
 
       # -------------------------
-      # Bluetooth GUI - Release
+      # Bluetooth GUI
       # -------------------------
-      - name: Build Bluetooth GUI EXE (release, no console)
+      - name: Build Bluetooth GUI EXE
         run: pyinstaller Bluetooth-GUI.spec
 
-      # -------------------------
-      # Upload artifacts
-      # -------------------------
-      - name: Upload Bluetooth GUI artifacts
+      - name: Upload Bluetooth GUI artifact
         uses: actions/upload-artifact@v4
         with:
           name: Bluetooth-GUI-windows
-          path: |
-            dist/Bluetooth-GUI.exe
+          path: dist/Bluetooth-GUI.exe
 
       # -------------------------
-      # Media Sync - Release
+      # MediaRelay
       # -------------------------
-      - name: Build Media Sync EXE (release, no console)
+      - name: Build MediaRelay EXE
         run: pyinstaller MediaRelay.spec
 
-      # -------------------------
-      # Upload artifacts
-      # -------------------------
-      - name: Upload Media Sync artifacts
+      - name: Upload MediaRelay Windows artifact
         uses: actions/upload-artifact@v4
         with:
           name: MediaRelay-windows
-          path: |
-            dist/MediaRelay.exe
+          path: dist/MediaRelay.exe
 
-      # -------------------------
-      # Generate SHA256SUMS for release artifacts
-      # -------------------------
-      # The auto-updater in Media-Sync.py looks for a SHA256SUMS asset
-      # alongside the .exe and refuses to install a download whose hash
-      # doesn't match. The file format is one line per artifact in
-      # `sha256sum` style: "<hex>  <filename>".
-      - name: Generate SHA256SUMS
-        if: startsWith(github.ref, 'refs/tags/')
-        shell: pwsh
+  # =========================================================
+  # Linux build — MediaRelay bare ELF
+  # =========================================================
+  build-linux:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install system dependencies
         run: |
-          $sums = @()
-          foreach ($name in @('Bluetooth-GUI.exe','MediaRelay.exe')) {
-            $path = Join-Path 'dist' $name
-            if (Test-Path $path) {
-              $hash = (Get-FileHash -Algorithm SHA256 -Path $path).Hash.ToLower()
-              $sums += "$hash  $name"
-            }
-          }
-          $sums | Set-Content -Path 'dist/SHA256SUMS' -Encoding ascii -NoNewline:$false
-          Write-Host "--- dist/SHA256SUMS ---"
-          Get-Content 'dist/SHA256SUMS'
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            libgirepository-1.0-dev \
+            gir1.2-gtk-3.0 \
+            gir1.2-ayatanaappindicator3-0.1 \
+            upx
 
-      # -------------------------
-      # Publish to GitHub Release (tag builds only)
-      # -------------------------
-      - name: Publish EXEs to GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Install build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller pystray pillow evdev PyGObject
+
+      - name: Build MediaRelay Linux ELF
+        run: pyinstaller MediaRelay-linux.spec
+
+      - name: Upload MediaRelay Linux artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MediaRelay-linux
+          path: dist/MediaRelay-Linux
+
+  # =========================================================
+  # Release — generate unified SHA256SUMS and publish
+  # =========================================================
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [build-windows, build-linux]
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download Bluetooth GUI artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: Bluetooth-GUI-windows
+          path: artifacts/
+
+      - name: Download MediaRelay Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: MediaRelay-windows
+          path: artifacts/
+
+      - name: Download MediaRelay Linux artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: MediaRelay-linux
+          path: artifacts/
+
+      # The auto-updater in Media-Sync.py fetches SHA256SUMS and looks up the
+      # running binary's basename. Windows resolves "MediaRelay.exe"; Linux
+      # resolves "MediaRelay-Linux". Both must appear in the same file.
+      - name: Generate SHA256SUMS
+        working-directory: artifacts
+        run: |
+          sha256sum Bluetooth-GUI.exe MediaRelay.exe MediaRelay-Linux > SHA256SUMS
+          echo "--- SHA256SUMS ---"
+          cat SHA256SUMS
+
+      - name: Publish to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            dist/Bluetooth-GUI.exe
-            dist/MediaRelay.exe
-            dist/SHA256SUMS
+            artifacts/Bluetooth-GUI.exe
+            artifacts/MediaRelay.exe
+            artifacts/MediaRelay-Linux
+            artifacts/SHA256SUMS
