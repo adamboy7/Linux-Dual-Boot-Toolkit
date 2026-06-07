@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-from PyInstaller.utils.hooks import collect_submodules, collect_data_files
+from PyInstaller.utils.hooks import collect_submodules
 
 # GTK typelibs are NOT bundled here — gi reads them from the system path
 # (/usr/lib/*/girepository-1.0/) at runtime, which is present on any system
@@ -12,7 +12,6 @@ a = Analysis(
     binaries=[],
     datas=[
         ('libraries/Media-Sync.ico', 'libraries'),
-        *collect_data_files('gi'),
     ],
     hiddenimports=(
         collect_submodules('libraries')
