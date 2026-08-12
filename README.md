@@ -4,6 +4,8 @@
 - `Bluetooth-GUI.py`: Cross-platform entry point that launches the Linux or Windows Bluetooth GUI for exporting/importing link keys. Windows version uses Tkinter.
 - `Steam-Symlink-Helper.py`: GUI/CLI helper to mirror a Windows Steam library into Linux via symlinks.
 - `Media-Sync.py`: Media Relay — a multi PC (non dual boot) utility to allow smart media control between PC's.
+- `extractor.py`: Drag-and-drop GUI to batch extract `.zip`/`.7z`/`.rar` archives, with optional auto-delete of the source archive once its contents are verified on disk.
+- `symlink_maker.py`: Small GUI to pick a target file/folder and create a symlink at a chosen location, falling back to a junction/hard link on Windows when symlink privilege isn't available.
 - `Update-Toolkit.py`: Updates the toolkit to the latest version from GitHub.
 - `libraries/`: Shared logic for Bluetooth parsing, permissions, backup handling, and GUI helpers.
 
